@@ -224,9 +224,9 @@ async def train_random_forest_model_wrapper(top_symbols, exchange, timestep, tim
         data = prepare_data(df)
         if not np.isfinite(data).all() or len(data) < timestep + 1:
             continue
-        sc = StandardScaler().fit_transform(data)
-        for i in range(timestep, len(sc) - 1):
-            X_all.append(sc[i - timestep : i].flatten())
+        # Non scaliamo i dati qui, ma li raccogliamo non scalati
+        for i in range(timestep, len(data) - 1):
+            X_all.append(data[i - timestep : i].flatten())
             y_all.append(int(df["close"].iloc[i + 1] > df["close"].iloc[i]))
 
     if not X_all:
@@ -281,6 +281,7 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
         data = prepare_data(df)
         if not np.isfinite(data).all() or len(data) < timestep + 1:
             continue
+        # I dati sono già non scalati, come richiesto
         for i in range(timestep, len(data) - 1):
             X_all.append(data[i - timestep : i].flatten())
             y_all.append(int(df["close"].iloc[i + 1] > df["close"].iloc[i]))

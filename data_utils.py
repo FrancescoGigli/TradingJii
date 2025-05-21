@@ -1,6 +1,7 @@
 #data_utils.py
 import pandas as pd
 import numpy as np
+import logging
 from ta import momentum, trend, volatility, volume
 from ta.trend import EMAIndicator, MACD, ADXIndicator, IchimokuIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
@@ -14,20 +15,34 @@ from ta.trend import CCIIndicator
 
 from config import EXPECTED_COLUMNS
 
-def add_technical_indicators(df):
+def add_technical_indicators(df, symbol=None):
+    """
+    Aggiunge indicatori tecnici al dataframe.
+    
+    Args:
+        df (pd.DataFrame): DataFrame con dati OHLCV
+        symbol (str, optional): Simbolo associato ai dati. Usato solo per logging.
+        
+    Returns:
+        pd.DataFrame: DataFrame con indicatori tecnici aggiunti
+    """
+    symbol_info = f" for {symbol}" if symbol else ""
     # Calcolo delle EMA
     try:
         df['ema5'] = EMAIndicator(df['close'], window=5).ema_indicator()
-    except Exception:
+    except Exception as e:
         df['ema5'] = 0.0
+        logging.warning(f"Failed to calculate 'ema5'{symbol_info}. Error: {e}. Defaulting to 0.0.")
     try:
         df['ema10'] = EMAIndicator(df['close'], window=10).ema_indicator()
-    except Exception:
+    except Exception as e:
         df['ema10'] = 0.0
+        logging.warning(f"Failed to calculate 'ema10'{symbol_info}. Error: {e}. Defaulting to 0.0.")
     try:
         df['ema20'] = EMAIndicator(df['close'], window=20).ema_indicator()
-    except Exception:
+    except Exception as e:
         df['ema20'] = 0.0
+        logging.warning(f"Failed to calculate 'ema20'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Calcolo del MACD e del suo segnale
     try:
@@ -35,27 +50,31 @@ def add_technical_indicators(df):
         df['macd'] = macd.macd()
         df['macd_signal'] = macd.macd_signal()
         df['macd_histogram'] = df['macd'] - df['macd_signal']
-    except Exception:
+    except Exception as e:
         df['macd'] = 0.0
         df['macd_signal'] = 0.0
         df['macd_histogram'] = 0.0
+        logging.warning(f"Failed to calculate 'MACD'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Calcolo degli indicatori di momentum
     try:
         df['rsi_fast'] = momentum.RSIIndicator(df['close'], window=7).rsi()
-    except Exception:
+    except Exception as e:
         df['rsi_fast'] = 0.0
+        logging.warning(f"Failed to calculate 'rsi_fast'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     try:
         df['stoch_rsi'] = StochRSIIndicator(df['close'], window=14).stochrsi()
-    except Exception:
+    except Exception as e:
         df['stoch_rsi'] = 0.0
+        logging.warning(f"Failed to calculate 'stoch_rsi'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Calcolo dell'ATR
     try:
         df['atr'] = AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
-    except Exception:
+    except Exception as e:
         df['atr'] = 0.0
+        logging.warning(f"Failed to calculate 'atr'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Bollinger Bands e Bollinger %B
     try:
@@ -63,32 +82,37 @@ def add_technical_indicators(df):
         df['bollinger_hband'] = bollinger.bollinger_hband()
         df['bollinger_lband'] = bollinger.bollinger_lband()
         df['bollinger_pband'] = bollinger.bollinger_pband()
-    except Exception:
+    except Exception as e:
         df['bollinger_hband'] = 0.0
         df['bollinger_lband'] = 0.0
         df['bollinger_pband'] = 0.0
+        logging.warning(f"Failed to calculate 'Bollinger Bands'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # VWAP
     try:
         df['vwap'] = VolumeWeightedAveragePrice(df['high'], df['low'], df['close'], df['volume'], window=14).volume_weighted_average_price()
-    except Exception:
+    except Exception as e:
         df['vwap'] = 0.0
+        logging.warning(f"Failed to calculate 'vwap'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # ADX
     try:
         df['adx'] = ADXIndicator(df['high'], df['low'], df['close'], window=14).adx()
-    except Exception:
+    except Exception as e:
         df['adx'] = 0.0
+        logging.warning(f"Failed to calculate 'adx'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Rate of Change e log return
     try:
         df['roc'] = df['close'].pct_change(periods=1)
-    except Exception:
+    except Exception as e:
         df['roc'] = 0.0
+        logging.warning(f"Failed to calculate 'roc'{symbol_info}. Error: {e}. Defaulting to 0.0.")
     try:
         df['log_return'] = np.log(df['close'] / df['close'].shift(1))
-    except Exception:
+    except Exception as e:
         df['log_return'] = 0.0
+        logging.warning(f"Failed to calculate 'log_return'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Ichimoku
     try:
@@ -115,23 +139,25 @@ def add_technical_indicators(df):
         df['chikou_span'] = df['close'].shift(-26)
             
     except Exception as e:
-        print(f"Error calculating Ichimoku indicators: {e}")
         df['tenkan_sen'] = 0.0
         df['kijun_sen'] = 0.0
         df['senkou_span_a'] = 0.0
         df['senkou_span_b'] = 0.0
         df['chikou_span'] = 0.0
+        logging.warning(f"Failed to calculate 'Ichimoku indicators'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Altri indicatori
     try:
         df['williams_r'] = WilliamsRIndicator(df['high'], df['low'], df['close'], lbp=14).williams_r()
-    except Exception:
+    except Exception as e:
         df['williams_r'] = 0.0
+        logging.warning(f"Failed to calculate 'williams_r'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     try:
         df['obv'] = OnBalanceVolumeIndicator(df['close'], df['volume']).on_balance_volume()
-    except Exception:
+    except Exception as e:
         df['obv'] = 0.0
+        logging.warning(f"Failed to calculate 'obv'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Nuovi indicatori: Money Flow Index (MFI) e Commodity Channel Index (CCI)
     # Nota: questi indicatori vengono calcolati ma non sono inclusi in EXPECTED_COLUMNS
@@ -139,14 +165,16 @@ def add_technical_indicators(df):
     try:
         mfi = MFIIndicator(high=df['high'], low=df['low'], close=df['close'], volume=df['volume'], window=14)
         df['mfi'] = mfi.money_flow_index()
-    except Exception:
+    except Exception as e:
         df['mfi'] = 0.0
+        logging.warning(f"Failed to calculate 'mfi'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     try:
         cci = CCIIndicator(high=df['high'], low=df['low'], close=df['close'], window=20, constant=0.015)
         df['cci'] = cci.cci()
-    except Exception:
+    except Exception as e:
         df['cci'] = 0.0
+        logging.warning(f"Failed to calculate 'cci'{symbol_info}. Error: {e}. Defaulting to 0.0.")
 
     # Calcolo delle SMA: veloce (window=10) e lenta (window=50)
     df['sma_fast'] = df['close'].rolling(window=10, min_periods=10).mean()
@@ -197,4 +225,3 @@ def prepare_data(df):
             raise ValueError(f"Column {col} missing in input data.")
     df = add_technical_indicators(df)
     return df[EXPECTED_COLUMNS].values
-

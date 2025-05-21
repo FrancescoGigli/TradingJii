@@ -189,7 +189,7 @@ async def calculate_position_size(exchange, symbol, usdt_balance, min_amount=0, 
 async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
                           lstm_model, lstm_scaler, rf_model, rf_scaler, df, predictions=None):
     current_time = time.time()
-    new_im = 30.0
+    new_im = MARGIN_USDT
     total_im = await get_total_initial_margin(exchange, symbol)
     if total_im + new_im > 35.0:
         logging.info(colored(f"{symbol}: Apertura non consentita (IM totale superiore al limite).", "yellow"))
@@ -232,9 +232,6 @@ async def execute_order(exchange, symbol, side, position_size, price, current_ti
             return None
     entry_price = order.get('average') or price
     trade_id = order.get("id") or f"{symbol}-{datetime.utcnow().timestamp()}"
-    
-    from data_utils import add_technical_indicators
-    df = add_technical_indicators(df)
     
     new_trade = {
         "trade_id": trade_id,

@@ -2,6 +2,7 @@ import logging
 from termcolor import colored
 import numpy as np
 import config
+import pandas as pd
 from config import (
     EXPECTED_COLUMNS,
     NEUTRAL_UPPER_THRESHOLD,
@@ -35,13 +36,23 @@ def predict_signal_for_model(df, model, scaler, symbol, time_steps, expected_fea
         logging.error(f"{symbol} [{timeframe}]: modello o scaler non disponibili.")
         return None
     try:
-        # Se il numero di colonne non corrisponde, rielabora i dati
-        if df.shape[1] != expected_features:
-            data = prepare_data(df)
-        else:
-            data = df.values
-            # Assicurati che non ci siano NaN o infiniti nei dati
-            data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+        # Verifica che il DataFrame contenga esattamente le colonne attese
+        if not set(df.columns) == set(EXPECTED_COLUMNS):
+            missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
+            extra_cols = set(df.columns) - set(EXPECTED_COLUMNS)
+            error_msg = f"{symbol} [{timeframe}]: DataFrame con colonne non corrette."
+            if missing_cols:
+                error_msg += f" Mancanti: {missing_cols}."
+            if extra_cols:
+                error_msg += f" Extra: {extra_cols}."
+            logging.error(error_msg)
+            return None
+            
+        # Assicurati che le colonne siano nell'ordine corretto
+        df = df[EXPECTED_COLUMNS]
+        data = df.values
+        # Assicurati che non ci siano NaN o infiniti nei dati
+        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
 
         if len(data) < time_steps:
             logging.error(f"{symbol} [{timeframe}]: dati insufficienti ({len(data)} elementi, richiesti {time_steps}).")
@@ -82,7 +93,22 @@ def predict_signal_ensemble(dataframes,
             return None, None, None
         # Predizione RF
         try:
-            data_rf = prepare_data(df)
+            # Verifica che il DataFrame contenga esattamente le colonne attese
+            if not set(df.columns) == set(EXPECTED_COLUMNS):
+                missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
+                extra_cols = set(df.columns) - set(EXPECTED_COLUMNS)
+                error_msg = f"{symbol} [{tf}]: DataFrame con colonne non corrette per RF."
+                if missing_cols:
+                    error_msg += f" Mancanti: {missing_cols}."
+                if extra_cols:
+                    error_msg += f" Extra: {extra_cols}."
+                logging.error(error_msg)
+                return None, None, None
+            
+            # Assicurati che le colonne siano nell'ordine corretto
+            df_rf = df[EXPECTED_COLUMNS]
+            data_rf = df_rf.values
+            
             if len(data_rf) < time_steps:
                 logging.error(f"{symbol} [{tf}]: dati insufficienti per RF ({len(data_rf)} elementi, richiesti {time_steps}).")
                 return None, None, None
@@ -105,7 +131,22 @@ def predict_signal_ensemble(dataframes,
         
         # Predizione XGBoost
         try:
-            data_xgb = prepare_data(df)
+            # Verifica che il DataFrame contenga esattamente le colonne attese
+            if not set(df.columns) == set(EXPECTED_COLUMNS):
+                missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
+                extra_cols = set(df.columns) - set(EXPECTED_COLUMNS)
+                error_msg = f"{symbol} [{tf}]: DataFrame con colonne non corrette per XGB."
+                if missing_cols:
+                    error_msg += f" Mancanti: {missing_cols}."
+                if extra_cols:
+                    error_msg += f" Extra: {extra_cols}."
+                logging.error(error_msg)
+                return None, None, None
+            
+            # Assicurati che le colonne siano nell'ordine corretto
+            df_xgb = df[EXPECTED_COLUMNS]
+            data_xgb = df_xgb.values
+            
             if len(data_xgb) < time_steps:
                 logging.error(f"{symbol} [{tf}]: dati insufficienti per XGB ({len(data_xgb)} elementi, richiesti {time_steps}).")
                 return None, None, None
@@ -134,7 +175,7 @@ def predict_signal_ensemble(dataframes,
     try:
         rsi_value = dataframes[config.TIMEFRAME_DEFAULT]['rsi_fast'].iloc[-1]
     except Exception as e:
-        logging.error(f"{symbol}: errore nel calcolo dell'RSI per {config.TIMEFRAME_DEFAULT}: {e}")
+        logging.warning(f"Error calculating RSI for {symbol} on timeframe {config.TIMEFRAME_DEFAULT}: {e}. Defaulting RSI to 50.")
         rsi_value = 50
 
     # Calcolo dell'ensemble value: somma dei contributi pesati e normalizzazione per il numero dei timeframe

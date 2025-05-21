@@ -41,8 +41,10 @@ def init_data_tables():
                 vwap REAL,
                 adx REAL,
                 roc REAL,
-                weekday INTEGER,
-                hour INTEGER,
+                weekday_sin REAL,
+                weekday_cos REAL,
+                hour_sin REAL,
+                hour_cos REAL,
                 PRIMARY KEY (timestamp, symbol)
             )
         ''')
@@ -59,9 +61,9 @@ def save_data(symbol, df, timeframe):
                 timestamp, symbol, open, high, low, close, volume,
                 ema5, ema10, ema20, macd, macd_signal,
                 rsi_fast, stoch_rsi, atr, bollinger_hband, bollinger_lband,
-                vwap, adx, roc, weekday, hour
+                vwap, adx, roc, weekday_sin, weekday_cos, hour_sin, hour_cos
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             timestamp.isoformat(),
             symbol,
@@ -83,8 +85,10 @@ def save_data(symbol, df, timeframe):
             row.get('vwap', 0),
             row.get('adx', 0),
             row.get('roc', 0),
-            row.get('weekday', 0),
-            row.get('hour', 0)
+            row.get('weekday_sin', 0.0),
+            row.get('weekday_cos', 0.0),
+            row.get('hour_sin', 0.0),
+            row.get('hour_cos', 0.0)
         ))
     conn.commit()
     conn.close()
