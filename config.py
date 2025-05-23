@@ -54,10 +54,10 @@ exchange_config = {
 # Parametri di trading
 # ----------------------------------------------------------------------
 MARGIN_USDT = 40.0
-LEVERAGE = 5
+LEVERAGE = 10
 
-ENABLED_TIMEFRAMES: list[str] = []
-TIMEFRAME_DEFAULT: str | None = None
+ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]
+TIMEFRAME_DEFAULT: str | None = "15m"
 TIME_STEPS = 7
 
 MODEL_RATES = {"lstm": 0.6, "rf": 0.2, "xgb": 0.2}

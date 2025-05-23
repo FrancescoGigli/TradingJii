@@ -19,7 +19,7 @@ import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
-from keras.callbacks import EarlyStopping, TensorBoard, Callback
+from tensorflow.keras.callbacks import EarlyStopping, TensorBoard, Callback
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
@@ -301,8 +301,8 @@ def _train_xgb_sync(X, y):
         n_estimators=100, max_depth=6, learning_rate=0.1,
         num_class=3,
         objective='multi:softprob',
-        eval_metric='mlogloss',
-        use_label_encoder=False
+        eval_metric='mlogloss'
+        # Parametro 'use_label_encoder' rimosso perché deprecato
     )
     _LOG.info("Training XGBoost…")
     model.fit(X_tr, y_tr)

@@ -10,9 +10,6 @@ import ccxt.async_support as ccxt_async
 from termcolor import colored
 from tqdm import tqdm  # Import per la progress bar
 
-# Importa e applica il monkey patching per il database all'avvio per evitare errori
-import temp_db_handler
-
 from config import (
     exchange_config,
     EXCLUDED_SYMBOLS, TIME_STEPS, TRADE_CYCLE_INTERVAL,

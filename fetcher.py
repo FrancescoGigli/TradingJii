@@ -75,11 +75,14 @@ async def get_data_async(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, limit=10
         logging.info(f"Nessun dato disponibile per {symbol} negli ultimi {DATA_LIMIT_DAYS} giorni.")
         return None
 
-async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, limit=1000):
+async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, limit=1000, save_to_db=None):
+    # Use the global USE_DATABASE setting if save_to_db is not explicitly provided
+    if save_to_db is None:
+        from config import USE_DATABASE
+        save_to_db = USE_DATABASE
     df = await get_data_async(exchange, symbol, timeframe, limit)
     if df is not None:
         from data_utils import add_technical_indicators
-        from config import USE_DATABASE
         
         # Aggiungi gli indicatori tecnici
         df_with_indicators = add_technical_indicators(df.copy(), symbol)
@@ -89,9 +92,13 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
         df_with_indicators['volatility'] = df_with_indicators['volatility'].replace([float('inf'), float('-inf')], float('nan')).fillna(0.0)
         df_with_indicators['volatility'] = df_with_indicators['volatility'].clip(-100, 100)
         
-        # Salva i dati nel database solo se USE_DATABASE è attivo
-        if USE_DATABASE:
-            save_data(symbol, df_with_indicators, timeframe)
+        # Salva i dati nel database solo se save_to_db è True e la configurazione USE_DATABASE è attiva
+        if save_to_db:
+            try:
+                save_data(symbol, df_with_indicators, timeframe)
+            except sqlite3.OperationalError as e:
+                # Log the error but don't fail the entire operation
+                logging.warning(f"Database error during save_data for {symbol}: {e}")
             
         # Restituisci il dataframe con tutti gli indicatori (inclusa volatilità)
         return df_with_indicators
