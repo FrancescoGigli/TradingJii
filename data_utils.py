@@ -210,9 +210,10 @@ def add_technical_indicators(df, symbol=None):
     # Verifica quali colonne sono effettivamente presenti in EXPECTED_COLUMNS
     missing_columns = [col for col in EXPECTED_COLUMNS if col not in df.columns]
     if missing_columns:
-        print(f"Attenzione: le seguenti colonne sono mancanti: {missing_columns}")
-        # Aggiungi colonne mancanti con valore 0
+        # Aggiungi colonne mancanti con valore 0 (tranne volatility che viene calcolata dopo)
         for col in missing_columns:
+            if col != 'volatility':  # Non generare avvisi per volatility, viene aggiunta in prepare_data
+                print(f"Attenzione: la colonna '{col}' è mancante e verrà inizializzata a 0")
             df[col] = 0.0
     
     # Seleziona solo le colonne attese (aggiornate in config.py)
@@ -224,4 +225,15 @@ def prepare_data(df):
         if col not in df.columns:
             raise ValueError(f"Column {col} missing in input data.")
     df = add_technical_indicators(df)
+    
+    # 🆕 Volatility: % change of close price
+    df['volatility'] = df['close'].pct_change() * 100
+    df['volatility'] = df['volatility'].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    df['volatility'] = df['volatility'].clip(-100, 100)  # clip to range [-100, 100]
+    
+    # Assicuriamoci che tutte le colonne attese siano presenti
+    for col in EXPECTED_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0.0  # Inizializza le colonne mancanti con 0
+    
     return df[EXPECTED_COLUMNS].values

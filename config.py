@@ -114,6 +114,7 @@ EXPECTED_COLUMNS = [
     "close_lag_1", "volume_lag_1",
     "weekday_sin", "weekday_cos", "hour_sin", "hour_cos",
     "mfi", "cci",
+    "volatility",
 ]
 
 RSI_THRESHOLDS = {"sideways": {"oversold": 30, "overbought": 70}}

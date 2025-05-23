@@ -36,8 +36,9 @@ def create_lstm_model(input_shape):
     model.add(Bidirectional(LSTM(100)))
     model.add(Dropout(0.3))
     model.add(Dense(50, activation='relu'))
-    model.add(Dense(1, activation='sigmoid'))
-    model.compile(optimizer='adam', loss=FocalLoss(), metrics=['accuracy'])
+    model.add(Dense(3, activation='softmax'))
+    from keras.losses import CategoricalCrossentropy
+    model.compile(optimizer='adam', loss=CategoricalCrossentropy(), metrics=['accuracy'])
     return model
 
 class LSTMHyperModel(HyperModel):
@@ -54,8 +55,9 @@ class LSTMHyperModel(HyperModel):
         model.add(Bidirectional(LSTM(units=hp.Int('units2', 32, 256, step=32))))
         model.add(Dropout(rate=hp.Float('dropout2', 0.1, 0.5, step=0.1)))
         model.add(Dense(units=hp.Int('dense_units', 16, 128, step=16), activation='relu'))
-        model.add(Dense(1, activation='sigmoid'))
-        model.compile(optimizer='adam', loss=FocalLoss(), metrics=['accuracy'])
+        model.add(Dense(3, activation='softmax'))
+        from keras.losses import CategoricalCrossentropy
+        model.compile(optimizer='adam', loss=CategoricalCrossentropy(), metrics=['accuracy'])
         logging.info("Modello LSTM costruito con iperparametri: " + str(hp.values))
         return model
 

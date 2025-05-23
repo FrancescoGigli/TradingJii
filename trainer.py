@@ -100,7 +100,24 @@ async def train_lstm_model_for_timeframe(
         data_scaled = StandardScaler().fit_transform(data)
         for i in range(timestep, len(data_scaled) - 1):
             X_list.append(data_scaled[i - timestep : i])
-            y_list.append(int(df["close"].iloc[i + 1] > df["close"].iloc[i]))
+            
+            # Parameters
+            future_window = 3  # Number of future candles to consider
+            profit_threshold = 0.005  # e.g., +0.5% gain
+            loss_threshold = -0.005   # e.g., -0.5% loss
+
+            # Compute future returns
+            future_returns = (df["close"].iloc[i+1:i+1+future_window].values - df["close"].iloc[i]) / df["close"].iloc[i]
+
+            # Class assignment
+            if np.any(future_returns >= profit_threshold):
+                label = 1  # BUY
+            elif np.any(future_returns <= loss_threshold):
+                label = 0  # SELL
+            else:
+                label = 2  # NEUTRAL
+
+            y_list.append(label)
 
     if not X_list:
         _LOG.error("No data collected for %s", timeframe)
@@ -108,26 +125,35 @@ async def train_lstm_model_for_timeframe(
 
     X_all = np.array(X_list)
     y_all = np.array(y_list)
+    
+    # Convert labels to one-hot encoding for LSTM
+    from tensorflow.keras.utils import to_categorical
+    y_all = to_categorical(y_all, num_classes=3)
 
     tscv = TimeSeriesSplit(n_splits=4)
     train_idx, val_idx = list(tscv.split(X_all))[-1]
     X_tr, X_val = X_all[train_idx], X_all[val_idx]
     y_tr, y_val = y_all[train_idx], y_all[val_idx]
 
+    # Converti one-hot encoding in singoli indici per il bilanciamento delle classi
+    y_tr_labels = np.argmax(y_tr, axis=1)
+    
     # bilanciamento classi con jitter
-    unique, counts = np.unique(y_tr, return_counts=True)
-    if len(unique) == 2 and counts.min() != counts.max():
+    unique, counts = np.unique(y_tr_labels, return_counts=True)
+    if len(unique) >= 2 and counts.min() != counts.max():
         minority = unique[counts.argmin()]
         aug_X, aug_y = [], []
-        for i in np.where(y_tr == minority)[0]:
+        for i in np.where(y_tr_labels == minority)[0]:
             aug_X.append(_augment_jitter(X_tr[i]))
             aug_y.append(y_tr[i])
         if aug_X:
             X_tr = np.concatenate([X_tr, np.array(aug_X)], axis=0)
             y_tr = np.concatenate([y_tr, np.array(aug_y)], axis=0)
             _LOG.info("Augmentazione jitter applicata (%s)", timeframe)
-
-    class_w = class_weight.compute_class_weight("balanced", classes=np.unique(y_tr), y=y_tr)
+    
+    # Calcola pesi delle classi usando gli indici non one-hot
+    y_tr_labels = np.argmax(y_tr, axis=1)
+    class_w = class_weight.compute_class_weight("balanced", classes=np.unique(y_tr_labels), y=y_tr_labels)
     class_w = {i: v for i, v in enumerate(class_w)}
 
     num_feat = len(config.EXPECTED_COLUMNS)
@@ -207,9 +233,9 @@ def _train_rf_sync(X: np.ndarray, y: np.ndarray):
     y_pred = rf.predict(X_val)
     m = {
         "val_accuracy":  accuracy_score(y_val, y_pred),
-        "val_precision": precision_score(y_val, y_pred, average="binary"),
-        "val_recall":    recall_score(y_val, y_pred, average="binary"),
-        "val_f1":        f1_score(y_val, y_pred, average="binary"),
+        "val_precision": precision_score(y_val, y_pred, average="weighted"),
+        "val_recall":    recall_score(y_val, y_pred, average="weighted"),
+        "val_f1":        f1_score(y_val, y_pred, average="weighted"),
     }
     return rf, scaler, m
 
@@ -227,7 +253,24 @@ async def train_random_forest_model_wrapper(top_symbols, exchange, timestep, tim
         # Non scaliamo i dati qui, ma li raccogliamo non scalati
         for i in range(timestep, len(data) - 1):
             X_all.append(data[i - timestep : i].flatten())
-            y_all.append(int(df["close"].iloc[i + 1] > df["close"].iloc[i]))
+            
+            # Parameters
+            future_window = 3  # Number of future candles to consider
+            profit_threshold = 0.005  # e.g., +0.5% gain
+            loss_threshold = -0.005   # e.g., -0.5% loss
+
+            # Compute future returns
+            future_returns = (df["close"].iloc[i+1:i+1+future_window].values - df["close"].iloc[i]) / df["close"].iloc[i]
+
+            # Class assignment
+            if np.any(future_returns >= profit_threshold):
+                label = 1  # BUY
+            elif np.any(future_returns <= loss_threshold):
+                label = 0  # SELL
+            else:
+                label = 2  # NEUTRAL
+                
+            y_all.append(label)
 
     if not X_all:
         _LOG.error("No data RF %s", timeframe)
@@ -256,7 +299,10 @@ def _train_xgb_sync(X, y):
 
     model = xgb.XGBClassifier(
         n_estimators=100, max_depth=6, learning_rate=0.1,
-        use_label_encoder=False, eval_metric="logloss"
+        num_class=3,
+        objective='multi:softprob',
+        eval_metric='mlogloss',
+        use_label_encoder=False
     )
     _LOG.info("Training XGBoost…")
     model.fit(X_tr, y_tr)
@@ -264,9 +310,9 @@ def _train_xgb_sync(X, y):
     y_pred = model.predict(X_val)
     m = {
         "val_accuracy":  accuracy_score(y_val, y_pred),
-        "val_precision": precision_score(y_val, y_pred, average="binary"),
-        "val_recall":    recall_score(y_val, y_pred, average="binary"),
-        "val_f1":        f1_score(y_val, y_pred, average="binary"),
+        "val_precision": precision_score(y_val, y_pred, average="weighted"),
+        "val_recall":    recall_score(y_val, y_pred, average="weighted"),
+        "val_f1":        f1_score(y_val, y_pred, average="weighted"),
     }
     return model, scaler, m
 
@@ -284,7 +330,24 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
         # I dati sono già non scalati, come richiesto
         for i in range(timestep, len(data) - 1):
             X_all.append(data[i - timestep : i].flatten())
-            y_all.append(int(df["close"].iloc[i + 1] > df["close"].iloc[i]))
+            
+            # Parameters
+            future_window = 3  # Number of future candles to consider
+            profit_threshold = 0.005  # e.g., +0.5% gain
+            loss_threshold = -0.005   # e.g., -0.5% loss
+
+            # Compute future returns
+            future_returns = (df["close"].iloc[i+1:i+1+future_window].values - df["close"].iloc[i]) / df["close"].iloc[i]
+
+            # Class assignment
+            if np.any(future_returns >= profit_threshold):
+                label = 1  # BUY
+            elif np.any(future_returns <= loss_threshold):
+                label = 0  # SELL
+            else:
+                label = 2  # NEUTRAL
+                
+            y_all.append(label)
 
     if not X_all:
         _LOG.error("No data XGB %s", timeframe)

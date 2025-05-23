@@ -69,7 +69,8 @@ def predict_signal_for_model(df, model, scaler, symbol, time_steps, expected_fea
             logging.error(f"{symbol} [{timeframe}]: numero di feature non corretto dopo scaling ({X_scaled.shape[1]} invece di {expected_features}).")
             return None
         X_scaled = X_scaled.reshape((1, time_steps, expected_features))
-        pred = model.predict(X_scaled)[0][0]
+        probs = model.predict(X_scaled)[0]
+        pred = np.argmax(probs)
         return pred
     except Exception as e:
         logging.error(f"Errore in prediction per {symbol} [{timeframe}]: {e}")
@@ -124,7 +125,8 @@ def predict_signal_ensemble(dataframes,
             if X_rf_scaled.shape[1] != expected_rf_features:
                 logging.error(f"{symbol} [{tf}]: numero di feature RF non corretto ({X_rf_scaled.shape[1]} invece di {expected_rf_features}).")
                 return None, None, None
-            rf_pred = float(rf_models.get(tf).predict(X_rf_scaled)[0])
+            probs = rf_models.get(tf).predict_proba(X_rf_scaled)[0]
+            rf_pred = np.argmax(probs)
         except Exception as e:
             logging.error(f"{symbol} [{tf}]: errore nella predizione RF: {e}")
             return None, None, None
@@ -162,7 +164,8 @@ def predict_signal_ensemble(dataframes,
             if X_xgb_scaled.shape[1] != expected_xgb_features:
                 logging.error(f"{symbol} [{tf}]: numero di feature XGB non corretto ({X_xgb_scaled.shape[1]} invece di {expected_xgb_features}).")
                 return None, None, None
-            xgb_pred = float(xgb_models.get(tf).predict(X_xgb_scaled)[0])
+            probs = xgb_models.get(tf).predict_proba(X_xgb_scaled)[0]
+            xgb_pred = np.argmax(probs)
         except Exception as e:
             logging.error(f"{symbol} [{tf}]: errore nella predizione XGB: {e}")
             return None, None, None
@@ -178,31 +181,27 @@ def predict_signal_ensemble(dataframes,
         logging.warning(f"Error calculating RSI for {symbol} on timeframe {config.TIMEFRAME_DEFAULT}: {e}. Defaulting RSI to 50.")
         rsi_value = 50
 
-    # Calcolo dell'ensemble value: somma dei contributi pesati e normalizzazione per il numero dei timeframe
-    ensemble_value = 0.0
+    # Collect all predictions across models and timeframes
+    all_votes = []
     for tf in dataframes.keys():
-        ensemble_value += (weight_lstm.get(tf, 0) * lstm_preds[tf] +
-                           weight_rf.get(tf, 0) * rf_preds[tf] +
-                           weight_xgb.get(tf, 0) * xgb_preds[tf])
-    # Normalizza dividendo per il numero dei timeframe
-    ensemble_value /= len(dataframes)
+        all_votes.append(lstm_preds[tf])
+        all_votes.append(rf_preds[tf])
+        all_votes.append(xgb_preds[tf])
 
-    final_signal = None
-    if ensemble_value > NEUTRAL_UPPER_THRESHOLD:
-        if rsi_value < RSI_THRESHOLDS['sideways']['oversold']:
-            final_signal = 1
-        else:
-            logging.info(f"{symbol}: segnale BUY non confermato (RSI = {rsi_value}).")
-    elif ensemble_value < NEUTRAL_LOWER_THRESHOLD:
-        if rsi_value > RSI_THRESHOLDS['sideways']['overbought']:
-            final_signal = 0
-        else:
-            logging.info(f"{symbol}: segnale SELL non confermato (RSI = {rsi_value}).")
-    else:
-        logging.info(f"{symbol}: segnale neutro per ensemble_value = {ensemble_value:.4f}")
+    # Take the majority vote
+    votes_counter = {}
+    for vote in all_votes:
+        votes_counter[vote] = votes_counter.get(vote, 0) + 1
+    
+    final_signal = max(votes_counter.items(), key=lambda x: x[1])[0]
+    logging.info(f"{symbol}: segnale finale {final_signal} (vote counts: {votes_counter})")
 
     for tf in dataframes.keys():
         logging.info(f"{symbol} [{tf}] - LSTM: {lstm_preds[tf]:.4f}, RF: {rf_preds[tf]:.4f}, XGB: {xgb_preds[tf]:.4f}")
     logging.info(f"{symbol} - RSI ({config.TIMEFRAME_DEFAULT}): {rsi_value:.0f}")
     
-    return ensemble_value, final_signal, (lstm_preds, rf_preds, xgb_preds, rsi_value)
+    # Calculate the confidence of the majority vote
+    total_votes = sum(votes_counter.values())
+    confidence_value = votes_counter[final_signal] / total_votes
+    
+    return confidence_value, final_signal, (lstm_preds, rf_preds, xgb_preds, rsi_value)

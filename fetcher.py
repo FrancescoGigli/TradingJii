@@ -79,6 +79,20 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
     df = await get_data_async(exchange, symbol, timeframe, limit)
     if df is not None:
         from data_utils import add_technical_indicators
-        df_indicators = add_technical_indicators(df.copy())
-        save_data(symbol, df_indicators, timeframe)
-    return df
+        from config import USE_DATABASE
+        
+        # Aggiungi gli indicatori tecnici
+        df_with_indicators = add_technical_indicators(df.copy(), symbol)
+        
+        # Aggiungi esplicitamente la volatilità
+        df_with_indicators['volatility'] = df_with_indicators['close'].pct_change() * 100
+        df_with_indicators['volatility'] = df_with_indicators['volatility'].replace([float('inf'), float('-inf')], float('nan')).fillna(0.0)
+        df_with_indicators['volatility'] = df_with_indicators['volatility'].clip(-100, 100)
+        
+        # Salva i dati nel database solo se USE_DATABASE è attivo
+        if USE_DATABASE:
+            save_data(symbol, df_with_indicators, timeframe)
+            
+        # Restituisci il dataframe con tutti gli indicatori (inclusa volatilità)
+        return df_with_indicators
+    return None
