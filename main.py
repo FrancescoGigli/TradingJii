@@ -14,7 +14,6 @@ from config import (
     exchange_config,
     EXCLUDED_SYMBOLS, TIME_STEPS, TRADE_CYCLE_INTERVAL,
     MODEL_RATES,  # I rate definiti in config; la somma DEVE essere pari a 1
-    RESET_DB_ON_STARTUP, DB_FILE, USE_DATABASE,
     TOP_TRAIN_CRYPTO, TOP_ANALYSIS_CRYPTO, EXPECTED_COLUMNS,
     TRAIN_IF_NOT_FOUND  # Variabile di controllo per il training
 )
@@ -33,14 +32,9 @@ from trainer import (
 from predictor import predict_signal_ensemble, get_color_normal
 from trade_manager import (
     get_real_balance, manage_position, get_open_positions,
-    update_orders_status, load_existing_positions, monitor_open_trades,
-    print_trade_statistics, save_trade_statistics, compute_trade_statistics_for_period,
-    update_closed_orders_from_account, wait_and_update_closed_trades, clean_old_trades,
-    init_db
+    update_orders_status
 )
 from data_utils import prepare_data
-from db_manager import init_data_tables
-from db_update import fix_db_schema_for_volatility
 from trainer import ensure_trained_models_dir
 
 if sys.platform.startswith('win'):
@@ -55,13 +49,6 @@ def select_config():
     default_models = "lstm,rf,xgb"
     
     print("\n=== Configurazione Avanzata ===")
-    
-    # Configurazione database
-    print(f"\nUtilizzare il database? (Il database memorizza le statistiche dei trade e lo storico) [Y/n, default: {'Y' if USE_DATABASE else 'n'}]:")
-    db_input = input().strip().lower()
-    use_db = USE_DATABASE
-    if db_input:
-        use_db = db_input in ['y', 'yes', 'si', 's', '1', 'true']
     
     # Configurazione timeframes
     print("\nInserisci i timeframe da utilizzare tra le seguenti opzioni: '1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d' (minimo 1, massimo 3, separati da virgola) [default: 15m,30m,1h]:")
@@ -84,24 +71,21 @@ def select_config():
         sys.exit(1)
     
     print("\n=== Riepilogo Configurazione ===")
-    print(f"Database: {'ABILITATO' if use_db else 'DISABILITATO'}")
     print(f"Timeframes: {', '.join(selected_timeframes)}")
     print(f"Modelli: {', '.join(selected_models)}")
     print("===============================\n")
     
-    return selected_timeframes, selected_models, use_db
+    return selected_timeframes, selected_models
 
 # Esegui la selezione e aggiorna la configurazione
-selected_timeframes, selected_models, use_database = select_config()
+selected_timeframes, selected_models = select_config()
 import config
 config.ENABLED_TIMEFRAMES = selected_timeframes
 config.TIMEFRAME_DEFAULT = selected_timeframes[0]
-config.USE_DATABASE = use_database
 
 # Aggiorna le variabili locali per comodità
 ENABLED_TIMEFRAMES = selected_timeframes
 TIMEFRAME_DEFAULT = ENABLED_TIMEFRAMES[0]
-USE_DATABASE = use_database  # Aggiorna la variabile locale
 
 # --- Calcolo dei pesi raw e normalizzati per i modelli ---
 raw_weights = {}
@@ -140,13 +124,7 @@ async def trade_signals():
             predicted_sells = []
             predicted_neutrals = []
 
-            # Database operations only if USE_DATABASE is enabled
-            if USE_DATABASE:
-                logging.info(colored("Statistiche iniziali (DB):", "cyan"))
-                print_trade_statistics()
-                await load_existing_positions(async_exchange)
-            else:
-                logging.info(colored("Uso del database disattivato. Statistiche non disponibili.", "cyan"))
+            logging.info(colored("Inizio analisi simboli.", "cyan"))
 
             markets = await fetch_markets(async_exchange)
             all_symbols_analysis = [m['symbol'] for m in markets.values() if m.get('quote') == 'USDT'
@@ -227,15 +205,13 @@ async def trade_signals():
                     if result == "insufficient_balance":
                         logging.info(f"{colored(symbol, 'yellow')}: Trade non eseguito per mancanza di balance.")
                         break
+                    elif result == "max_trades_reached":
+                        logging.info(f"{colored(symbol, 'yellow')}: Trade non eseguito - limite massimo trade raggiunto (3 posizioni).")
+                        break
                 except Exception as e:
                     logging.error(f"{colored('❌ Error processing', 'red')} {symbol}: {e}")
                 logging.info(colored("-" * 60, "white"))
 
-            # Database operations only if USE_DATABASE is enabled
-            if USE_DATABASE:
-                logging.info(colored("Fine ciclo: aggiornamento statistiche.", "cyan"))
-                print_trade_statistics()
-                save_trade_statistics()
             logging.info(colored("Bot is running", "green"))
 
             await countdown_timer(TRADE_CYCLE_INTERVAL)
@@ -248,29 +224,11 @@ async def trade_signals():
 async def main():
     global async_exchange, lstm_models, lstm_scalers, rf_models, rf_scalers, xgb_models, xgb_scalers, min_amounts
 
-    # Database operations only if USE_DATABASE is enabled
-    if USE_DATABASE:
-        # Se RESET_DB_ON_STARTUP è attivo e il file DB esiste, rimuovilo per partire da zero
-        if RESET_DB_ON_STARTUP and os.path.exists(DB_FILE):
-            os.remove(DB_FILE)
-            print("Database file removed as per config; starting fresh.")
-        init_db()
-        # Inizializza le tabelle in base a config.ENABLED_TIMEFRAMES (già aggiornato tramite input)
-        init_data_tables()
-        # Aggiorna schema database esistente per aggiungere la colonna volatility
-        fix_db_schema_for_volatility()
-    else:
-        logging.info(colored("Uso del database disattivato. Procedendo direttamente con training/trading.", "cyan"))
+    logging.info(colored("Avvio bot senza database.", "cyan"))
 
     async_exchange = ccxt_async.bybit(exchange_config)
     await async_exchange.load_markets()
     await async_exchange.load_time_difference()
-
-    # Database operations only if USE_DATABASE is enabled
-    if USE_DATABASE:
-        clean_old_trades()
-        await update_closed_orders_from_account(async_exchange)
-        await load_existing_positions(async_exchange)
 
     try:
         markets = await fetch_markets(async_exchange)
@@ -339,28 +297,15 @@ async def main():
                 else:
                     raise Exception(f"XGBoost model for timeframe {tf} not available. Train models first.")
 
-        # Save trade statistics if database is enabled
-        if USE_DATABASE:
-            save_trade_statistics()
-            await load_existing_positions(async_exchange)
-        
         logging.info(colored("Modelli caricati da disco o allenati per tutti i timeframe abilitati.", "magenta"))
 
         trade_count = len(top_symbols_analysis)
         logging.info(f"{colored('Numero totale di trade stimati (basato sui simboli per analisi):', 'cyan')} {colored(str(trade_count), 'yellow')}")
 
-        if USE_DATABASE:
-            # Include database monitoring functions only if database is enabled
-            await asyncio.gather(
-                trade_signals(),
-                monitor_open_trades(async_exchange),
-                track_orders()
-            )
-        else:
-            # Skip database monitoring functions if database is disabled
-            await asyncio.gather(
-                trade_signals()
-            )
+        # Avvia solo il trading signals senza funzioni database
+        await asyncio.gather(
+            trade_signals()
+        )
     except KeyboardInterrupt:
         logging.info(colored("Interrupt signal received. Shutting down...", "red"))
     except Exception as e:

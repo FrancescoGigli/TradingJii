@@ -83,13 +83,6 @@ def get_rf_scaler_file(tf: str)   -> str: return str(_TRAINED_DIR / f"rf_scaler_
 def get_xgb_model_file(tf: str)   -> str: return str(_TRAINED_DIR / f"xgb_model_{tf}.pkl")
 def get_xgb_scaler_file(tf: str)  -> str: return str(_TRAINED_DIR / f"xgb_scaler_{tf}.pkl")
 
-# ----------------------------------------------------------------------
-# Database & statistiche
-# ----------------------------------------------------------------------
-DB_FILE = "trade_history.db"
-RESET_DB_ON_STARTUP = True
-TRADE_STATISTICS_DAYS = 30
-USE_DATABASE = True
 
 EXCLUDED_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 TOP_TRAIN_CRYPTO = 30
