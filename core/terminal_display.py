@@ -1,0 +1,341 @@
+"""
+Advanced Terminal Display System for Trading Bot
+
+FEATURES:
+- Colorful trading dashboard
+- Signal summary tables
+- Performance metrics display
+- Real-time portfolio overview
+- Enhanced visual indicators
+"""
+
+import os
+import logging
+from termcolor import colored
+from datetime import datetime
+import pandas as pd
+from typing import Dict, List, Optional, Any
+
+class TradingTerminalDisplay:
+    """
+    Enhanced terminal display system for professional trading bot interface
+    """
+    
+    def __init__(self):
+        self.signals_history = []
+        self.session_stats = {
+            'total_signals': 0,
+            'buy_signals': 0,
+            'sell_signals': 0,
+            'neutral_signals': 0,
+            'start_time': datetime.now()
+        }
+        
+    def clear_screen(self):
+        """Clear terminal screen"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+    def print_header(self, mode="DEMO"):
+        """Print colorful header with bot info"""
+        print(colored("=" * 100, "cyan"))
+        print(colored("🤖 TRAE TRADING BOT - RISTRUTTURATO & OTTIMIZZATO", "yellow", attrs=['bold']))
+        print(colored("=" * 100, "cyan"))
+        
+        mode_color = "magenta" if mode == "DEMO" else "red"
+        mode_icon = "🎮" if mode == "DEMO" else "🔴"
+        
+        print(f"{colored('MODE:', 'white')} {colored(mode_icon + ' ' + mode, mode_color, attrs=['bold'])}")
+        print(f"{colored('TIME:', 'white')} {colored(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'green')}")
+        print(f"{colored('STATUS:', 'white')} {colored('✅ OPERATIONAL', 'green', attrs=['bold'])}")
+        print(colored("-" * 100, "blue"))
+        
+    def print_session_summary(self):
+        """Print session statistics summary"""
+        runtime = datetime.now() - self.session_stats['start_time']
+        hours, remainder = divmod(runtime.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        print(colored("📊 SESSION SUMMARY", "yellow", attrs=['bold']))
+        print(colored("-" * 50, "yellow"))
+        
+        print(f"{colored('⏰ Runtime:', 'cyan')} {colored(f'{hours:02d}h {minutes:02d}m {seconds:02d}s', 'white')}")
+        print(f"{colored('🎯 Total Signals:', 'cyan')} {colored(str(self.session_stats['total_signals']), 'white')}")
+        print(f"{colored('📈 BUY Signals:', 'cyan')} {colored(str(self.session_stats['buy_signals']), 'green')}")
+        print(f"{colored('📉 SELL Signals:', 'cyan')} {colored(str(self.session_stats['sell_signals']), 'red')}")
+        print(f"{colored('😐 NEUTRAL Signals:', 'cyan')} {colored(str(self.session_stats['neutral_signals']), 'yellow')}")
+        
+        if self.session_stats['total_signals'] > 0:
+            buy_pct = (self.session_stats['buy_signals'] / self.session_stats['total_signals']) * 100
+            sell_pct = (self.session_stats['sell_signals'] / self.session_stats['total_signals']) * 100
+            print(f"{colored('📊 Signal Distribution:', 'cyan')} {colored(f'{buy_pct:.1f}% BUY', 'green')} | {colored(f'{sell_pct:.1f}% SELL', 'red')}")
+        
+        print(colored("-" * 50, "yellow"))
+        
+    def print_signal_table(self, recent_signals_limit=10):
+        """Print recent signals in a formatted table"""
+        if not self.signals_history:
+            return
+            
+        print(colored("📋 RECENT TRADING SIGNALS", "yellow", attrs=['bold']))
+        print(colored("-" * 100, "yellow"))
+        
+        # Table header
+        header = f"{'TIME':<8} {'SYMBOL':<20} {'SIGNAL':<6} {'CONFIDENCE':<10} {'PRICE':<12} {'STOP LOSS':<12} {'RISK':<8}"
+        print(colored(header, "white", attrs=['bold']))
+        print(colored("-" * 100, "white"))
+        
+        # Recent signals (last N)
+        recent_signals = self.signals_history[-recent_signals_limit:]
+        for signal in recent_signals:
+            time_str = signal['time'].strftime("%H:%M")
+            symbol_short = signal['symbol'].replace('/USDT:USDT', '').ljust(20)
+            
+            # Color coding for signals
+            if signal['signal'] == 'BUY':
+                signal_colored = colored('📈 BUY', 'green', attrs=['bold'])
+            elif signal['signal'] == 'SELL':
+                signal_colored = colored('📉 SELL', 'red', attrs=['bold'])
+            else:
+                signal_colored = colored('😐 NEUT', 'yellow')
+            
+            confidence_str = f"{signal.get('confidence', 0):.3f}".ljust(10)
+            price_str = f"${signal.get('price', 0):.6f}".ljust(12)
+            stop_loss_str = f"${signal.get('stop_loss', 0):.6f}".ljust(12)
+            risk_str = f"{signal.get('risk_pct', 0):.2f}%".ljust(8)
+            
+            row = f"{time_str:<8} {symbol_short} {signal_colored} {confidence_str} {price_str} {stop_loss_str} {risk_str}"
+            print(row)
+        
+        print(colored("-" * 100, "yellow"))
+    
+    def print_market_overview(self, symbols_data: List[Dict]):
+        """Print market overview with top movers"""
+        if not symbols_data:
+            return
+            
+        print(colored("📈 MARKET OVERVIEW - TOP PERFORMERS", "cyan", attrs=['bold']))
+        print(colored("-" * 80, "cyan"))
+        
+        # Sort by volatility for top movers
+        sorted_symbols = sorted(symbols_data, key=lambda x: abs(x.get('volatility', 0)), reverse=True)[:8]
+        
+        # Table header
+        header = f"{'SYMBOL':<20} {'PRICE':<12} {'RSI':<6} {'VOL%':<8} {'TREND':<8}"
+        print(colored(header, "white", attrs=['bold']))
+        print(colored("-" * 60, "white"))
+        
+        for data in sorted_symbols:
+            symbol_short = data['symbol'].replace('/USDT:USDT', '').ljust(20)
+            price_str = f"${data.get('price', 0):.6f}".ljust(12)
+            rsi = data.get('rsi', 50)
+            rsi_str = f"{rsi:.1f}".ljust(6)
+            vol = data.get('volatility', 0)
+            vol_str = f"{vol:+.2f}%".ljust(8)
+            
+            # Color coding
+            if rsi > 70:
+                rsi_colored = colored(rsi_str, 'red')
+            elif rsi < 30:
+                rsi_colored = colored(rsi_str, 'green')
+            else:
+                rsi_colored = colored(rsi_str, 'yellow')
+                
+            if vol > 0:
+                vol_colored = colored(vol_str, 'green')
+                trend_colored = colored('📈', 'green')
+            elif vol < 0:
+                vol_colored = colored(vol_str, 'red')
+                trend_colored = colored('📉', 'red')
+            else:
+                vol_colored = colored(vol_str, 'yellow')
+                trend_colored = colored('➡️', 'yellow')
+            
+            row = f"{symbol_short} {price_str} {rsi_colored} {vol_colored} {trend_colored}"
+            print(row)
+        
+        print(colored("-" * 80, "cyan"))
+    
+    def print_portfolio_status(self, balance: float, open_positions: int = 0, risk_level: str = "LOW"):
+        """Print portfolio status with risk indicators"""
+        print(colored("💼 PORTFOLIO STATUS", "green", attrs=['bold']))
+        print(colored("-" * 50, "green"))
+        
+        # Balance display
+        balance_str = f"${balance:,.2f}"
+        print(f"{colored('💰 Balance:', 'cyan')} {colored(balance_str, 'yellow', attrs=['bold'])}")
+        print(f"{colored('🔢 Open Positions:', 'cyan')} {colored(str(open_positions), 'white')} / 3 max")
+        
+        # Risk level color coding
+        risk_colors = {'LOW': 'green', 'MEDIUM': 'yellow', 'HIGH': 'red', 'CRITICAL': 'magenta'}
+        risk_color = risk_colors.get(risk_level, 'white')
+        risk_icon = {'LOW': '🟢', 'MEDIUM': '🟡', 'HIGH': '🔴', 'CRITICAL': '🚨'}
+        
+        print(f"{colored('🛡️ Risk Level:', 'cyan')} {colored(risk_icon.get(risk_level, '⚪') + ' ' + risk_level, risk_color, attrs=['bold'])}")
+        print(colored("-" * 50, "green"))
+    
+    def display_signal_decision(self, symbol: str, signal: str, confidence: float, 
+                              price: float, stop_loss: float = None, position_size: float = None,
+                              risk_pct: float = None, atr: float = None):
+        """Display trading signal with enhanced formatting"""
+        
+        # Store signal for history
+        signal_data = {
+            'time': datetime.now(),
+            'symbol': symbol,
+            'signal': signal,
+            'confidence': confidence,
+            'price': price,
+            'stop_loss': stop_loss,
+            'position_size': position_size,
+            'risk_pct': risk_pct
+        }
+        self.signals_history.append(signal_data)
+        
+        # Update session stats
+        self.session_stats['total_signals'] += 1
+        if signal == 'BUY':
+            self.session_stats['buy_signals'] += 1
+        elif signal == 'SELL':
+            self.session_stats['sell_signals'] += 1
+        else:
+            self.session_stats['neutral_signals'] += 1
+        
+        # Display signal box
+        symbol_short = symbol.replace('/USDT:USDT', '')
+        
+        if signal == 'BUY':
+            signal_color = 'green'
+            signal_icon = '🚀'
+            signal_text = 'BUY SIGNAL'
+        elif signal == 'SELL':
+            signal_color = 'red'
+            signal_icon = '📉'
+            signal_text = 'SELL SIGNAL'
+        else:
+            signal_color = 'yellow'
+            signal_icon = '😐'
+            signal_text = 'NEUTRAL'
+        
+        print(colored("╔" + "=" * 78 + "╗", signal_color, attrs=['bold']))
+        print(colored(f"║ {signal_icon} {signal_text.center(72)} ║", signal_color, attrs=['bold']))
+        print(colored("╠" + "=" * 78 + "╣", signal_color))
+        
+        # Signal details
+        print(colored(f"║ 📊 Symbol: {colored(symbol_short, 'yellow', attrs=['bold']).ljust(28)} Confidence: {colored(f'{confidence:.1%}', 'white', attrs=['bold'])} ║", signal_color))
+        print(colored(f"║ 💰 Price: {colored(f'${price:.6f}', 'yellow').ljust(28)} Size: {colored(f'{position_size:.2f}' if position_size else 'N/A', 'white')} ║", signal_color))
+        
+        if stop_loss and risk_pct:
+            stop_distance = abs(price - stop_loss) / price * 100
+            print(colored(f"║ 🛡️ Stop Loss: {colored(f'${stop_loss:.6f}', 'cyan').ljust(24)} Risk: {colored(f'{risk_pct:.2f}%', 'white')} ║", signal_color))
+            print(colored(f"║ 📏 Stop Distance: {colored(f'{stop_distance:.2f}%', 'cyan').ljust(20)} ATR: {colored(f'{atr:.6f}' if atr else 'N/A', 'white')} ║", signal_color))
+        
+        print(colored("╚" + "=" * 78 + "╝", signal_color, attrs=['bold']))
+        print()  # Add spacing
+    
+    def display_analysis_progress(self, current: int, total: int, symbol: str):
+        """Display analysis progress with progress bar"""
+        progress = current / total
+        bar_length = 50
+        filled = int(bar_length * progress)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        
+        symbol_short = symbol.replace('/USDT:USDT', '')
+        progress_line = f"[{current:2d}/{total:2d}] {bar} {progress:.1%} | Analyzing {symbol_short}"
+        
+        print(colored(progress_line, "cyan"), end='\r')
+        
+    def display_cycle_complete(self):
+        """Display cycle completion with statistics"""
+        print(colored("\n🔄 ANALYSIS CYCLE COMPLETE", "green", attrs=['bold']))
+        print(colored("=" * 80, "green"))
+        
+        # Show session summary
+        self.print_session_summary()
+        
+        # Show recent signals table if any
+        if self.signals_history:
+            self.print_signal_table(recent_signals_limit=5)
+        
+        print(colored("⏳ Next cycle in 5 minutes...", "blue", attrs=['bold']))
+        print()
+    
+    def display_model_loading_status(self, timeframes: List[str], status: Dict[str, bool]):
+        """Display model loading status with visual indicators"""
+        print(colored("🧠 ML MODELS STATUS", "purple", attrs=['bold']))
+        print(colored("-" * 40, "purple"))
+        
+        for tf in timeframes:
+            if status.get(tf, False):
+                icon = "✅"
+                color = "green"
+                text = "LOADED"
+            else:
+                icon = "❌"
+                color = "red"
+                text = "FAILED"
+            
+            print(f"{icon} {colored(f'Model {tf}:', 'cyan')} {colored(text, color)}")
+        
+        working_models = sum(1 for s in status.values() if s)
+        total_models = len(status)
+        
+        if working_models == total_models:
+            overall_status = colored("🎉 ALL MODELS OPERATIONAL", "green", attrs=['bold'])
+        elif working_models > 0:
+            overall_status = colored(f"⚠️ {working_models}/{total_models} MODELS WORKING", "yellow", attrs=['bold'])
+        else:
+            overall_status = colored("🚨 NO MODELS AVAILABLE", "red", attrs=['bold'])
+        
+        print(f"\n{overall_status}")
+        print(colored("-" * 40, "purple"))
+        print()
+    
+    def display_countdown_enhanced(self, seconds: int):
+        """Enhanced countdown with visual elements"""
+        minutes, secs = divmod(seconds, 60)
+        countdown_str = f"⏳ Next cycle: {minutes:02d}:{secs:02d}"
+        
+        # Color changes based on time left
+        if seconds > 180:  # > 3 minutes
+            color = "green"
+        elif seconds > 60:  # > 1 minute
+            color = "yellow"
+        else:  # < 1 minute
+            color = "red"
+        
+        print(colored(countdown_str, color, attrs=['bold']), end='\r')
+
+
+# Global display instance
+terminal_display = TradingTerminalDisplay()
+
+def init_terminal_display(mode="DEMO"):
+    """Initialize enhanced terminal display"""
+    terminal_display.clear_screen()
+    terminal_display.print_header(mode)
+
+def display_enhanced_signal(symbol: str, signal: str, confidence: float, 
+                          price: float, stop_loss: float = None, 
+                          position_size: float = None, risk_pct: float = None, 
+                          atr: float = None):
+    """Display enhanced signal with all details"""
+    terminal_display.display_signal_decision(
+        symbol, signal, confidence, price, stop_loss, 
+        position_size, risk_pct, atr
+    )
+
+def display_analysis_progress(current: int, total: int, symbol: str):
+    """Display analysis progress"""
+    terminal_display.display_analysis_progress(current, total, symbol)
+
+def display_cycle_complete():
+    """Display cycle completion"""
+    terminal_display.display_cycle_complete()
+
+def display_model_status(timeframes: List[str], status: Dict[str, bool]):
+    """Display model loading status"""
+    terminal_display.display_model_loading_status(timeframes, status)
+
+def display_portfolio_status(balance: float, open_positions: int = 0, risk_level: str = "LOW"):
+    """Display portfolio status"""
+    terminal_display.print_portfolio_status(balance, open_positions, risk_level)

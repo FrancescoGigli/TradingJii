@@ -13,6 +13,15 @@ from config import (
 )
 from data_utils import prepare_data
 
+# Import the robust ML predictor
+try:
+    from core.ml_predictor import predict_signal_ensemble as robust_predict_signal_ensemble
+    ROBUST_PREDICTOR_AVAILABLE = True
+    logging.info("✅ Robust ML Predictor loaded successfully")
+except ImportError as e:
+    logging.warning(f"⚠️ Robust ML Predictor not available: {e}")
+    ROBUST_PREDICTOR_AVAILABLE = False
+
 def get_color_normal(value):
     if value > COLOR_THRESHOLD_GREEN:
         return "green"
@@ -58,150 +67,142 @@ def predict_signal_for_model(df, model, scaler, symbol, time_steps, expected_fea
             logging.error(f"{symbol} [{timeframe}]: dati insufficienti ({len(data)} elementi, richiesti {time_steps}).")
             return None
 
-        X = data[-time_steps:]
-        # Verifica che non ci siano NaN o infiniti prima dello scaling
-        if np.isnan(X).any() or np.isinf(X).any():
+        # Usa gli ultimi time_steps di dati
+        sequence = data[-time_steps:]
+        
+        # Verifica che non ci siano NaN o infiniti prima del processing
+        if np.isnan(sequence).any() or np.isinf(sequence).any():
             logging.warning(f"{symbol} [{timeframe}]: valori NaN o infiniti trovati nei dati, sostituiti con 0.0")
-            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+            sequence = np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0)
             
-        X_scaled = scaler.transform(X)
-        if X_scaled.shape[1] != expected_features:
-            logging.error(f"{symbol} [{timeframe}]: numero di feature non corretto dopo scaling ({X_scaled.shape[1]} invece di {expected_features}).")
-            return None
-        X_scaled = X_scaled.reshape((1, time_steps, expected_features))
-        probs = model.predict(X_scaled)[0]
+        # Crea temporal features strutturate come nel training
+        from trainer import create_temporal_features
+        temporal_features = create_temporal_features(sequence)
+        
+        # Reshape per il modello (1 sample)
+        X_temporal = temporal_features.reshape(1, -1)
+        
+        # Scale le features
+        X_scaled = scaler.transform(X_temporal)
+        
+        # Predizione
+        probs = model.predict_proba(X_scaled)[0]
         pred = np.argmax(probs)
         return pred
     except Exception as e:
         logging.error(f"Errore in prediction per {symbol} [{timeframe}]: {e}")
         return None
 
-def predict_signal_ensemble(dataframes,
-                            lstm_models, lstm_scalers,
-                            rf_models, rf_scalers,
-                            xgb_models, xgb_scalers,
-                            symbol, time_steps,
-                            weight_lstm, weight_rf, weight_xgb):
-    lstm_preds = {}
-    rf_preds = {}
+def predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_steps):
+    """
+    Enhanced predict_signal_ensemble with robust error handling
+    
+    PRIORITY: Use robust predictor if available, fallback to original logic if needed
+    """
+    
+    # Try robust predictor first if available
+    if ROBUST_PREDICTOR_AVAILABLE:
+        try:
+            return robust_predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_steps)
+        except Exception as e:
+            logging.warning(f"⚠️ Robust predictor failed for {symbol}, falling back to original logic: {e}")
+    
+    # FALLBACK: Original logic with enhanced error checking
+    logging.info(f"🔄 Using fallback prediction logic for {symbol}")
+    
+    # Enhanced model/scaler validation
+    working_timeframes = []
+    for tf in dataframes.keys():
+        if (tf in xgb_models and tf in xgb_scalers and 
+            xgb_models[tf] is not None and xgb_scalers[tf] is not None):
+            working_timeframes.append(tf)
+        else:
+            logging.warning(f"⚠️ Skipping {tf} for {symbol}: model or scaler not available")
+    
+    if not working_timeframes:
+        logging.error(f"❌ No working models available for {symbol}")
+        return None, None, {}
+    
     xgb_preds = {}
     
-    for tf, df in dataframes.items():
-        # Predizione LSTM
-        lstm_pred = predict_signal_for_model(df, lstm_models.get(tf), lstm_scalers.get(tf), symbol, time_steps, timeframe=tf)
-        if lstm_pred is None:
-            logging.error(f"{symbol} [{tf}]: predizione LSTM fallita.")
-            return None, None, None
-        # Predizione RF
-        try:
-            # Verifica che il DataFrame contenga esattamente le colonne attese
-            if not set(df.columns) == set(EXPECTED_COLUMNS):
-                missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
-                extra_cols = set(df.columns) - set(EXPECTED_COLUMNS)
-                error_msg = f"{symbol} [{tf}]: DataFrame con colonne non corrette per RF."
-                if missing_cols:
-                    error_msg += f" Mancanti: {missing_cols}."
-                if extra_cols:
-                    error_msg += f" Extra: {extra_cols}."
-                logging.error(error_msg)
-                return None, None, None
-            
-            # Assicurati che le colonne siano nell'ordine corretto
-            df_rf = df[EXPECTED_COLUMNS]
-            data_rf = df_rf.values
-            
-            if len(data_rf) < time_steps:
-                logging.error(f"{symbol} [{tf}]: dati insufficienti per RF ({len(data_rf)} elementi, richiesti {time_steps}).")
-                return None, None, None
-                
-            # Assicurati che non ci siano NaN o infiniti nei dati
-            if np.isnan(data_rf).any() or np.isinf(data_rf).any():
-                logging.warning(f"{symbol} [{tf}]: valori NaN o infiniti trovati nei dati RF, sostituiti con 0.0")
-                data_rf = np.nan_to_num(data_rf, nan=0.0, posinf=0.0, neginf=0.0)
-                
-            X_rf = data_rf[-time_steps:].flatten().reshape(1, -1)
-            X_rf_scaled = rf_scalers.get(tf).transform(X_rf)
-            expected_rf_features = time_steps * len(EXPECTED_COLUMNS)
-            if X_rf_scaled.shape[1] != expected_rf_features:
-                logging.error(f"{symbol} [{tf}]: numero di feature RF non corretto ({X_rf_scaled.shape[1]} invece di {expected_rf_features}).")
-                return None, None, None
-            probs = rf_models.get(tf).predict_proba(X_rf_scaled)[0]
-            rf_pred = np.argmax(probs)
-        except Exception as e:
-            logging.error(f"{symbol} [{tf}]: errore nella predizione RF: {e}")
-            return None, None, None
+    for tf in working_timeframes:
+        df = dataframes[tf]
+        model = xgb_models[tf]
+        scaler = xgb_scalers[tf]
         
-        # Predizione XGBoost
         try:
-            # Verifica che il DataFrame contenga esattamente le colonne attese
-            if not set(df.columns) == set(EXPECTED_COLUMNS):
+            # Validate DataFrame structure
+            if not set(df.columns) >= set(EXPECTED_COLUMNS):
                 missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
-                extra_cols = set(df.columns) - set(EXPECTED_COLUMNS)
-                error_msg = f"{symbol} [{tf}]: DataFrame con colonne non corrette per XGB."
-                if missing_cols:
-                    error_msg += f" Mancanti: {missing_cols}."
-                if extra_cols:
-                    error_msg += f" Extra: {extra_cols}."
-                logging.error(error_msg)
-                return None, None, None
+                logging.error(f"{symbol} [{tf}]: Missing columns {missing_cols}")
+                continue
             
-            # Assicurati che le colonne siano nell'ordine corretto
+            # Prepare data with extra safety
             df_xgb = df[EXPECTED_COLUMNS]
             data_xgb = df_xgb.values
             
             if len(data_xgb) < time_steps:
-                logging.error(f"{symbol} [{tf}]: dati insufficienti per XGB ({len(data_xgb)} elementi, richiesti {time_steps}).")
-                return None, None, None
+                logging.warning(f"{symbol} [{tf}]: Insufficient data {len(data_xgb)} < {time_steps}")
+                continue
                 
-            # Assicurati che non ci siano NaN o infiniti nei dati
-            if np.isnan(data_xgb).any() or np.isinf(data_xgb).any():
-                logging.warning(f"{symbol} [{tf}]: valori NaN o infiniti trovati nei dati XGB, sostituiti con 0.0")
-                data_xgb = np.nan_to_num(data_xgb, nan=0.0, posinf=0.0, neginf=0.0)
+            # Clean data aggressively
+            data_xgb = np.nan_to_num(data_xgb, nan=0.0, posinf=0.0, neginf=0.0)
+            sequence_xgb = data_xgb[-time_steps:]
+            
+            # Create temporal features with error handling
+            try:
+                from trainer import create_temporal_features
+                temporal_features_xgb = create_temporal_features(sequence_xgb)
+            except Exception as feat_error:
+                logging.error(f"Feature creation failed for {symbol}[{tf}]: {feat_error}")
+                # Fallback: use simple flattened features
+                temporal_features_xgb = sequence_xgb.flatten()
+            
+            # Reshape and scale
+            X_xgb = temporal_features_xgb.reshape(1, -1)
+            
+            # Extra safety check for scaler
+            try:
+                X_xgb_scaled = scaler.transform(X_xgb)
+            except Exception as scale_error:
+                logging.error(f"Scaling failed for {symbol}[{tf}]: {scale_error}")
+                continue
+            
+            # Predict with extra validation
+            try:
+                probs = model.predict_proba(X_xgb_scaled)[0]
+                xgb_pred = np.argmax(probs)
+                xgb_preds[tf] = xgb_pred
+                logging.debug(f"{symbol} [{tf}] - XGB: {xgb_pred} (confidence: {np.max(probs):.3f})")
+            except Exception as pred_error:
+                logging.error(f"Model prediction failed for {symbol}[{tf}]: {pred_error}")
+                continue
                 
-            X_xgb = data_xgb[-time_steps:].flatten().reshape(1, -1)
-            X_xgb_scaled = xgb_scalers.get(tf).transform(X_xgb)
-            expected_xgb_features = time_steps * len(EXPECTED_COLUMNS)
-            if X_xgb_scaled.shape[1] != expected_xgb_features:
-                logging.error(f"{symbol} [{tf}]: numero di feature XGB non corretto ({X_xgb_scaled.shape[1]} invece di {expected_xgb_features}).")
-                return None, None, None
-            probs = xgb_models.get(tf).predict_proba(X_xgb_scaled)[0]
-            xgb_pred = np.argmax(probs)
         except Exception as e:
-            logging.error(f"{symbol} [{tf}]: errore nella predizione XGB: {e}")
-            return None, None, None
+            logging.error(f"❌ Prediction error for {symbol}[{tf}]: {e}")
+            continue
 
-        lstm_preds[tf] = lstm_pred
-        rf_preds[tf] = rf_pred
-        xgb_preds[tf] = xgb_pred
-
-    # Calcola l'RSI utilizzando il timeframe predefinito da config
-    try:
-        rsi_value = dataframes[config.TIMEFRAME_DEFAULT]['rsi_fast'].iloc[-1]
-    except Exception as e:
-        logging.warning(f"Error calculating RSI for {symbol} on timeframe {config.TIMEFRAME_DEFAULT}: {e}. Defaulting RSI to 50.")
-        rsi_value = 50
-
-    # Collect all predictions across models and timeframes
-    all_votes = []
-    for tf in dataframes.keys():
-        all_votes.append(lstm_preds[tf])
-        all_votes.append(rf_preds[tf])
-        all_votes.append(xgb_preds[tf])
-
-    # Take the majority vote
+    # If no predictions succeeded
+    if not xgb_preds:
+        logging.error(f"❌ All predictions failed for {symbol}")
+        return None, None, {}
+    
+    # Simple ensemble voting
+    all_votes = list(xgb_preds.values())
     votes_counter = {}
     for vote in all_votes:
         votes_counter[vote] = votes_counter.get(vote, 0) + 1
     
     final_signal = max(votes_counter.items(), key=lambda x: x[1])[0]
-    logging.info(f"{symbol}: segnale finale {final_signal} (vote counts: {votes_counter})")
-
-    for tf in dataframes.keys():
-        logging.info(f"{symbol} [{tf}] - LSTM: {lstm_preds[tf]:.4f}, RF: {rf_preds[tf]:.4f}, XGB: {xgb_preds[tf]:.4f}")
-    logging.info(f"{symbol} - RSI ({config.TIMEFRAME_DEFAULT}): {rsi_value:.0f}")
-    
-    # Calculate the confidence of the majority vote
     total_votes = sum(votes_counter.values())
     confidence_value = votes_counter[final_signal] / total_votes
     
-    return confidence_value, final_signal, (lstm_preds, rf_preds, xgb_preds, rsi_value)
+    # Log results
+    logging.info(f"{symbol}: Final signal {final_signal} with {confidence_value:.3f} confidence (votes: {votes_counter})")
+    
+    # Apply confidence threshold
+    if confidence_value < 0.6:  # Simple threshold
+        logging.info(f"{symbol}: Low confidence {confidence_value:.3f}, returning None")
+        return confidence_value, None, xgb_preds
+    
+    return confidence_value, final_signal, xgb_preds
