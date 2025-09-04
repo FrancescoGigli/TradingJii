@@ -18,4 +18,18 @@ __pycache__/
 # Cartelle temporanee o di tuning
 lstm_tuning/
 
+# File di testo generici
 *.txt
+
+# Visualizzazioni generate automaticamente
+visualizations/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# File di dati temporanei
+logs/
+*.csv
+*.json
+orders_status.json

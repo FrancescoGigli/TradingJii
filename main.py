@@ -260,6 +260,79 @@ async def run_integrated_backtest(symbol, timeframe, exchange):
     except Exception as e:
         logging.warning(f"Backtest demo failed for {symbol}: {e}")
 
+async def generate_signal_backtest(symbol, dataframes, signal):
+    """
+    Genera automaticamente un backtest completo per il segnale eseguito
+    """
+    try:
+        from core.visualization import run_symbol_backtest
+        from trainer import label_with_future_returns
+        from datetime import datetime, timedelta
+        import config
+        
+        logging.info(colored(f"📊 Generating comprehensive backtest for {symbol}", "blue"))
+        
+        # Per ogni timeframe, genera un backtest dettagliato
+        for tf, df in dataframes.items():
+            try:
+                # Genera le predizioni storiche usando la stessa logica del training
+                historical_predictions = label_with_future_returns(
+                    df,
+                    lookforward_steps=config.FUTURE_RETURN_STEPS,
+                    buy_threshold=config.RETURN_BUY_THRESHOLD,
+                    sell_threshold=config.RETURN_SELL_THRESHOLD
+                )
+                
+                # Test su diverse finestre temporali
+                test_periods = [
+                    {"name": "Last_7_days", "days": 7},
+                    {"name": "Last_30_days", "days": 30},
+                    {"name": "Last_90_days", "days": 90}
+                ]
+                
+                for period in test_periods:
+                    try:
+                        # Calcola date di inizio e fine
+                        end_date = datetime.now()
+                        start_date = end_date - timedelta(days=period["days"])
+                        
+                        # Assicurati che ci siano abbastanza dati
+                        period_df = df[df.index >= start_date.strftime('%Y-%m-%d')]
+                        if len(period_df) < 50:  # Minimo 50 candele
+                            continue
+                        
+                        # Esegui backtest per questo periodo
+                        backtest_results = run_symbol_backtest(
+                            symbol, df, historical_predictions, tf,
+                            start_date=start_date.strftime('%Y-%m-%d'),
+                            end_date=end_date.strftime('%Y-%m-%d')
+                        )
+                        
+                        if backtest_results.get('stats'):
+                            stats = backtest_results['stats']
+                            
+                            logging.info(colored(f"📊 {symbol} [{tf}] - {period['name']} Backtest:", "green"))
+                            logging.info(colored(f"   💰 Return: {stats['total_return_pct']:.2f}% | Win Rate: {stats['win_rate']:.1f}% | Trades: {stats['total_trades']}", "yellow"))
+                            logging.info(colored(f"   📈 Sharpe: {stats['sharpe_ratio']:.3f} | Avg Return: {stats['avg_return']:.2f}%", "yellow"))
+                            
+                    except Exception as period_error:
+                        logging.warning(f"Failed to generate {period['name']} backtest for {symbol}[{tf}]: {period_error}")
+                        continue
+                
+                # Aggiungi analisi della confidence del segnale attuale
+                logging.info(colored(f"🎯 Current Signal Analysis for {symbol} [{tf}]:", "cyan"))
+                logging.info(colored(f"   Signal: {signal['signal_name']} | Confidence: {signal['confidence']:.1%}", "cyan"))
+                logging.info(colored(f"   Reasoning: {signal['confidence_explanation']}", "cyan"))
+                
+            except Exception as tf_error:
+                logging.warning(f"Failed to generate backtest for {symbol}[{tf}]: {tf_error}")
+                continue
+        
+        logging.info(colored(f"✅ Backtesting completed for {symbol} - Check visualizations folder for charts", "green"))
+        
+    except Exception as e:
+        logging.error(f"Error generating signal backtest for {symbol}: {e}")
+
 def calculate_ensemble_confidence(tf_predictions, ensemble_value):
     """
     Calcola come viene determinata la confidence dell'ensemble
@@ -397,7 +470,7 @@ async def trade_signals():
                 
                 print(colored("-" * 120, "yellow"))
                 
-                # PHASE 3: EXECUTE BEST SIGNALS
+                # PHASE 3: EXECUTE BEST SIGNALS AND GENERATE BACKTESTS
                 max_positions = 3 - open_positions_count
                 signals_to_execute = all_signals[:min(max_positions, len(all_signals))]
                 
@@ -412,10 +485,14 @@ async def trade_signals():
                             
                             logging.info(colored(f"🎯 Executing {signal['signal_name']} for {symbol} (confidence: {signal['confidence']:.1%})", "cyan"))
                             
+                            # Execute the trade
                             result = await manage_position(
                                 async_exchange, symbol, final_signal, usdt_balance, min_amounts,
                                 None, None, None, None, dataframes[TIMEFRAME_DEFAULT]
                             )
+                            
+                            # Generate automatic backtest for this signal
+                            await generate_signal_backtest(symbol, dataframes, signal)
                             
                             if result == "insufficient_balance":
                                 logging.warning(f"❌ {symbol}: Insufficient balance")

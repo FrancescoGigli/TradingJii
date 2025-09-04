@@ -178,7 +178,7 @@ class TradingVisualizer:
         Returns: backtest results dictionary
         """
         try:
-            logging.info(f"🔄 Running backtest for {symbol} [{timeframe}]")
+            logging.info(f"🔄 Running enhanced backtest for {symbol} [{timeframe}]")
             
             # Prepare data
             if start_date:
@@ -191,23 +191,58 @@ class TradingVisualizer:
             df = df.iloc[-min_len:]
             predictions = predictions[-min_len:]
             
-            # Initialize backtest variables
+            # Initialize backtest variables with enhanced tracking
             initial_balance = 10000  # $10k starting capital
             balance = initial_balance
             position = 0  # 0=no position, 1=long, -1=short
             entry_price = 0
             trades = []
             equity_curve = [initial_balance]
+            drawdowns = []
+            daily_returns = []
             
-            # Run simulation
+            # Enhanced signal accuracy tracking
+            signal_accuracy = {'correct': 0, 'total': 0}
+            
+            # Run enhanced simulation
             for i in range(1, len(df)):
                 current_price = df.iloc[i]['close']
                 signal = predictions[i]
                 prev_balance = balance
                 
-                # Close existing position if signal changes
+                # Calculate daily return if 24h passed
+                if i % 96 == 0:  # Roughly daily for 15m timeframe
+                    daily_return = (balance - prev_balance) / prev_balance * 100
+                    daily_returns.append(daily_return)
+                
+                # Close existing position if signal changes or take profit/stop loss
                 if position != 0:
+                    should_close = False
+                    exit_reason = ""
+                    
                     if (position == 1 and signal == 0) or (position == -1 and signal == 1):
+                        should_close = True
+                        exit_reason = "Signal Change"
+                    
+                    # Take profit at 5% or stop loss at 3%
+                    if position == 1:  # Long position
+                        pnl_current = (current_price - entry_price) / entry_price * 100
+                        if pnl_current >= 5.0:
+                            should_close = True
+                            exit_reason = "Take Profit"
+                        elif pnl_current <= -3.0:
+                            should_close = True
+                            exit_reason = "Stop Loss"
+                    else:  # Short position
+                        pnl_current = (entry_price - current_price) / entry_price * 100
+                        if pnl_current >= 5.0:
+                            should_close = True
+                            exit_reason = "Take Profit"
+                        elif pnl_current <= -3.0:
+                            should_close = True
+                            exit_reason = "Stop Loss"
+                    
+                    if should_close:
                         # Close position
                         if position == 1:  # Close long
                             pnl = (current_price - entry_price) / entry_price
@@ -216,6 +251,11 @@ class TradingVisualizer:
                         
                         balance *= (1 + pnl * 0.95)  # 5% slippage/fees
                         
+                        # Check signal accuracy
+                        if (position == 1 and pnl > 0) or (position == -1 and pnl > 0):
+                            signal_accuracy['correct'] += 1
+                        signal_accuracy['total'] += 1
+                        
                         trades.append({
                             'entry_time': df.index[entry_idx],
                             'exit_time': df.index[i],
@@ -223,7 +263,9 @@ class TradingVisualizer:
                             'entry_price': entry_price,
                             'exit_price': current_price,
                             'pnl_pct': pnl * 100,
-                            'balance': balance
+                            'balance': balance,
+                            'exit_reason': exit_reason,
+                            'duration_hours': (df.index[i] - df.index[entry_idx]).total_seconds() / 3600
                         })
                         
                         position = 0
@@ -240,52 +282,68 @@ class TradingVisualizer:
                         entry_idx = i
                 
                 equity_curve.append(balance)
+                
+                # Track drawdown
+                peak = max(equity_curve)
+                if peak > 0:
+                    drawdown = (peak - balance) / peak * 100
+                    drawdowns.append(drawdown)
             
-            # Calculate statistics
+            # Calculate enhanced statistics
             if trades:
                 returns = [t['pnl_pct'] for t in trades]
                 win_trades = [r for r in returns if r > 0]
                 lose_trades = [r for r in returns if r <= 0]
+                durations = [t['duration_hours'] for t in trades]
+                
+                # Calculate Sortino ratio
+                downside_returns = [r for r in returns if r < 0]
+                sortino_ratio = np.mean(returns) / np.std(downside_returns) if downside_returns and np.std(downside_returns) > 0 else 0
+                
+                total_return_pct = ((balance - initial_balance) / initial_balance) * 100
+                max_dd = max(drawdowns) if drawdowns else 0
                 
                 stats = {
-                    'total_return_pct': ((balance - initial_balance) / initial_balance) * 100,
+                    'total_return_pct': total_return_pct,
                     'total_trades': len(trades),
                     'win_rate': len(win_trades) / len(trades) * 100 if trades else 0,
+                    'signal_accuracy': signal_accuracy['correct'] / signal_accuracy['total'] * 100 if signal_accuracy['total'] > 0 else 0,
                     'avg_return': np.mean(returns) if returns else 0,
                     'avg_win': np.mean(win_trades) if win_trades else 0,
                     'avg_loss': np.mean(lose_trades) if lose_trades else 0,
                     'max_return': max(returns) if returns else 0,
                     'min_return': min(returns) if returns else 0,
-                    'sharpe_ratio': np.mean(returns) / np.std(returns) if returns and np.std(returns) > 0 else 0
+                    'sharpe_ratio': np.mean(returns) / np.std(returns) if returns and np.std(returns) > 0 else 0,
+                    'sortino_ratio': sortino_ratio,
+                    'max_drawdown': max_dd,
+                    'avg_trade_duration': np.mean(durations) if durations else 0,
+                    'profit_factor': abs(sum(win_trades) / sum(lose_trades)) if lose_trades and sum(lose_trades) != 0 else float('inf') if win_trades else 0,
+                    'recovery_factor': abs(total_return_pct / max_dd) if max_dd > 0 else float('inf')
                 }
             else:
                 stats = {
-                    'total_return_pct': 0,
-                    'total_trades': 0,
-                    'win_rate': 0,
-                    'avg_return': 0,
-                    'avg_win': 0,
-                    'avg_loss': 0,
-                    'max_return': 0,
-                    'min_return': 0,
-                    'sharpe_ratio': 0
+                    'total_return_pct': 0, 'total_trades': 0, 'win_rate': 0, 'signal_accuracy': 0,
+                    'avg_return': 0, 'avg_win': 0, 'avg_loss': 0, 'max_return': 0, 'min_return': 0,
+                    'sharpe_ratio': 0, 'sortino_ratio': 0, 'max_drawdown': 0, 'avg_trade_duration': 0,
+                    'profit_factor': 0, 'recovery_factor': 0
                 }
             
-            # Create visualization chart
+            # Create enhanced visualization chart
             self._plot_backtest_results(symbol, df, predictions, equity_curve, 
                                       trades, stats, timeframe)
             
-            # Save backtest results in text format
+            # Save enhanced backtest report
             self._save_backtest_report(symbol, timeframe, stats, trades)
             
-            logging.info(f"✅ Backtest completed for {symbol}: {stats['total_return_pct']:.2f}% return, {stats['win_rate']:.1f}% win rate")
+            logging.info(f"✅ Enhanced backtest completed for {symbol}: {stats['total_return_pct']:.2f}% return, {stats['win_rate']:.1f}% win rate, {stats['signal_accuracy']:.1f}% accuracy")
             
             return {
                 'symbol': symbol,
                 'timeframe': timeframe,
                 'stats': stats,
                 'trades': trades,
-                'equity_curve': equity_curve
+                'equity_curve': equity_curve,
+                'drawdowns': drawdowns
             }
             
         except Exception as e:

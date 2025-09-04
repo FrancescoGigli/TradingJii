@@ -59,6 +59,65 @@ RANK SYMBOL               SIGNAL CONFIDENCE   EXPLANATION                       
 5. **EXPLANATION**: Dettaglio di come è stata calcolata la confidence
 6. **PRICE**: Prezzo attuale al momento dell'analisi
 
+## 📈 Sistema di Backtest Automatico
+
+### 🆕 Nuova Funzionalità: Backtest per Ogni Segnale
+
+Per ogni segnale eseguito, il bot genera automaticamente:
+
+#### **Grafici Dettagliati** (salvati in `visualizations/backtests/`):
+1. **📊 Price Chart con Segnali**: Grafico del prezzo con punti di entrata BUY/SELL
+2. **📈 Equity Curve**: Evoluzione del capitale nel tempo
+3. **📊 Distribuzione Ritorni**: Istogramma delle performance per trade
+4. **📋 Statistiche Performance**: Metriche dettagliate in formato visuale
+5. **🎯 Distribuzione Segnali**: Proporzione BUY/SELL/NEUTRAL
+6. **📈 Ritorni Cumulativi**: Progressione dei guadagni trade per trade
+
+#### **Report Testuali Dettagliati** (salvati in `visualizations/reports/`):
+
+```
+📊 BACKTEST REPORT - MERL/USDT:USDT [15M]
+════════════════════════════════════════════════════════════════════
+⏰ Generated: 2025-09-03 18:22:27
+🎯 Strategy: Future Returns Labeling with XGBoost ML
+📈 Period: Last 30 days
+
+🏆 PERFORMANCE SUMMARY
+──────────────────────────────────
+💰 Total Return:          +12.45%
+🎯 Total Trades:               23
+✅ Win Rate:             65.2%
+📊 Avg Return:            +0.54%
+📈 Avg Win:               +2.31%
+📉 Avg Loss:              -1.87%
+🚀 Best Trade:            +8.92%
+💥 Worst Trade:           -4.15%
+📈 Sharpe Ratio:           1.247
+
+🛡️ RISK ANALYSIS
+──────────────────────────────────
+📊 Max Drawdown:          -4.15%
+📈 Max Gain:              +8.92%
+🎯 Win/Loss Ratio:        15/8
+💎 Profit Factor:          1.84
+📉 Max Consecutive:        3 losses
+🎯 Signal Accuracy:       68.5%
+```
+
+### Periodi di Analisi Automatica
+
+Per ogni segnale, vengono generati backtest su **3 finestre temporali**:
+
+1. **📅 Last 7 Days**: Performance a breve termine
+2. **📅 Last 30 Days**: Performance mensile 
+3. **📅 Last 90 Days**: Performance trimestrale
+
+### Metriche Avanzate Calcolate
+
+#### **📊 Performance Metrics**:
+- **Total Return**: Ritorno totale percentuale
+- **Win Rate**: Percentuale di trade vincenti
+
 ### Dettagli dell'Esecuzione:
 
 ```
