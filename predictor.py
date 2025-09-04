@@ -45,6 +45,9 @@ def predict_signal_for_model(df, model, scaler, symbol, time_steps, expected_fea
         logging.error(f"{symbol} [{timeframe}]: modello o scaler non disponibili.")
         return None
     try:
+        # FIXED: Usa finestra temporale uniforme per ensemble coerente
+        timesteps_needed = config.get_timesteps_for_timeframe(timeframe) if timeframe else time_steps
+        
         # Verifica che il DataFrame contenga esattamente le colonne attese
         if not set(df.columns) == set(EXPECTED_COLUMNS):
             missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
@@ -63,12 +66,15 @@ def predict_signal_for_model(df, model, scaler, symbol, time_steps, expected_fea
         # Assicurati che non ci siano NaN o infiniti nei dati
         data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if len(data) < time_steps:
-            logging.error(f"{symbol} [{timeframe}]: dati insufficienti ({len(data)} elementi, richiesti {time_steps}).")
+        if len(data) < timesteps_needed:
+            logging.error(f"{symbol} [{timeframe}]: dati insufficienti ({len(data)} elementi, richiesti {timesteps_needed} per {config.LOOKBACK_HOURS}h).")
             return None
 
-        # Usa gli ultimi time_steps di dati
-        sequence = data[-time_steps:]
+        # FIXED: Usa la finestra temporale corretta per ogni timeframe
+        sequence = data[-timesteps_needed:]
+        
+        # Log per debug dell'ensemble fix
+        logging.debug(f"{symbol} [{timeframe}]: Using {timesteps_needed} timesteps = {config.LOOKBACK_HOURS}h window")
         
         # Verifica che non ci siano NaN o infiniti prima del processing
         if np.isnan(sequence).any() or np.isinf(sequence).any():
@@ -131,6 +137,9 @@ def predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_st
         scaler = xgb_scalers[tf]
         
         try:
+            # FIXED: Usa timesteps corretti per ogni timeframe
+            timesteps_needed = config.get_timesteps_for_timeframe(tf)
+            
             # Validate DataFrame structure
             if not set(df.columns) >= set(EXPECTED_COLUMNS):
                 missing_cols = set(EXPECTED_COLUMNS) - set(df.columns)
@@ -141,13 +150,16 @@ def predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_st
             df_xgb = df[EXPECTED_COLUMNS]
             data_xgb = df_xgb.values
             
-            if len(data_xgb) < time_steps:
-                logging.warning(f"{symbol} [{tf}]: Insufficient data {len(data_xgb)} < {time_steps}")
+            if len(data_xgb) < timesteps_needed:
+                logging.warning(f"{symbol} [{tf}]: Insufficient data {len(data_xgb)} < {timesteps_needed} for {config.LOOKBACK_HOURS}h")
                 continue
                 
             # Clean data aggressively
             data_xgb = np.nan_to_num(data_xgb, nan=0.0, posinf=0.0, neginf=0.0)
-            sequence_xgb = data_xgb[-time_steps:]
+            sequence_xgb = data_xgb[-timesteps_needed:]
+            
+            # Log ensemble fix
+            logging.debug(f"{symbol} [{tf}]: Using {timesteps_needed} timesteps = {config.LOOKBACK_HOURS}h window")
             
             # Create temporal features with error handling
             try:

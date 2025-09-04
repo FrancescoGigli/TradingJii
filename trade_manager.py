@@ -11,7 +11,7 @@ import json
 
 from config import (
     MARGIN_USDT, LEVERAGE, EXCLUDED_SYMBOLS,
-    TOP_ANALYSIS_CRYPTO, DEMO_MODE, DEMO_BALANCE
+    TOP_ANALYSIS_CRYPTO, DEMO_MODE, DEMO_BALANCE, MAX_CONCURRENT_POSITIONS
 )
 from fetcher import get_top_symbols, get_data_async
 
@@ -36,6 +36,15 @@ try:
 except ImportError as e:
     logging.warning(f"⚠️ Enhanced Terminal Display not available: {e}")
     ENHANCED_DISPLAY_AVAILABLE = False
+
+# Import position tracking system
+try:
+    from core.position_tracker import global_position_tracker
+    POSITION_TRACKER_AVAILABLE = True
+    logging.info("✅ Position Tracker integrated in trade_manager")
+except ImportError as e:
+    logging.warning(f"⚠️ Position Tracker not available: {e}")
+    POSITION_TRACKER_AVAILABLE = False
 
 def is_symbol_excluded(symbol):
     normalized = re.sub(r'[^A-Za-z0-9]', '', symbol).upper()
@@ -245,65 +254,82 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
         logging.info(colored(f"🎮 DEMO | {symbol}: {side} | Balance: {usdt_balance:.2f} USDT | Size: {position_size:.4f}", "magenta"))
     else:
         current_open_positions = await get_open_positions(exchange)
-        logging.info(colored(f"💼 LIVE | {symbol}: {side} | Balance: {usdt_balance:.2f} USDT | Positions: {current_open_positions}/3", "cyan"))
+        logging.info(colored(f"💼 LIVE | {symbol}: {side} | Balance: {usdt_balance:.2f} USDT | Positions: {current_open_positions}/{MAX_CONCURRENT_POSITIONS}", "cyan"))
     
-    # Check position limits
-    max_trades = 3
-    if current_open_positions >= max_trades:
-        logging.info(colored(f"{symbol}: Max trade limit reached ({current_open_positions}/{max_trades})", "yellow"))
+    # FIXED: Check position limits using centralized config
+    if current_open_positions >= MAX_CONCURRENT_POSITIONS:
+        logging.info(colored(f"{symbol}: Max trade limit reached ({current_open_positions}/{MAX_CONCURRENT_POSITIONS})", "yellow"))
         return "max_trades_reached"
     
     # Execute based on mode
     if DEMO_MODE:
-        # DEMO MODE: Enhanced display with professional signal box
-        risk_pct = (atr / current_price) * 100 if atr > 0 else 2.0
-        
-        # Use enhanced display if available
-        if ENHANCED_DISPLAY_AVAILABLE:
+        # DEMO MODE: Use position tracker for realistic simulation
+        if POSITION_TRACKER_AVAILABLE:
             try:
-                # Extract confidence from ensemble
+                # Get current wallet balance from position tracker
+                current_wallet = global_position_tracker.session_stats['current_balance']
+                
+                # Calculate position size as 5% of current wallet
+                calculated_position_size = current_wallet * 0.05
+                
+                # Check if we have enough available balance
+                available_balance = global_position_tracker.get_available_balance()
+                
+                if available_balance < calculated_position_size:
+                    logging.warning(colored(f"❌ {symbol}: Insufficient available balance ({available_balance:.2f} < {calculated_position_size:.2f})", "yellow"))
+                    return "insufficient_balance"
+                
+                # FIXED: Check position limits using centralized config
+                active_positions = global_position_tracker.get_active_positions_count()
+                if active_positions >= MAX_CONCURRENT_POSITIONS:
+                    logging.warning(colored(f"❌ {symbol}: Max positions reached ({active_positions}/{MAX_CONCURRENT_POSITIONS})", "yellow"))
+                    return "max_trades_reached"
+                
+                # Extract confidence
                 confidence = predictions.get('confidence', 0.7) if predictions else 0.7
                 
-                # Display professional signal box
-                display_enhanced_signal(
+                # Open position in tracker with TP/SL/Trailing
+                position_id = global_position_tracker.open_position(
                     symbol=symbol,
-                    signal=side.upper(),
+                    side=side,
+                    entry_price=current_price,
+                    position_size=calculated_position_size,
+                    leverage=LEVERAGE,
                     confidence=confidence,
-                    price=current_price,
-                    stop_loss=stop_loss_price,
-                    position_size=position_size,
-                    risk_pct=risk_pct,
                     atr=atr
                 )
                 
-                # Also show portfolio status
-                display_portfolio_status(
-                    balance=usdt_balance,
-                    open_positions=0,  # Demo mode
-                    risk_level="LOW"
-                )
+                # Enhanced display
+                risk_pct = (3.0 / LEVERAGE) if LEVERAGE > 0 else 3.0  # Base risk divided by leverage
                 
-            except Exception as display_error:
-                logging.warning(f"Enhanced display failed: {display_error}")
-                # Fallback to standard display
-                logging.info(colored(
-                    f"🎮 DEMO SIGNAL | {symbol}: {side} | Price: {current_price:.6f} | "
-                    f"Size: {position_size:.4f} | Risk: {risk_pct:.2f}% | ATR: {atr:.6f}",
-                    "magenta"
-                ))
+                if ENHANCED_DISPLAY_AVAILABLE:
+                    display_enhanced_signal(
+                        symbol=symbol,
+                        signal=side.upper(),
+                        confidence=confidence,
+                        price=current_price,
+                        stop_loss=stop_loss_price,
+                        position_size=calculated_position_size,
+                        risk_pct=risk_pct,
+                        atr=atr
+                    )
+                
+                logging.info(colored(f"🎮 DEMO POSITION OPENED | {symbol}: {side} | Balance: {current_wallet:.2f} USDT | Size: {calculated_position_size:.2f} USDT", "magenta"))
+                
+                return position_id
+                
+            except Exception as tracker_error:
+                logging.error(f"Position tracker error: {tracker_error}")
+                return f"demo_signal_{side.lower()}"
         else:
-            # Standard display fallback
+            # Fallback to original demo behavior
+            risk_pct = (atr / current_price) * 100 if atr > 0 else 2.0
             logging.info(colored(
                 f"🎮 DEMO SIGNAL | {symbol}: {side} | Price: {current_price:.6f} | "
                 f"Size: {position_size:.4f} | Risk: {risk_pct:.2f}% | ATR: {atr:.6f}",
                 "magenta"
             ))
-            
-            if stop_loss_price:
-                stop_distance = abs(current_price - stop_loss_price) / current_price * 100
-                logging.info(colored(f"🛡️ DEMO Stop Loss: {stop_loss_price:.6f} ({stop_distance:.2f}% away)", "magenta"))
-        
-        return f"demo_signal_{side.lower()}"
+            return f"demo_signal_{side.lower()}"
     
     else:
         # LIVE MODE: Execute with risk management

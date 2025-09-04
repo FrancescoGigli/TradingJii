@@ -9,6 +9,58 @@ from config import TIMEFRAME_DEFAULT, DATA_LIMIT_DAYS, TOP_ANALYSIS_CRYPTO
 from termcolor import colored
 import re
 import time
+
+def is_candle_closed(candle_timestamp, timeframe):
+    """
+    Determina se una candela è completamente chiusa basandosi sul timeframe.
+    
+    CRITICAL FIX: Assicura consistenza tra backtest e live trading
+    usando solo candele completamente chiuse.
+    
+    Args:
+        candle_timestamp (pd.Timestamp): Timestamp della candela
+        timeframe (str): Timeframe (es. "15m", "1h")
+        
+    Returns:
+        bool: True se la candela è chiusa, False se ancora aperta
+    """
+    try:
+        current_time = pd.Timestamp.now(tz='UTC')
+        
+        # Converti candle_timestamp in UTC se necessario
+        if candle_timestamp.tz is None:
+            candle_timestamp = candle_timestamp.tz_localize('UTC')
+        else:
+            candle_timestamp = candle_timestamp.tz_convert('UTC')
+        
+        # Calcola la durata del timeframe in minuti
+        if timeframe.endswith('m'):
+            minutes = int(timeframe[:-1])
+        elif timeframe.endswith('h'):
+            hours = int(timeframe[:-1])
+            minutes = hours * 60
+        elif timeframe.endswith('d'):
+            days = int(timeframe[:-1])
+            minutes = days * 24 * 60
+        else:
+            logging.warning(f"Unknown timeframe format: {timeframe}, assuming 15m")
+            minutes = 15
+        
+        # Una candela è chiusa se il tempo corrente >= inizio candela + durata timeframe
+        candle_end_time = candle_timestamp + pd.Timedelta(minutes=minutes)
+        is_closed = current_time >= candle_end_time
+        
+        # Log per debug (solo per le ultime candele)
+        if not is_closed:
+            time_remaining = candle_end_time - current_time
+            logging.debug(f"Candle {candle_timestamp} [{timeframe}] still open, closes in {time_remaining}")
+        
+        return is_closed
+        
+    except Exception as e:
+        logging.error(f"Error checking candle closure: {e}")
+        # Safe fallback: assume candle is closed if we can't determine
+        return True
 async def fetch_markets(exchange):
     return await exchange.load_markets()
 
@@ -182,6 +234,17 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
         
         # Add swing probability features (no lookahead bias)
         df_with_indicators = add_swing_probability_features(df_with_indicators)
+        
+        # CRITICAL FIX: Filtra solo candele completamente chiuse per consistenza backtest/live
+        original_length = len(df_with_indicators)
+        closed_candles_mask = df_with_indicators.index.to_series().apply(
+            lambda ts: is_candle_closed(ts, timeframe)
+        )
+        df_with_indicators = df_with_indicators[closed_candles_mask]
+        
+        filtered_count = original_length - len(df_with_indicators)
+        if filtered_count > 0:
+            logging.info(colored(f"🔒 {symbol} [{timeframe}]: Filtered {filtered_count} open candles, using {len(df_with_indicators)} closed candles", "yellow"))
         
         # === LOG COMPLETE LAST CANDLE WITH ALL INDICATORS ===
         try:

@@ -58,7 +58,53 @@ LEVERAGE = 10
 
 ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]
 TIMEFRAME_DEFAULT: str | None = "15m"
-TIME_STEPS = 7
+TIME_STEPS = 7  # DEPRECATED: Use get_timesteps_for_timeframe() instead
+
+# ----------------------------------------------------------------------
+# FIXED: Uniform Time Window for Multi-Timeframe Ensemble
+# ----------------------------------------------------------------------
+LOOKBACK_HOURS = 6  # Finestra temporale uniforme per tutti i timeframes
+
+# Calcolo dinamico timesteps per ogni timeframe (stessa finestra temporale)
+TIMEFRAME_TIMESTEPS = {
+    "1m": int(LOOKBACK_HOURS * 60 / 1),    # 360 candele = 6 ore
+    "3m": int(LOOKBACK_HOURS * 60 / 3),    # 120 candele = 6 ore
+    "5m": int(LOOKBACK_HOURS * 60 / 5),    # 72 candele = 6 ore
+    "15m": int(LOOKBACK_HOURS * 60 / 15),  # 24 candele = 6 ore
+    "30m": int(LOOKBACK_HOURS * 60 / 30),  # 12 candele = 6 ore
+    "1h": int(LOOKBACK_HOURS / 1),         # 6 candele = 6 ore
+    "4h": max(2, int(LOOKBACK_HOURS / 4)), # 2 candele = 8 ore (minimo 2)
+    "1d": max(1, int(LOOKBACK_HOURS / 24)) # 1 candela = 24 ore (minimo 1)
+}
+
+def get_timesteps_for_timeframe(timeframe: str) -> int:
+    """
+    Restituisce il numero di timesteps necessari per coprire LOOKBACK_HOURS
+    per il timeframe specificato. Questo garantisce che tutti i modelli 
+    dell'ensemble guardino la stessa finestra temporale.
+    
+    Args:
+        timeframe: Timeframe (es. "15m", "1h")
+        
+    Returns:
+        int: Numero di candele necessarie
+    """
+    timesteps = TIMEFRAME_TIMESTEPS.get(timeframe, 7)
+    return max(2, timesteps)  # Minimo 2 candele sempre
+
+# ----------------------------------------------------------------------
+# CRITICAL FIX: Feature Count Consistency
+# ----------------------------------------------------------------------
+N_FEATURES_FINAL = 66  # Feature count dopo create_temporal_features()
+"""
+CRITICAL COMPATIBILITY CONSTANT:
+- Training: create_temporal_features() produces exactly 66 features
+- Prediction: Must expect exactly 66 features  
+- Formula: 33 (current) + 33 (trend) = 66 total features
+- Based on len(EXPECTED_COLUMNS) = 33
+
+DO NOT CHANGE unless you modify create_temporal_features() logic or EXPECTED_COLUMNS!
+"""
 
 MODEL_RATES = {"xgb": 1.0}
 
@@ -174,3 +220,43 @@ XGB_REG_LAMBDA = 0.1        # Ridotta regularization per più aggressività
 # ----------------------------------------------------------------------
 CV_N_SPLITS = 3             # Ridotto da 5 per velocità
 MIN_TRAIN_SIZE = 0.6        # Minimum size del training set
+
+# ----------------------------------------------------------------------
+# CRITICAL FIX: Centralized Backtest Parameters
+# ----------------------------------------------------------------------
+BACKTEST_INITIAL_BALANCE = 10000  # Starting capital for backtests
+BACKTEST_LEVERAGE = 10            # Leverage for backtest simulation
+BACKTEST_BASE_RISK_PCT = 3.0     # Base risk percentage for TP/SL
+BACKTEST_SLIPPAGE_PCT = 0.05     # 5% slippage and fees
+BACKTEST_TRAILING_ATR_MULTIPLIER = 1.5  # ATR multiplier for trailing
+
+# Ensure consistency between live trading and backtest
+assert BACKTEST_LEVERAGE == LEVERAGE, "Backtest and live leverage must match!"
+
+# ----------------------------------------------------------------------
+# CRITICAL FIX: Ensemble Voting Weights
+# ----------------------------------------------------------------------
+TIMEFRAME_WEIGHTS = {
+    "15m": 1.0,  # Micro-patterns, high frequency
+    "30m": 1.2,  # Balanced view, slight preference
+    "1h": 1.5,   # Macro-trends, highest weight (more reliable)
+    "4h": 2.0    # Strong trends, maximum weight if used
+}
+"""
+Ensemble voting weights by timeframe:
+- Higher timeframes get more weight (more reliable, less noise)
+- 1h has 50% more influence than 15m
+- Configurable per strategy requirements
+"""
+
+# ----------------------------------------------------------------------
+# CRITICAL FIX: Centralized Position Limits
+# ----------------------------------------------------------------------
+MAX_CONCURRENT_POSITIONS = 10  # Maximum number of simultaneous positions
+"""
+Position limits configuration:
+- Default: 3 positions (15% max exposure with 5% position size)
+- Risk consideration: 3×3% = 9% max total risk
+- Increase with caution: More positions = higher exposure
+- Examples: 5 positions = 25% max exposure, 15% max risk
+"""

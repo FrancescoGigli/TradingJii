@@ -67,12 +67,60 @@ class RobustRiskManager:
         self.max_leverage = 10
         self.emergency_stop_loss = 0.10  # 10% emergency stop
         
-        # Portfolio tracking
+        # Portfolio tracking with dynamic connection to PositionTracker
         self.daily_pnl = 0.0
-        self.peak_balance = 1000.0  # Will be updated with real balance
+        self.peak_balance = None  # FIXED: Will sync with PositionTracker
         self.current_drawdown = 0.0
+        self._position_tracker = None  # Will be linked dynamically
         
-        logging.info("🛡️ Advanced Risk Manager initialized")
+        logging.info("🛡️ Advanced Risk Manager initialized (dynamic balance enabled)")
+    
+    def sync_with_position_tracker(self):
+        """
+        CRITICAL FIX: Sync with global PositionTracker for dynamic balance
+        """
+        try:
+            from core.position_tracker import global_position_tracker
+            self._position_tracker = global_position_tracker
+            
+            # Update peak balance from position tracker
+            current_balance = self._position_tracker.session_stats['current_balance']
+            if self.peak_balance is None:
+                self.peak_balance = self._position_tracker.session_stats['initial_balance']
+                
+            # Sync peak balance 
+            if current_balance > self.peak_balance:
+                self.peak_balance = current_balance
+                
+            logging.info(f"🔗 Risk Manager synced: Current: {current_balance:.2f}, Peak: {self.peak_balance:.2f}")
+            return True
+            
+        except Exception as e:
+            logging.warning(f"Failed to sync with PositionTracker: {e}")
+            # Fallback to static values
+            if self.peak_balance is None:
+                from config import DEMO_BALANCE
+                self.peak_balance = DEMO_BALANCE
+            return False
+    
+    def get_current_balance(self) -> float:
+        """Get current balance from PositionTracker or fallback"""
+        try:
+            if self._position_tracker:
+                return self._position_tracker.session_stats['current_balance']
+            else:
+                self.sync_with_position_tracker()
+                if self._position_tracker:
+                    return self._position_tracker.session_stats['current_balance']
+                    
+            # Fallback
+            from config import DEMO_BALANCE
+            return DEMO_BALANCE
+            
+        except Exception as e:
+            logging.error(f"Error getting current balance: {e}")
+            from config import DEMO_BALANCE
+            return DEMO_BALANCE
     
     def calculate_position_size(self, 
                               symbol: str,

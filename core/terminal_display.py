@@ -339,3 +339,103 @@ def display_model_status(timeframes: List[str], status: Dict[str, bool]):
 def display_portfolio_status(balance: float, open_positions: int = 0, risk_level: str = "LOW"):
     """Display portfolio status"""
     terminal_display.print_portfolio_status(balance, open_positions, risk_level)
+
+def display_wallet_and_positions(position_tracker_summary: Dict, leverage: int = 10):
+    """
+    Display enhanced wallet status and active positions table
+    """
+    try:
+        # Import here to avoid circular imports
+        from core.position_tracker import global_position_tracker
+        
+        summary = position_tracker_summary
+        
+        print(colored("💼 TRAE WALLET STATUS", "cyan", attrs=['bold']))
+        print(colored("═" * 80, "cyan"))
+        
+        # Wallet info
+        wallet_balance = summary['wallet_balance']
+        available_balance = summary['available_balance']
+        total_invested = summary['total_invested']
+        active_count = summary['active_positions']
+        
+        # Calculate position size per trade (5% of current wallet)
+        position_size_per_trade = wallet_balance * 0.05
+        
+        print(f"{colored('💰 Wallet:', 'white')} {colored(f'{wallet_balance:.2f} USDT', 'yellow', attrs=['bold'])}")
+        print(f"{colored('📊 Position Size per Trade:', 'white')} {colored(f'{position_size_per_trade:.2f} USDT', 'white')} {colored(f'(5% of wallet)', 'cyan')}")
+        print(f"{colored('🎯 Active Positions:', 'white')} {colored(str(active_count), 'green' if active_count > 0 else 'yellow')}")
+        print(f"{colored('💵 Total Invested:', 'white')} {colored(f'{total_invested:.2f} USDT', 'white')} {colored(f'({active_count} × {position_size_per_trade:.0f} USDT)', 'cyan')}")
+        print(f"{colored('📈 Available Capital:', 'white')} {colored(f'{available_balance:.2f} USDT', 'green')}")
+        
+        # Trading parameters
+        base_risk = 3.0
+        sl_pct = base_risk / leverage
+        tp_pct = sl_pct * 2
+        
+        print(f"{colored('⚖️ Leverage:', 'white')} {colored(f'{leverage}x', 'white')} | {colored('🛡️ Risk per Trade:', 'white')} {colored(f'{base_risk}%', 'red')} | {colored('🎪 Trailing:', 'white')} {colored('ON', 'green')}")
+        print(f"{colored('📉 Stop Loss:', 'white')} {colored(f'{sl_pct:.2f}%', 'red')} | {colored('📈 Take Profit:', 'white')} {colored(f'{tp_pct:.2f}%', 'green')} | {colored('🔄 Trail Start:', 'white')} {colored('1.0%', 'yellow')}")
+        
+        print(colored("═" * 80, "cyan"))
+        
+        # Active positions table
+        if active_count > 0:
+            print(colored("📋 ACTIVE POSITIONS (Real-Time PnL)", "yellow", attrs=['bold']))
+            print(colored("─" * 95, "yellow"))
+            
+            # Table header
+            header = f"{'#':<2} {'SYMBOL':<12} {'SIDE':<4} {'ENTRY':<10} {'CURRENT':<10} {'SL':<10} {'PnL%':<8} {'PnL$':<8} {'STATUS':<10}"
+            print(colored(header, "white", attrs=['bold']))
+            print(colored("─" * 95, "white"))
+            
+            # Active positions rows
+            for i, (pos_id, position) in enumerate(global_position_tracker.active_positions.items(), 1):
+                symbol_short = position['symbol'].replace('/USDT:USDT', '')[:12]
+                side = position['side'][:4]
+                entry = position['entry_price']
+                current = position['current_price']
+                sl = position['stop_loss']
+                pnl_pct = position['unrealized_pnl_pct']
+                pnl_usd = position['unrealized_pnl_usd']
+                
+                # Determine status with color
+                if position.get('trailing_active', False):
+                    status = colored('TRAILING', 'yellow')
+                else:
+                    status = colored('OPEN', 'green')
+                
+                # Color PnL based on profit/loss
+                if pnl_pct > 0:
+                    pnl_pct_colored = colored(f"+{pnl_pct:.2f}%", 'green')
+                    pnl_usd_colored = colored(f"+${pnl_usd:.2f}", 'green')
+                else:
+                    pnl_pct_colored = colored(f"{pnl_pct:.2f}%", 'red')
+                    pnl_usd_colored = colored(f"-${abs(pnl_usd):.2f}", 'red')
+                
+                row = f"{i:<2} {symbol_short:<12} {side:<4} ${entry:<9.6f} ${current:<9.6f} ${sl:<9.6f} {pnl_pct_colored:<8} {pnl_usd_colored:<8} {status}"
+                print(row)
+            
+            print(colored("─" * 95, "yellow"))
+            
+            # Session totals
+            unrealized_pnl_pct, unrealized_pnl_usd = global_position_tracker.get_total_unrealized_pnl()
+            best_position = max(global_position_tracker.active_positions.values(), key=lambda x: x['unrealized_pnl_pct'], default={'unrealized_pnl_pct': 0})
+            worst_position = min(global_position_tracker.active_positions.values(), key=lambda x: x['unrealized_pnl_pct'], default={'unrealized_pnl_pct': 0})
+            
+            pnl_color = 'green' if unrealized_pnl_usd >= 0 else 'red'
+            pnl_sign = '+' if unrealized_pnl_usd >= 0 else ''
+            
+            best_pnl = best_position["unrealized_pnl_pct"]
+            worst_pnl = worst_position["unrealized_pnl_pct"]
+            print(f"{colored('📊 Session PnL:', 'cyan')} {colored(f'{pnl_sign}${unrealized_pnl_usd:.2f}', pnl_color)} | {colored('🏆 Best:', 'green')} {colored(f'+{best_pnl:.2f}%', 'green')} | {colored('📉 Worst:', 'red')} {colored(f'{worst_pnl:.2f}%', 'red')}")
+            
+        else:
+            print(colored("📋 NO ACTIVE POSITIONS", "yellow", attrs=['bold']))
+            print(colored("─" * 50, "yellow"))
+            print(colored("💡 Waiting for new trading signals...", "cyan"))
+        
+        print(colored("═" * 80, "cyan"))
+        print()  # Add spacing
+        
+    except Exception as e:
+        logging.error(f"Error displaying wallet and positions: {e}")

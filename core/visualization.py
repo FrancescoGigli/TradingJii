@@ -180,6 +180,20 @@ class TradingVisualizer:
         try:
             logging.info(f"🔄 Running enhanced backtest for {symbol} [{timeframe}]")
             
+            # CRITICAL FIX: Ensure backtest uses only closed candles like live trading
+            from fetcher import is_candle_closed
+            
+            # Filter only closed candles for consistency with live trading
+            original_length = len(df)
+            closed_candles_mask = df.index.to_series().apply(
+                lambda ts: is_candle_closed(ts, timeframe)
+            )
+            df = df[closed_candles_mask]
+            
+            filtered_count = original_length - len(df)
+            if filtered_count > 0:
+                logging.info(colored(f"🔒 Backtest {symbol} [{timeframe}]: Filtered {filtered_count} open candles for consistency", "yellow"))
+            
             # Prepare data
             if start_date:
                 df = df[df.index >= start_date]
@@ -191,8 +205,11 @@ class TradingVisualizer:
             df = df.iloc[-min_len:]
             predictions = predictions[-min_len:]
             
+            # CRITICAL FIX: Use centralized parameters for consistency with live trading
+            from config import BACKTEST_INITIAL_BALANCE, BACKTEST_LEVERAGE, BACKTEST_BASE_RISK_PCT, BACKTEST_SLIPPAGE_PCT, BACKTEST_TRAILING_ATR_MULTIPLIER
+            
             # Initialize backtest variables with enhanced tracking
-            initial_balance = 10000  # $10k starting capital
+            initial_balance = BACKTEST_INITIAL_BALANCE  # From config.py
             balance = initial_balance
             position = 0  # 0=no position, 1=long, -1=short
             entry_price = 0
@@ -204,7 +221,16 @@ class TradingVisualizer:
             # Enhanced signal accuracy tracking
             signal_accuracy = {'correct': 0, 'total': 0}
             
-            # Run enhanced simulation
+            # Enhanced tracking variables for Option C + Trailing (from config.py)
+            leverage = BACKTEST_LEVERAGE        # Centralized leverage
+            BASE_RISK_PCT = BACKTEST_BASE_RISK_PCT  # Centralized risk
+            
+            logging.info(f"🔄 Backtest config: Balance=${initial_balance}, Leverage={leverage}x, Risk={BASE_RISK_PCT}%")
+            max_favorable_pnl = 0
+            trailing_active = False
+            trailing_stop_loss = 0
+            
+            # Run enhanced simulation with Option C + Trailing Logic
             for i in range(1, len(df)):
                 current_price = df.iloc[i]['close']
                 signal = predictions[i]
@@ -215,32 +241,67 @@ class TradingVisualizer:
                     daily_return = (balance - prev_balance) / prev_balance * 100
                     daily_returns.append(daily_return)
                 
-                # Close existing position if signal changes or take profit/stop loss
+                # Close existing position using Option C + Trailing logic
                 if position != 0:
                     should_close = False
                     exit_reason = ""
                     
-                    if (position == 1 and signal == 0) or (position == -1 and signal == 1):
-                        should_close = True
-                        exit_reason = "Signal Change"
-                    
-                    # Take profit at 5% or stop loss at 3%
+                    # Calculate current PnL
                     if position == 1:  # Long position
                         pnl_current = (current_price - entry_price) / entry_price * 100
-                        if pnl_current >= 5.0:
-                            should_close = True
-                            exit_reason = "Take Profit"
-                        elif pnl_current <= -3.0:
-                            should_close = True
-                            exit_reason = "Stop Loss"
                     else:  # Short position
                         pnl_current = (entry_price - current_price) / entry_price * 100
-                        if pnl_current >= 5.0:
+                    
+                    # Update max favorable PnL for trailing
+                    if pnl_current > max_favorable_pnl:
+                        max_favorable_pnl = pnl_current
+                        
+                    # Check trailing activation (at +1%)
+                    if not trailing_active and pnl_current >= 1.0:
+                        trailing_active = True
+                        logging.debug(f"Trailing activated for position at +1% PnL")
+                    
+                    # Update trailing stop loss
+                    if trailing_active:
+                        sl_pct = BASE_RISK_PCT / leverage  # 0.3% for 10x leverage
+                        if position == 1:  # Long
+                            new_trailing_sl = current_price * (1 - sl_pct / 100)
+                            trailing_stop_loss = max(trailing_stop_loss, new_trailing_sl)
+                        else:  # Short
+                            new_trailing_sl = current_price * (1 + sl_pct / 100)
+                            trailing_stop_loss = min(trailing_stop_loss, new_trailing_sl)
+                    
+                    # Option C: Risk-adjusted TP/SL levels
+                    sl_pct = BASE_RISK_PCT / leverage  # 0.3% for 10x
+                    tp_pct = sl_pct * 2               # 0.6% for 10x (1:2 R:R)
+                    
+                    # Check exit conditions with new logic
+                    if position == 1:  # Long position
+                        if pnl_current >= tp_pct:  # Take profit
                             should_close = True
                             exit_reason = "Take Profit"
-                        elif pnl_current <= -3.0:
+                        elif trailing_active and current_price <= trailing_stop_loss:
+                            should_close = True
+                            exit_reason = "Trailing Stop"
+                        elif not trailing_active and pnl_current <= -sl_pct:
                             should_close = True
                             exit_reason = "Stop Loss"
+                        elif (signal == 0):  # Signal change
+                            should_close = True
+                            exit_reason = "Signal Change"
+                    else:  # Short position
+                        if pnl_current >= tp_pct:  # Take profit
+                            should_close = True
+                            exit_reason = "Take Profit"
+                        elif trailing_active and current_price >= trailing_stop_loss:
+                            should_close = True
+                            exit_reason = "Trailing Stop"
+                        elif not trailing_active and pnl_current <= -sl_pct:
+                            should_close = True
+                            exit_reason = "Stop Loss"
+                        elif (signal == 1):  # Signal change
+                            should_close = True
+                            exit_reason = "Signal Change"
                     
                     if should_close:
                         # Close position
@@ -249,7 +310,9 @@ class TradingVisualizer:
                         else:  # Close short
                             pnl = (entry_price - current_price) / entry_price
                         
-                        balance *= (1 + pnl * 0.95)  # 5% slippage/fees
+                        # FIXED: Use centralized slippage parameter
+                        slippage_factor = 1.0 - BACKTEST_SLIPPAGE_PCT
+                        balance *= (1 + pnl * slippage_factor)
                         
                         # Check signal accuracy
                         if (position == 1 and pnl > 0) or (position == -1 and pnl > 0):
@@ -265,10 +328,15 @@ class TradingVisualizer:
                             'pnl_pct': pnl * 100,
                             'balance': balance,
                             'exit_reason': exit_reason,
-                            'duration_hours': (df.index[i] - df.index[entry_idx]).total_seconds() / 3600
+                            'duration_hours': (df.index[i] - df.index[entry_idx]).total_seconds() / 3600,
+                            'max_favorable_pnl': max_favorable_pnl,
+                            'trailing_was_active': trailing_active
                         })
                         
                         position = 0
+                        max_favorable_pnl = 0
+                        trailing_active = False
+                        trailing_stop_loss = 0
                 
                 # Open new position
                 if position == 0:
@@ -276,10 +344,20 @@ class TradingVisualizer:
                         position = 1
                         entry_price = current_price
                         entry_idx = i
+                        max_favorable_pnl = 0
+                        trailing_active = False
+                        # Initialize trailing stop loss
+                        sl_pct = BASE_RISK_PCT / leverage
+                        trailing_stop_loss = entry_price * (1 - sl_pct / 100)
                     elif signal == 0:  # SELL signal
                         position = -1
                         entry_price = current_price
                         entry_idx = i
+                        max_favorable_pnl = 0
+                        trailing_active = False
+                        # Initialize trailing stop loss
+                        sl_pct = BASE_RISK_PCT / leverage
+                        trailing_stop_loss = entry_price * (1 + sl_pct / 100)
                 
                 equity_curve.append(balance)
                 

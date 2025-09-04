@@ -44,13 +44,23 @@ try:
     from core.terminal_display import (
         init_terminal_display, display_enhanced_signal, 
         display_analysis_progress, display_cycle_complete,
-        display_model_status, display_portfolio_status, terminal_display
+        display_model_status, display_portfolio_status, terminal_display,
+        display_wallet_and_positions
     )
     ENHANCED_DISPLAY_AVAILABLE = True
     logging.info("✅ Enhanced Terminal Display loaded successfully")
 except ImportError as e:
     logging.warning(f"⚠️ Enhanced Terminal Display not available: {e}")
     ENHANCED_DISPLAY_AVAILABLE = False
+
+# Import position tracking system
+try:
+    from core.position_tracker import global_position_tracker
+    POSITION_TRACKER_AVAILABLE = True
+    logging.info("✅ Position Tracker loaded successfully")
+except ImportError as e:
+    logging.warning(f"⚠️ Position Tracker not available: {e}")
+    POSITION_TRACKER_AVAILABLE = False
 
 if sys.platform.startswith('win'):
     import asyncio
@@ -470,44 +480,76 @@ async def trade_signals():
                 
                 print(colored("-" * 120, "yellow"))
                 
-                # PHASE 3: EXECUTE BEST SIGNALS AND GENERATE BACKTESTS
-                max_positions = 3 - open_positions_count
-                signals_to_execute = all_signals[:min(max_positions, len(all_signals))]
+            # PHASE 3: EXECUTE BEST SIGNALS AND GENERATE BACKTESTS
+            from config import MAX_CONCURRENT_POSITIONS
+            max_positions = MAX_CONCURRENT_POSITIONS - open_positions_count
+            signals_to_execute = all_signals[:min(max_positions, len(all_signals))]
+            
+            if signals_to_execute:
+                logging.info(colored(f"🚀 PHASE 3: EXECUTING TOP {len(signals_to_execute)} SIGNALS", "blue", attrs=['bold']))
                 
-                if signals_to_execute:
-                    logging.info(colored(f"🚀 PHASE 3: EXECUTING TOP {len(signals_to_execute)} SIGNALS", "blue", attrs=['bold']))
-                    
-                    for signal in signals_to_execute:
-                        try:
-                            symbol = signal['symbol']
-                            final_signal = signal['signal']
-                            dataframes = signal['dataframes']
+                for signal in signals_to_execute:
+                    try:
+                        symbol = signal['symbol']
+                        final_signal = signal['signal']
+                        dataframes = signal['dataframes']
+                        
+                        logging.info(colored(f"🎯 Executing {signal['signal_name']} for {symbol} (confidence: {signal['confidence']:.1%})", "cyan"))
+                        
+                        # Execute the trade
+                        result = await manage_position(
+                            async_exchange, symbol, final_signal, usdt_balance, min_amounts,
+                            None, None, None, None, dataframes[TIMEFRAME_DEFAULT]
+                        )
+                        
+                        # Generate automatic backtest for this signal
+                        await generate_signal_backtest(symbol, dataframes, signal)
+                        
+                        if result == "insufficient_balance":
+                            logging.warning(f"❌ {symbol}: Insufficient balance")
+                            break  # Stop trying if no balance
+                        elif result == "max_trades_reached":
+                            logging.warning(f"❌ Max trades reached")
+                            break  # Stop if max trades reached
                             
-                            logging.info(colored(f"🎯 Executing {signal['signal_name']} for {symbol} (confidence: {signal['confidence']:.1%})", "cyan"))
-                            
-                            # Execute the trade
-                            result = await manage_position(
-                                async_exchange, symbol, final_signal, usdt_balance, min_amounts,
-                                None, None, None, None, dataframes[TIMEFRAME_DEFAULT]
-                            )
-                            
-                            # Generate automatic backtest for this signal
-                            await generate_signal_backtest(symbol, dataframes, signal)
-                            
-                            if result == "insufficient_balance":
-                                logging.warning(f"❌ {symbol}: Insufficient balance")
-                                break  # Stop trying if no balance
-                            elif result == "max_trades_reached":
-                                logging.warning(f"❌ Max trades reached")
-                                break  # Stop if max trades reached
-                                
-                        except Exception as e:
-                            logging.error(f"❌ Error executing {symbol}: {e}")
-                            continue
-                else:
-                    logging.info(colored("😐 No signals to execute this cycle", "yellow"))
+                    except Exception as e:
+                        logging.error(f"❌ Error executing {symbol}: {e}")
+                        continue
+            else:
+                logging.info(colored("😐 No signals to execute this cycle", "yellow"))
 
-            # Show cycle summary
+            # Update position tracker with current prices for real-time PnL
+            if POSITION_TRACKER_AVAILABLE:
+                try:
+                    # Collect current prices for active positions
+                    current_prices = {}
+                    for symbol in top_symbols_analysis[:10]:  # Check prices for top symbols
+                        try:
+                            ticker = await async_exchange.fetch_ticker(symbol)
+                            current_prices[symbol] = ticker.get('last', 0)
+                        except:
+                            continue
+                    
+                    # Update positions and check for closes
+                    positions_to_close = global_position_tracker.update_positions(current_prices)
+                    
+                    # Close positions that hit TP/SL/Trailing
+                    for position in positions_to_close:
+                        global_position_tracker.close_position(
+                            position['position_id'], 
+                            position['exit_price'], 
+                            position['exit_reason']
+                        )
+                        logging.info(colored(f"🎯 {position['symbol']} closed: {position['exit_reason']} PnL: {position['final_pnl_pct']:+.2f}%", "yellow"))
+                    
+                    # Display enhanced wallet status
+                    summary = global_position_tracker.get_session_summary()
+                    display_wallet_and_positions(summary, leverage=10)
+                    
+                except Exception as tracker_error:
+                    logging.warning(f"Position tracker error: {tracker_error}")
+
+            # Show cycle summary  
             if ENHANCED_DISPLAY_AVAILABLE:
                 display_cycle_complete()
             
