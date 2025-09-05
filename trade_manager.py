@@ -19,7 +19,6 @@ from fetcher import get_top_symbols, get_data_async
 try:
     from core.risk_manager import RobustRiskManager, PositionRisk, calculate_safe_position_size, calculate_dynamic_stop_loss
     RISK_MANAGER_AVAILABLE = True
-    logging.info("✅ Advanced Risk Manager loaded successfully")
     
     # Initialize global risk manager instance
     global_risk_manager = RobustRiskManager()
@@ -41,7 +40,6 @@ except ImportError as e:
 try:
     from core.position_tracker import global_position_tracker
     POSITION_TRACKER_AVAILABLE = True
-    logging.info("✅ Position Tracker integrated in trade_manager")
 except ImportError as e:
     logging.warning(f"⚠️ Position Tracker not available: {e}")
     POSITION_TRACKER_AVAILABLE = False

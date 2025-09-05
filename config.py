@@ -114,7 +114,8 @@ COLOR_THRESHOLD_GREEN = 0.65
 COLOR_THRESHOLD_RED = 0.35
 
 TRADE_CYCLE_INTERVAL = 300
-DATA_LIMIT_DAYS = 90  # Ridotto da 180 per training più veloce
+DATA_LIMIT_DAYS = 180  # 6 mesi per più dati storici e migliori pattern ML
+WARMUP_PERIODS = 30    # Candele di warmup da scartare per indicatori affidabili
 
 # ----------------------------------------------------------------------
 # Percorsi dei modelli (solo XGBoost)
@@ -126,7 +127,7 @@ def get_xgb_model_file(tf: str)   -> str: return str(_TRAINED_DIR / f"xgb_model_
 def get_xgb_scaler_file(tf: str)  -> str: return str(_TRAINED_DIR / f"xgb_scaler_{tf}.pkl")
 
 
-EXCLUDED_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+EXCLUDED_SYMBOLS = []  # No symbols excluded - include all for analysis
 
 # CRITICAL FIX: Unify training and inference datasets to prevent overfitting
 # The model should train and predict on the SAME set of symbols
@@ -259,4 +260,29 @@ Position limits configuration:
 - Risk consideration: 3×3% = 9% max total risk
 - Increase with caution: More positions = higher exposure
 - Examples: 5 positions = 25% max exposure, 15% max risk
+"""
+
+# ----------------------------------------------------------------------
+# DATA CACHE SYSTEM CONFIGURATION
+# ----------------------------------------------------------------------
+ENABLE_DATA_CACHE = True           # Enable/disable cache system
+CACHE_DIR = "data_cache"            # Cache directory
+CACHE_RETENTION_DAYS = 90           # Days to keep cached data
+CACHE_MAX_AGE_MINUTES = 3           # Max age before incremental update
+CACHE_AUTO_CLEANUP = True           # Auto cleanup old cache files
+
+# Cache performance thresholds
+CACHE_EXPECTED_HIT_RATE = 70        # Expected cache hit rate %
+CACHE_API_SAVINGS_TARGET = 80       # Target % of API calls to save
+
+"""
+Cache system configuration:
+- ENABLE_DATA_CACHE: Master switch for cache system
+- CACHE_RETENTION_DAYS: How long to keep historical data in cache
+- CACHE_MAX_AGE_MINUTES: How old data can be before requiring update
+- Auto-cleanup removes old cache files to save disk space
+
+Performance targets:
+- 70%+ cache hit rate expected after warm-up period
+- 80%+ API calls savings vs non-cached approach
 """

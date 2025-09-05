@@ -25,6 +25,7 @@ from config import N_FEATURES_FINAL
 from data_utils import prepare_data
 from scipy.signal import argrelextrema
 from imblearn.over_sampling import SMOTE
+from termcolor import colored
 
 _LOG = logging.getLogger(__name__)
 
@@ -92,7 +93,6 @@ def label_with_future_returns(df, lookforward_steps=3, buy_threshold=0.02, sell_
         neutral_count = np.sum(labels == 2)
         total = len(labels)
         
-        _LOG.info(f"Future returns labels: BUY={buy_count} ({buy_count/total*100:.1f}%), SELL={sell_count} ({sell_count/total*100:.1f}%), NEUTRAL={neutral_count} ({neutral_count/total*100:.1f}%)")
         
     except Exception as e:
         _LOG.error(f"Errore nel calcolo future returns: {e}")
@@ -329,8 +329,14 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
     labeling_method = "future returns" if use_future_returns else "swing points"
     _LOG.info(f"🎯 Training XGBoost con {labeling_method} labeling per {timeframe}")
     
+    # 📊 TRAINING DATA COLLECTION - Clear display
+    print(colored(f"\n🧠 TRAINING PHASE - Data Collection for {timeframe}", "magenta", attrs=['bold']))
+    print(colored("=" * 100, "magenta"))
+    print(colored(f"{'#':<4} {'SYMBOL':<20} {'SAMPLES':<10} {'STATUS':<15} {'BUY%':<8} {'SELL%':<8} {'NEUTRAL%':<8}", "white", attrs=['bold']))
+    print(colored("-" * 100, "magenta"))
+    
     successful_symbols = 0
-    for sym in top_symbols:
+    for idx, sym in enumerate(top_symbols, 1):
         try:
             # CRITICAL FIX: Use fetch_and_save_data to get data WITH indicators
             df_with_indicators = await fetch_and_save_data(exchange, sym, timeframe)
@@ -345,7 +351,6 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
                 continue
                 
             successful_symbols += 1
-            _LOG.info(f"✅ Processing {sym} ({successful_symbols}/{len(top_symbols)}): {data.shape[0]} samples")
             
             # ======= UNIFIED LABELING: Only Future Returns =======
             # FIXED: Removed dual mode, using only future returns for consistency
@@ -355,6 +360,28 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
                 buy_threshold=config.RETURN_BUY_THRESHOLD,
                 sell_threshold=config.RETURN_SELL_THRESHOLD
             )
+            
+            # Calculate label distribution for display
+            buy_count = np.sum(labels == 1)
+            sell_count = np.sum(labels == 0)
+            neutral_count = np.sum(labels == 2)
+            total = len(labels)
+            
+            buy_pct = (buy_count / total * 100) if total > 0 else 0
+            sell_pct = (sell_count / total * 100) if total > 0 else 0
+            neutral_pct = (neutral_count / total * 100) if total > 0 else 0
+            
+            # Display training progress
+            symbol_short = sym.replace('/USDT:USDT', '')
+            status = colored("✅ OK", "green")
+            
+            print(f"{idx:<4} {symbol_short:<20} {len(data):<10} {status:<15} {buy_pct:.1f}%    {sell_pct:.1f}%    {neutral_pct:.1f}%")
+            
+            # Progress separator every 10 symbols
+            if idx % 10 == 0 and idx < len(top_symbols):
+                print(colored("─" * 100, "blue"))
+                print(colored(f"Training Progress: {idx}/{len(top_symbols)} ({idx/len(top_symbols)*100:.1f}%) | Success: {successful_symbols}/{idx}", "blue", attrs=['bold']))
+                print(colored("─" * 100, "blue"))
             
             # ======= TEMPORAL FEATURE PRESERVATION =======
             # FIXED: Usa finestra temporale specifica per timeframe

@@ -73,7 +73,6 @@ class RobustRiskManager:
         self.current_drawdown = 0.0
         self._position_tracker = None  # Will be linked dynamically
         
-        logging.info("🛡️ Advanced Risk Manager initialized (dynamic balance enabled)")
     
     def sync_with_position_tracker(self):
         """

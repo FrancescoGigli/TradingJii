@@ -44,7 +44,6 @@ class PositionTracker:
                     data = json.load(f)
                     self.active_positions = data.get('positions', {})
                     self.session_stats = data.get('session_stats', self.session_stats)
-                    logging.info(f"📂 Loaded {len(self.active_positions)} active positions")
             else:
                 logging.info("📂 No existing session found, starting fresh")
         except Exception as e:

@@ -17,7 +17,6 @@ from data_utils import prepare_data
 try:
     from core.ml_predictor import predict_signal_ensemble as robust_predict_signal_ensemble
     ROBUST_PREDICTOR_AVAILABLE = True
-    logging.info("✅ Robust ML Predictor loaded successfully")
 except ImportError as e:
     logging.warning(f"⚠️ Robust ML Predictor not available: {e}")
     ROBUST_PREDICTOR_AVAILABLE = False
