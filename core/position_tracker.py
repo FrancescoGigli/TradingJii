@@ -12,6 +12,7 @@ FEATURES:
 
 import json
 import os
+import time
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -37,34 +38,193 @@ class PositionTracker:
         self.load_session()
         
     def load_session(self):
-        """Load active positions and session from file"""
+        """Load active positions and session from file with robust JSON handling"""
         try:
             if os.path.exists(self.storage_file):
-                with open(self.storage_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.active_positions = data.get('positions', {})
-                    self.session_stats = data.get('session_stats', self.session_stats)
+                # Check file size first
+                file_size = os.path.getsize(self.storage_file)
+                if file_size == 0:
+                    logging.warning(f"📂 Session file {self.storage_file} is empty, starting fresh")
+                    return
+                
+                # MEMORY PROTECTION: Check file size limit (max 10MB)
+                MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+                if file_size > MAX_FILE_SIZE:
+                    logging.error(f"📂 Session file {self.storage_file} too large ({file_size/1024/1024:.1f}MB > 10MB)")
+                    backup_name = f"{self.storage_file}.oversized.{int(time.time())}"
+                    try:
+                        os.rename(self.storage_file, backup_name)
+                        logging.warning(f"🗄️ Oversized file backed up as: {backup_name}")
+                        logging.info("🔄 Starting fresh session due to oversized file")
+                        return
+                    except Exception as backup_error:
+                        logging.error(f"Failed to backup oversized file: {backup_error}")
+                        return
+                
+                # Try to read and parse JSON with error recovery
+                try:
+                    with open(self.storage_file, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                        
+                        if not content:
+                            logging.warning(f"📂 Session file {self.storage_file} is empty, starting fresh")
+                            return
+                        
+                        # Try to parse JSON
+                        data = json.loads(content)
+                        
+                        # Validate JSON structure
+                        if not isinstance(data, dict):
+                            raise ValueError("Invalid JSON structure: not a dictionary")
+                        
+                        # Load data with validation
+                        self.active_positions = data.get('positions', {})
+                        loaded_session_stats = data.get('session_stats', {})
+                        
+                        # Validate and merge session stats
+                        if isinstance(loaded_session_stats, dict):
+                            # Preserve current session structure, update with loaded values
+                            for key, value in loaded_session_stats.items():
+                                if key in self.session_stats:
+                                    self.session_stats[key] = value
+                        
+                        logging.debug(f"📂 Session loaded: {len(self.active_positions)} active positions, balance: {self.session_stats['current_balance']:.2f}")
+                        
+                except json.JSONDecodeError as json_error:
+                    logging.error(f"❌ JSON parsing error in {self.storage_file}: {json_error}")
+                    logging.warning(f"🔄 Backing up corrupted file and starting fresh session")
+                    
+                    # Backup corrupted file
+                    backup_name = f"{self.storage_file}.corrupted.{int(time.time())}"
+                    try:
+                        os.rename(self.storage_file, backup_name)
+                        logging.info(f"💾 Corrupted file backed up as: {backup_name}")
+                    except Exception as backup_error:
+                        logging.warning(f"Failed to backup corrupted file: {backup_error}")
+                        
+                except Exception as read_error:
+                    logging.error(f"❌ File reading error: {read_error}")
+                    logging.warning("🔄 Starting fresh session due to file read error")
+                    
             else:
                 logging.info("📂 No existing session found, starting fresh")
+                
         except Exception as e:
-            logging.error(f"Error loading session: {e}")
+            logging.error(f"❌ Critical error loading session: {e}")
+            logging.warning("🔄 Starting fresh session due to critical error")
+            # Reset to default values
+            self.active_positions = {}
             
     def save_session(self):
-        """Save current session to file"""
+        """Save current session to file with robust error handling"""
         try:
+            # Prepare data with validation
             data = {
-                'positions': self.active_positions,
-                'session_stats': self.session_stats,
-                'last_save': datetime.now().isoformat()
+                'positions': self.active_positions or {},
+                'session_stats': self.session_stats or {},
+                'last_save': datetime.now().isoformat(),
+                'format_version': '2.0'  # For future compatibility
             }
-            with open(self.storage_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            # Validate data before saving
+            if not isinstance(data['positions'], dict):
+                logging.error("Invalid positions data, resetting to empty dict")
+                data['positions'] = {}
+            
+            if not isinstance(data['session_stats'], dict):
+                logging.error("Invalid session_stats data, resetting to defaults")
+                data['session_stats'] = self.session_stats
+            
+            # CRITICAL FIX: Convert numpy arrays to lists for JSON serialization
+            data = self._convert_numpy_to_serializable(data)
+            
+            # Try to serialize to JSON first (validation)
+            try:
+                json_string = json.dumps(data, indent=2, ensure_ascii=False)
+            except (TypeError, ValueError) as json_error:
+                logging.error(f"❌ JSON serialization failed: {json_error}")
+                logging.error(f"❌ Problematic data keys: {list(data.keys())}")
+                # Create minimal safe data structure
+                data = {
+                    'positions': {},
+                    'session_stats': {
+                        'initial_balance': 1000.0,
+                        'current_balance': 1000.0,
+                        'total_trades': 0,
+                        'winning_trades': 0,
+                        'total_pnl': 0.0,
+                        'session_start': datetime.now().isoformat(),
+                        'last_update': datetime.now().isoformat()
+                    },
+                    'last_save': datetime.now().isoformat(),
+                    'format_version': '2.0'
+                }
+                json_string = json.dumps(data, indent=2, ensure_ascii=False)
+            
+            # Atomic write: write to temporary file first, then rename
+            temp_file = f"{self.storage_file}.tmp"
+            backup_file = f"{self.storage_file}.bak"  # CRITICAL FIX: Initialize backup_file here
+            
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(json_string)
+                    f.flush()  # Ensure data is written to disk
+                    os.fsync(f.fileno())  # Force OS to write to disk
+                
+                # Atomic move (replace original file)
+                if os.path.exists(self.storage_file):
+                    os.replace(self.storage_file, backup_file)
+                os.replace(temp_file, self.storage_file)
+                
+                # Clean up backup if save was successful
+                if os.path.exists(backup_file):
+                    try:
+                        os.remove(backup_file)
+                    except:
+                        pass  # Backup cleanup is not critical
+                
+                logging.debug(f"💾 Session saved successfully: {len(self.active_positions)} positions")
+                
+            except Exception as write_error:
+                logging.error(f"❌ Failed to write session file: {write_error}")
+                # Try to clean up temp file
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except:
+                    pass
+                    
         except Exception as e:
-            logging.error(f"Error saving session: {e}")
+            logging.error(f"❌ Critical error saving session: {e}")
+    def _convert_numpy_to_serializable(self, obj):
+        """
+        CRITICAL FIX: Recursively convert numpy arrays to lists for JSON serialization
+        
+        Args:
+            obj: Object to convert (dict, list, numpy array, or primitive)
+            
+        Returns:
+            JSON-serializable object
+        """
+        import numpy as np
+        
+        if isinstance(obj, dict):
+            return {key: self._convert_numpy_to_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_to_serializable(item) for item in obj]
+        elif isinstance(obj, np.ndarray):
+            # Convert numpy array to list
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.floating)):
+            # Convert numpy scalars to native Python types
+            return obj.item()
+        else:
+            # Return as-is for primitive types (int, float, str, bool, None)
+            return obj
             
     def calculate_tp_sl(self, entry_price: float, side: str, leverage: int, atr: float = None) -> Dict:
         """
-        Calculate TP/SL using Option C - Risk-Adjusted Logic
+        CRITICAL FIX: Unified TP/SL calculation using RobustRiskManager
         
         Args:
             entry_price: Entry price of position
@@ -75,29 +235,77 @@ class PositionTracker:
         Returns:
             Dict with 'take_profit', 'stop_loss', 'trailing_trigger' prices
         """
-        BASE_RISK_PCT = 3.0  # 3% base risk
-        
-        # Calculate risk-adjusted percentages
-        sl_pct = BASE_RISK_PCT / leverage  # 0.3% for 10x leverage
-        tp_pct = sl_pct * 2               # 0.6% for 10x leverage (1:2 R:R)
-        trailing_trigger_pct = 1.0        # Start trailing at +1%
-        
-        if side.upper() == 'BUY' or side.upper() == 'LONG':
-            stop_loss = entry_price * (1 - sl_pct / 100)
-            take_profit = entry_price * (1 + tp_pct / 100)
-            trailing_trigger = entry_price * (1 + trailing_trigger_pct / 100)
-        else:  # SELL or SHORT
-            stop_loss = entry_price * (1 + sl_pct / 100)
-            take_profit = entry_price * (1 - tp_pct / 100)
-            trailing_trigger = entry_price * (1 - trailing_trigger_pct / 100)
+        try:
+            # Use unified risk manager if available
+            from core.risk_manager import RobustRiskManager
+            risk_manager = RobustRiskManager()
             
-        return {
-            'take_profit': take_profit,
-            'stop_loss': stop_loss,
-            'trailing_trigger': trailing_trigger,
-            'sl_pct': sl_pct,
-            'tp_pct': tp_pct
-        }
+            # Calculate stop loss using risk manager
+            stop_loss = risk_manager.calculate_stop_loss(
+                symbol="unified",  # Symbol doesn't matter for this calculation
+                side=side,
+                entry_price=entry_price,
+                atr=atr or entry_price * 0.02,  # 2% fallback ATR
+                volatility=None
+            )
+            
+            # Calculate take profit using risk manager
+            take_profit = risk_manager.calculate_take_profit(
+                symbol="unified",
+                side=side,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                risk_reward_ratio=2.0
+            )
+            
+            # Calculate trailing trigger (start trailing at +1% profit)
+            trailing_trigger_pct = 1.0
+            if side.upper() == 'BUY' or side.upper() == 'LONG':
+                trailing_trigger = entry_price * (1 + trailing_trigger_pct / 100)
+            else:
+                trailing_trigger = entry_price * (1 - trailing_trigger_pct / 100)
+            
+            # Calculate percentages for logging
+            if side.upper() == 'BUY' or side.upper() == 'LONG':
+                sl_pct = (entry_price - stop_loss) / entry_price * 100
+                tp_pct = (take_profit - entry_price) / entry_price * 100
+            else:
+                sl_pct = (stop_loss - entry_price) / entry_price * 100
+                tp_pct = (entry_price - take_profit) / entry_price * 100
+            
+            return {
+                'take_profit': take_profit,
+                'stop_loss': stop_loss,
+                'trailing_trigger': trailing_trigger,
+                'sl_pct': abs(sl_pct),
+                'tp_pct': abs(tp_pct)
+            }
+            
+        except Exception as e:
+            logging.warning(f"Risk manager TP/SL calculation failed: {e}, using fallback")
+            
+            # Legacy fallback logic
+            BASE_RISK_PCT = 3.0
+            sl_pct = BASE_RISK_PCT / leverage
+            tp_pct = sl_pct * 2
+            trailing_trigger_pct = 1.0
+            
+            if side.upper() == 'BUY' or side.upper() == 'LONG':
+                stop_loss = entry_price * (1 - sl_pct / 100)
+                take_profit = entry_price * (1 + tp_pct / 100)
+                trailing_trigger = entry_price * (1 + trailing_trigger_pct / 100)
+            else:
+                stop_loss = entry_price * (1 + sl_pct / 100)
+                take_profit = entry_price * (1 - tp_pct / 100)
+                trailing_trigger = entry_price * (1 - trailing_trigger_pct / 100)
+                
+            return {
+                'take_profit': take_profit,
+                'stop_loss': stop_loss,
+                'trailing_trigger': trailing_trigger,
+                'sl_pct': sl_pct,
+                'tp_pct': tp_pct
+            }
     
     def open_position(self, symbol: str, side: str, entry_price: float, 
                      position_size: float, leverage: int, confidence: float,
@@ -144,8 +352,9 @@ class PositionTracker:
         
         self.save_session()
         
-        logging.info(colored(f"✅ Position opened: {symbol} {side} @ {entry_price:.6f}", "green"))
-        logging.info(colored(f"🎯 TP: {levels['take_profit']:.6f} | SL: {levels['stop_loss']:.6f} | Trailing: {levels['trailing_trigger']:.6f}", "cyan"))
+        logging.debug(f"✅ Position opened: {symbol} {side} @ {entry_price:.6f}")
+        # Detailed TP/SL levels moved to debug level
+        logging.debug(f"🎯 TP: {levels['take_profit']:.6f} | SL: {levels['stop_loss']:.6f} | Trailing: {levels['trailing_trigger']:.6f}")
         
         return position_id
     
@@ -184,10 +393,10 @@ class PositionTracker:
             if not position['trailing_active']:
                 if side == 'BUY' and current_price >= position['trailing_trigger']:
                     position['trailing_active'] = True
-                    logging.info(colored(f"🎪 Trailing activated for {symbol} at {current_price:.6f}", "yellow"))
+                    logging.debug(f"🎪 Trailing activated for {symbol} at {current_price:.6f}")
                 elif side == 'SELL' and current_price <= position['trailing_trigger']:
                     position['trailing_active'] = True
-                    logging.info(colored(f"🎪 Trailing activated for {symbol} at {current_price:.6f}", "yellow"))
+                    logging.debug(f"🎪 Trailing activated for {symbol} at {current_price:.6f}")
             
             # FIXED: Update trailing stop using ATR for volatility adaptation
             if position['trailing_active']:
@@ -277,7 +486,7 @@ class PositionTracker:
         # Remove from active positions
         del self.active_positions[position_id]
         
-        logging.info(colored(f"🔒 Position closed: {position['symbol']} {exit_reason} PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})", "yellow"))
+        logging.debug(f"🔒 Position closed: {position['symbol']} {exit_reason} PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})")
         
         self.save_session()
         return True

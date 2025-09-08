@@ -129,11 +129,12 @@ def get_xgb_scaler_file(tf: str)  -> str: return str(_TRAINED_DIR / f"xgb_scaler
 
 EXCLUDED_SYMBOLS = []  # No symbols excluded - include all for analysis
 
-# CRITICAL FIX: Unify training and inference datasets to prevent overfitting
-# The model should train and predict on the SAME set of symbols
-TOP_SYMBOLS_COUNT = 50  # Unified count for both training and analysis
-TOP_TRAIN_CRYPTO = TOP_SYMBOLS_COUNT    # Same symbols for training
-TOP_ANALYSIS_CRYPTO = TOP_SYMBOLS_COUNT  # Same symbols for analysis
+# CONSOLIDATED: Single configuration for symbols count
+TOP_SYMBOLS_COUNT = 10  # Main configuration for symbol count
+
+# UNIFIED: Both training and analysis use same symbols to prevent overfitting
+TOP_TRAIN_CRYPTO = TOP_SYMBOLS_COUNT    # Training symbols (unified with analysis)
+TOP_ANALYSIS_CRYPTO = TOP_SYMBOLS_COUNT  # Analysis symbols (unified with training)
 
 # Additional symbol filtering for better quality
 MIN_VOLUME_THRESHOLD = 1000000  # Minimum daily volume in USDT
@@ -174,7 +175,7 @@ TRAIN_IF_NOT_FOUND = True
 # ----------------------------------------------------------------------
 # Modalità Demo/Test
 # ----------------------------------------------------------------------
-DEMO_MODE = True  # Set to True per vedere solo i segnali senza eseguire trade
+DEMO_MODE = False  # Default: False (LIVE mode), can be overridden by user selection
 DEMO_BALANCE = 1000.0  # Balance USDT fittizio per modalità demo
 
 # ----------------------------------------------------------------------
@@ -185,36 +186,60 @@ SWING_ATR_FACTOR = 0.3    # RIDOTTO: da 0.5 a 0.3 → swing più piccoli accetta
 SWING_VOLUME_FACTOR = 1.0 # RIDOTTO: da 1.2 a 1.0 → meno filtro volume
 
 # ----------------------------------------------------------------------
-# Parametri Future Returns Labeling (RESO PIÙ SENSIBILE)
+# Parametri Future Returns Labeling (CRITICAL FIX - TIMEFRAME ADAPTIVE)
 # ----------------------------------------------------------------------
 FUTURE_RETURN_STEPS = 3      # Steps nel futuro per calcolare return
-RETURN_BUY_THRESHOLD = 0.008 # RIDOTTO: da 1.5% a 0.8% → più segnali BUY
-RETURN_SELL_THRESHOLD = -0.008 # RIDOTTO: da -1.5% a -0.8% → più segnali SELL
+
+# DYNAMIC THRESHOLDS: Adjust based on timeframe volatility
+TIMEFRAME_THRESHOLDS = {
+    "15m": {"buy": 0.008, "sell": -0.008},  # 0.8% for high-frequency timeframe
+    "30m": {"buy": 0.012, "sell": -0.012},  # 1.2% for medium timeframe  
+    "1h": {"buy": 0.015, "sell": -0.015},   # 1.5% for longer timeframe
+    "4h": {"buy": 0.025, "sell": -0.025},   # 2.5% for macro timeframe
+    "1d": {"buy": 0.04, "sell": -0.04}      # 4.0% for daily timeframe
+}
+
+# Backward compatibility - use 1h thresholds as default
+RETURN_BUY_THRESHOLD = TIMEFRAME_THRESHOLDS["1h"]["buy"]    # Default: 1.5%
+RETURN_SELL_THRESHOLD = TIMEFRAME_THRESHOLDS["1h"]["sell"]   # Default: -1.5%
+
+def get_thresholds_for_timeframe(timeframe: str) -> tuple:
+    """
+    Get appropriate BUY/SELL thresholds for specific timeframe
+    
+    Returns:
+        tuple: (buy_threshold, sell_threshold)
+    """
+    thresholds = TIMEFRAME_THRESHOLDS.get(timeframe, TIMEFRAME_THRESHOLDS["1h"])
+    return thresholds["buy"], thresholds["sell"]
 
 # ----------------------------------------------------------------------
-# Parametri Ensemble Voting (NUOVI - PER PIÙ SEGNALI)
+# Parametri Ensemble Voting (QUICK WIN OPTIMIZED)
 # ----------------------------------------------------------------------
-MIN_ENSEMBLE_CONFIDENCE = 0.6    # Confidenza minima per segnali (60% invece del 100%)
+MIN_ENSEMBLE_CONFIDENCE = 0.75   # QUICK WIN: Raised from 0.6 to 0.75 for higher quality
 ALLOW_MIXED_SIGNALS = True       # Permetti segnali anche se timeframes discordano
 NEUTRAL_SKIP_PROBABILITY = 0.7   # 70% di skipare segnali neutral → più BUY/SELL
 
-# ----------------------------------------------------------------------
-# Parametri Class Balancing
-# ----------------------------------------------------------------------
-USE_SMOTE = False            # Disabilitato temporaneamente per velocità
-USE_CLASS_WEIGHTS = True     # Abilita class weights in XGBoost
-SMOTE_K_NEIGHBORS = 5        # Parametro SMOTE
+# Signal quality parameters
+SIGNAL_CONFIDENCE_THRESHOLD = 0.75  # Central configuration for all ensemble systems
 
 # ----------------------------------------------------------------------
-# Parametri XGBoost Ottimizzati (per velocità)
+# Parametri Class Balancing (UPDATED FOR PERCENTILE LABELING)
 # ----------------------------------------------------------------------
-XGB_N_ESTIMATORS = 100       # Ridotto per velocità
-XGB_MAX_DEPTH = 6           # Ridotto per velocità
-XGB_LEARNING_RATE = 0.1     # Aumentato per convergenza più veloce
-XGB_SUBSAMPLE = 0.8         # Subsample delle righe
-XGB_COLSAMPLE_BYTREE = 0.8  # Subsample delle feature
-XGB_REG_ALPHA = 0.01        # Ridotta regularization per più aggressività
-XGB_REG_LAMBDA = 0.1        # Ridotta regularization per più aggressività
+USE_SMOTE = False            # DISABLED: Not needed with percentile labeling (guaranteed balance)
+USE_CLASS_WEIGHTS = True     # Keep enabled for fine-tuning model training
+SMOTE_K_NEIGHBORS = 3        # Kept for potential future use
+
+# ----------------------------------------------------------------------
+# Parametri XGBoost Ottimizzati (IMPROVED PERFORMANCE)
+# ----------------------------------------------------------------------
+XGB_N_ESTIMATORS = 200       # INCREASED: More trees for better learning
+XGB_MAX_DEPTH = 4            # REDUCED: Prevent overfitting
+XGB_LEARNING_RATE = 0.05     # REDUCED: Slower learning for better generalization
+XGB_SUBSAMPLE = 0.7          # REDUCED: More regularization
+XGB_COLSAMPLE_BYTREE = 0.7   # REDUCED: Feature bagging for robustness
+XGB_REG_ALPHA = 0.1          # INCREASED: More L1 regularization
+XGB_REG_LAMBDA = 1.0         # INCREASED: More L2 regularization
 
 # ----------------------------------------------------------------------
 # Parametri Validazione
@@ -253,13 +278,14 @@ Ensemble voting weights by timeframe:
 # ----------------------------------------------------------------------
 # CRITICAL FIX: Centralized Position Limits
 # ----------------------------------------------------------------------
-MAX_CONCURRENT_POSITIONS = 10  # Maximum number of simultaneous positions
+MAX_CONCURRENT_POSITIONS = 3  # Maximum number of simultaneous positions
 """
 Position limits configuration:
-- Default: 3 positions (15% max exposure with 5% position size)
+- Current: 3 positions (15% max exposure with 5% position size)
 - Risk consideration: 3×3% = 9% max total risk
 - Increase with caution: More positions = higher exposure
 - Examples: 5 positions = 25% max exposure, 15% max risk
+- WARNING: Higher values increase overall portfolio risk significantly
 """
 
 # ----------------------------------------------------------------------

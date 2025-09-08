@@ -1,7 +1,10 @@
 """
 Advanced Risk Management System for Trading Bot
 
-CRITICAL FIXES:
+CRITICAL FIXES V2:
+- Thread-safe singleton implementation
+- Atomic operations for balance updates
+- Improved synchronization with position tracker
 - Dynamic stop loss based on ATR
 - Volatility-based position sizing  
 - Portfolio correlation limits
@@ -11,10 +14,12 @@ CRITICAL FIXES:
 
 import logging
 import numpy as np
+import threading
 from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass
 from enum import Enum
 import pandas as pd
+from contextlib import contextmanager
 
 from config import MARGIN_USDT, LEVERAGE
 
@@ -54,10 +59,37 @@ class PortfolioRisk:
 
 class RobustRiskManager:
     """
-    Advanced risk management system that prevents catastrophic losses
+    Thread-safe singleton Advanced Risk Management System
+    
+    CRITICAL FIXES V2:
+    - Singleton pattern to ensure single instance
+    - Thread-safe operations with locks
+    - Atomic balance updates
+    - Improved synchronization with PositionTracker
     """
     
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """Thread-safe singleton implementation"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        # Avoid re-initialization of singleton
+        if hasattr(self, '_initialized'):
+            return
+            
+        # Thread-safe locks for critical operations
+        self._balance_lock = threading.RLock()  # Reentrant lock for balance operations
+        self._position_lock = threading.RLock()  # Lock for position operations
+        self._sync_lock = threading.Lock()  # Lock for synchronization operations
+        
+        # Risk parameters
         self.max_portfolio_risk = 0.02  # 2% max portfolio risk
         self.max_single_position_risk = 0.005  # 0.5% max risk per trade
         self.max_open_positions = 3
@@ -67,59 +99,125 @@ class RobustRiskManager:
         self.max_leverage = 10
         self.emergency_stop_loss = 0.10  # 10% emergency stop
         
-        # Portfolio tracking with dynamic connection to PositionTracker
+        # Portfolio tracking with thread-safe operations
         self.daily_pnl = 0.0
-        self.peak_balance = None  # FIXED: Will sync with PositionTracker
+        self.peak_balance = None
         self.current_drawdown = 0.0
-        self._position_tracker = None  # Will be linked dynamically
+        self._position_tracker = None
+        self._last_sync_time = 0.0  # Track last synchronization
+        
+        # Mark as initialized
+        self._initialized = True
+        
+        logging.debug("🔒 Thread-safe RobustRiskManager singleton initialized")
+    
+    @contextmanager
+    def _atomic_balance_operation(self):
+        """Context manager for atomic balance operations"""
+        with self._balance_lock:
+            try:
+                yield
+            except Exception as e:
+                logging.error(f"Atomic balance operation failed: {e}")
+                raise
+    
+    @contextmanager
+    def _atomic_position_operation(self):
+        """Context manager for atomic position operations"""
+        with self._position_lock:
+            try:
+                yield
+            except Exception as e:
+                logging.error(f"Atomic position operation failed: {e}")
+                raise
         
     
-    def sync_with_position_tracker(self):
+    def sync_with_position_tracker(self, force_sync: bool = False) -> bool:
         """
-        CRITICAL FIX: Sync with global PositionTracker for dynamic balance
+        CRITICAL FIX V2: Thread-safe sync with PositionTracker
+        
+        Args:
+            force_sync: Force synchronization even if recently synced
+            
+        Returns:
+            bool: True if sync successful, False otherwise
         """
-        try:
-            from core.position_tracker import global_position_tracker
-            self._position_tracker = global_position_tracker
-            
-            # Update peak balance from position tracker
-            current_balance = self._position_tracker.session_stats['current_balance']
-            if self.peak_balance is None:
-                self.peak_balance = self._position_tracker.session_stats['initial_balance']
+        import time
+        
+        with self._sync_lock:
+            try:
+                # Avoid excessive sync calls (max once per second unless forced)
+                current_time = time.time()
+                if not force_sync and (current_time - self._last_sync_time) < 1.0:
+                    return self._position_tracker is not None
                 
-            # Sync peak balance 
-            if current_balance > self.peak_balance:
-                self.peak_balance = current_balance
+                # Import and connect to position tracker
+                from core.position_tracker import global_position_tracker
+                self._position_tracker = global_position_tracker
                 
-            logging.info(f"🔗 Risk Manager synced: Current: {current_balance:.2f}, Peak: {self.peak_balance:.2f}")
-            return True
-            
-        except Exception as e:
-            logging.warning(f"Failed to sync with PositionTracker: {e}")
-            # Fallback to static values
-            if self.peak_balance is None:
-                from config import DEMO_BALANCE
-                self.peak_balance = DEMO_BALANCE
-            return False
+                # Thread-safe balance synchronization
+                with self._atomic_balance_operation():
+                    if self._position_tracker and hasattr(self._position_tracker, 'session_stats'):
+                        current_balance = self._position_tracker.session_stats['current_balance']
+                        initial_balance = self._position_tracker.session_stats['initial_balance']
+                        
+                        # Initialize peak balance if needed
+                        if self.peak_balance is None:
+                            self.peak_balance = initial_balance
+                            
+                        # Update peak balance atomically
+                        if current_balance > self.peak_balance:
+                            self.peak_balance = current_balance
+                            
+                        # Update drawdown
+                        if self.peak_balance > 0:
+                            self.current_drawdown = max(0, (self.peak_balance - current_balance) / self.peak_balance)
+                        
+                        # Update sync timestamp
+                        self._last_sync_time = current_time
+                        
+                        logging.debug(f"🔗 Risk Manager synced: Current={current_balance:.2f}, Peak={self.peak_balance:.2f}, DD={self.current_drawdown*100:.1f}%")
+                        return True
+                    else:
+                        logging.warning("PositionTracker not available or invalid")
+                        return False
+                        
+            except Exception as e:
+                logging.error(f"Critical: Risk Manager sync failed: {e}")
+                # Emergency fallback
+                with self._atomic_balance_operation():
+                    if self.peak_balance is None:
+                        from config import DEMO_BALANCE
+                        self.peak_balance = DEMO_BALANCE
+                return False
     
     def get_current_balance(self) -> float:
-        """Get current balance from PositionTracker or fallback"""
-        try:
-            if self._position_tracker:
-                return self._position_tracker.session_stats['current_balance']
-            else:
-                self.sync_with_position_tracker()
-                if self._position_tracker:
-                    return self._position_tracker.session_stats['current_balance']
+        """Thread-safe balance retrieval with automatic sync"""
+        with self._atomic_balance_operation():
+            try:
+                # Ensure we have a recent sync
+                if not self.sync_with_position_tracker():
+                    # Fallback to demo balance
+                    from config import DEMO_BALANCE
+                    logging.debug(f"Using fallback balance: {DEMO_BALANCE}")
+                    return DEMO_BALANCE
+                
+                # Get balance from synced position tracker
+                if self._position_tracker and hasattr(self._position_tracker, 'session_stats'):
+                    balance = self._position_tracker.session_stats['current_balance']
+                    return balance
+                else:
+                    from config import DEMO_BALANCE
+                    return DEMO_BALANCE
                     
-            # Fallback
-            from config import DEMO_BALANCE
-            return DEMO_BALANCE
-            
-        except Exception as e:
-            logging.error(f"Error getting current balance: {e}")
-            from config import DEMO_BALANCE
-            return DEMO_BALANCE
+            except Exception as e:
+                logging.error(f"Critical: Balance retrieval failed: {e}")
+                from config import DEMO_BALANCE
+                return DEMO_BALANCE
+    
+    def force_sync(self) -> bool:
+        """Force immediate synchronization with position tracker"""
+        return self.sync_with_position_tracker(force_sync=True)
     
     def calculate_position_size(self, 
                               symbol: str,
@@ -129,18 +227,29 @@ class RobustRiskManager:
                               account_balance: float,
                               volatility: float = None) -> Tuple[float, float]:
         """
-        Calculate optimal position size based on risk management rules
+        ENHANCED: Dynamic Position Sizing with 20-50 USD range based on risk indicators
         
         Returns:
             (position_size, stop_loss_price)
         """
         try:
-            # 1. Risk-based position sizing
+            # 1. Input validation
             if atr <= 0 or current_price <= 0:
                 logging.error(f"Invalid ATR ({atr}) or price ({current_price}) for {symbol}")
                 return 0.0, 0.0
             
-            # Calculate stop loss distance (ATR-based)
+            # 2. Calculate ATR percentage for volatility assessment
+            atr_pct = (atr / current_price) * 100
+            
+            # 3. DYNAMIC MARGIN CALCULATION (20-50 USD range)
+            dynamic_margin = self._calculate_dynamic_margin(
+                atr_pct=atr_pct,
+                volatility=volatility or 0.0,
+                signal_strength=signal_strength,
+                account_balance=account_balance
+            )
+            
+            # 4. Calculate stop loss distance (ATR-based)
             stop_distance = atr * self.atr_stop_multiplier
             stop_loss_pct = stop_distance / current_price
             
@@ -149,41 +258,98 @@ class RobustRiskManager:
                 stop_loss_pct = 0.01
                 stop_distance = current_price * 0.01
             
-            # Maximum risk per trade in USD
-            max_risk_usd = account_balance * self.max_single_position_risk
+            # 5. Calculate position size using dynamic margin
+            notional_value = dynamic_margin * LEVERAGE
+            final_position_size = notional_value / current_price
             
-            # Calculate position size based on stop loss
-            # Risk = Position Size * Stop Loss Distance
-            # Position Size = Risk / Stop Loss Distance
-            base_position_size = max_risk_usd / stop_distance
-            
-            # 2. Volatility adjustment
-            if volatility is not None:
-                vol_adjustment = max(0.5, min(1.5, 1.0 / (1.0 + abs(volatility) / 10.0)))
-                base_position_size *= vol_adjustment
-            
-            # 3. Signal strength adjustment (0.5 to 1.5 multiplier)
-            signal_adjustment = max(0.5, min(1.5, signal_strength))
-            adjusted_position_size = base_position_size * signal_adjustment
-            
-            # 4. Leverage and margin constraints
-            max_margin = MARGIN_USDT
-            max_notional = max_margin * LEVERAGE
-            max_size_by_margin = max_notional / current_price
-            
-            # Take minimum of all constraints
-            final_position_size = min(adjusted_position_size, max_size_by_margin)
-            
-            # Calculate corresponding stop loss
+            # 6. Calculate corresponding stop loss price
             stop_loss_price = current_price - stop_distance
             
-            logging.info(f"💰 Position size for {symbol}: {final_position_size:.4f} (risk: ${max_risk_usd:.2f}, stop: {stop_loss_price:.6f})")
+            # 7. Enhanced logging with dynamic margin details
+            logging.info(f"💰 DYNAMIC Position sizing for {symbol}:")
+            logging.info(f"   📊 ATR: {atr_pct:.2f}% | Confidence: {signal_strength:.1%} | Vol: {volatility or 0:.2f}%")
+            logging.info(f"   💵 Dynamic Margin: ${dynamic_margin:.2f} (range: $20-50)")
+            logging.info(f"   🎯 Final Size: {final_position_size:.4f} | Notional: ${notional_value:.2f}")
+            logging.info(f"   🛡️ Stop Loss: ${stop_loss_price:.6f} (-{stop_loss_pct*100:.1f}%)")
             
             return final_position_size, stop_loss_price
             
         except Exception as e:
-            logging.error(f"Error calculating position size for {symbol}: {e}")
+            logging.error(f"Error calculating dynamic position size for {symbol}: {e}")
             return 0.0, 0.0
+    
+    def _calculate_dynamic_margin(self, atr_pct: float, volatility: float, 
+                                 signal_strength: float, account_balance: float) -> float:
+        """
+        Calculate dynamic margin in 20-50 USD range based on risk indicators
+        
+        Args:
+            atr_pct: ATR as percentage of price
+            volatility: Market volatility percentage  
+            signal_strength: ML signal confidence (0-1)
+            account_balance: Current account balance
+            
+        Returns:
+            float: Dynamic margin amount (20-50 USD)
+        """
+        try:
+            # Base margin (center of range)
+            base_margin = 35.0  # $35 USD center point
+            
+            # 1. VOLATILITY ADJUSTMENT (-15 to +15 USD)
+            vol_adjustment = 0.0
+            
+            if atr_pct < 1.0:          # Low volatility (< 1%)
+                vol_adjustment = +12.0  # Increase position size
+            elif atr_pct < 2.0:        # Medium-low volatility (1-2%)
+                vol_adjustment = +5.0   # Slight increase
+            elif atr_pct < 3.0:        # Medium volatility (2-3%)
+                vol_adjustment = 0.0    # No change
+            elif atr_pct < 5.0:        # High volatility (3-5%)
+                vol_adjustment = -8.0   # Decrease position size
+            else:                      # Very high volatility (>5%)
+                vol_adjustment = -15.0  # Significant decrease
+            
+            # 2. SIGNAL CONFIDENCE ADJUSTMENT (-10 to +10 USD)
+            # Stronger signals = larger positions
+            confidence_adjustment = (signal_strength - 0.7) * 25  # Scale around 70% confidence
+            confidence_adjustment = max(-10.0, min(10.0, confidence_adjustment))
+            
+            # 3. MARKET VOLATILITY ADJUSTMENT (-5 to +5 USD)
+            market_vol_adjustment = 0.0
+            if volatility > 3.0:       # High market volatility
+                market_vol_adjustment = -5.0
+            elif volatility < 1.0:     # Low market volatility  
+                market_vol_adjustment = +3.0
+            
+            # 4. BALANCE-BASED SAFETY ADJUSTMENT
+            balance_safety = 0.0
+            if account_balance < 100:
+                balance_safety = -5.0  # Smaller positions with low balance
+            elif account_balance > 500:
+                balance_safety = +3.0  # Slightly larger with higher balance
+            
+            # 5. COMBINE ALL ADJUSTMENTS
+            dynamic_margin = (base_margin + vol_adjustment + confidence_adjustment + 
+                            market_vol_adjustment + balance_safety)
+            
+            # 6. ENFORCE STRICT BOUNDS (20-50 USD)
+            dynamic_margin = max(20.0, min(50.0, dynamic_margin))
+            
+            # 7. DETAILED LOGGING FOR TRANSPARENCY
+            logging.debug(f"🔧 Dynamic margin calculation:")
+            logging.debug(f"   📊 Base: ${base_margin:.2f}")
+            logging.debug(f"   📈 Volatility (ATR {atr_pct:.1f}%): {vol_adjustment:+.2f}")
+            logging.debug(f"   🎯 Confidence ({signal_strength:.1%}): {confidence_adjustment:+.2f}")
+            logging.debug(f"   🌊 Market Vol ({volatility:.1f}%): {market_vol_adjustment:+.2f}")
+            logging.debug(f"   💰 Balance Safety: {balance_safety:+.2f}")
+            logging.debug(f"   ✅ Final: ${dynamic_margin:.2f}")
+            
+            return dynamic_margin
+            
+        except Exception as e:
+            logging.error(f"Error in dynamic margin calculation: {e}")
+            return 35.0  # Safe fallback to center of range
     
     def validate_new_position(self,
                             symbol: str,
@@ -207,27 +373,32 @@ class RobustRiskManager:
             if self.daily_pnl < -account_balance * self.max_daily_loss:
                 return False, f"Daily loss limit reached: {self.daily_pnl:.2f}"
             
-            # 3. Check portfolio exposure
-            total_exposure = sum(pos.size * pos.current_price for pos in existing_positions)
-            new_exposure = size * current_price
-            total_new_exposure = total_exposure + new_exposure
+            # 3. Check portfolio margin exposure - FIXED: Sum of MARGIN (pre-leverage) not NOTIONAL (post-leverage)
+            # Calculate existing margin usage
+            total_margin_used = sum(pos.size / LEVERAGE for pos in existing_positions)  # Convert notional to margin
+            new_position_notional = size * current_price  # New position notional value
+            new_position_margin = new_position_notional / LEVERAGE  # New position margin required
+            total_new_margin = total_margin_used + new_position_margin
             
-            max_exposure = account_balance * 2.0  # Max 2x account balance in total exposure
-            if total_new_exposure > max_exposure:
-                return False, f"Portfolio exposure limit: {total_new_exposure:.2f} > {max_exposure:.2f}"
+            max_total_margin = account_balance * 1.0  # Max margin = 1x wallet balance (your requirement)
             
-            # 4. Check individual position risk
-            max_position_value = account_balance * 0.5  # Max 50% of balance per position
-            position_value = size * current_price
-            if position_value > max_position_value:
-                return False, f"Position too large: {position_value:.2f} > {max_position_value:.2f}"
+            if total_new_margin > max_total_margin:
+                logging.debug(f"Portfolio margin check: Existing=${total_margin_used:.2f}, New=${new_position_margin:.2f}, Total=${total_new_margin:.2f}, Max=${max_total_margin:.2f}")
+                return False, f"Portfolio margin limit exceeded: ${total_new_margin:.2f} > ${max_total_margin:.2f} (wallet balance)"
             
-            # 5. Check symbol concentration (max 2 positions of same base asset)
-            base_asset = symbol.split('/')[0] if '/' in symbol else symbol[:3]
-            same_asset_count = sum(1 for pos in existing_positions 
-                                 if pos.symbol.split('/')[0] == base_asset)
-            if same_asset_count >= 2:
-                return False, f"Too many {base_asset} positions: {same_asset_count}"
+            # 4. Check individual position risk - FIXED: Check MARGIN (pre-leverage) not NOTIONAL (post-leverage)
+            position_notional = size * current_price  # Notional value (post-leverage)
+            position_margin = position_notional / LEVERAGE  # Actual margin required (pre-leverage)
+            
+            max_margin_per_position = 50.0  # Max 50 USD margin per position (matching dynamic margin range)
+            
+            if position_margin > max_margin_per_position:
+                return False, f"Position margin too large: ${position_margin:.2f} > ${max_margin_per_position:.2f}"
+            
+            # 5. Check symbol concentration - FIXED: Max 1 position per symbol (exact symbol match)
+            same_symbol_count = sum(1 for pos in existing_positions if pos.symbol == symbol)
+            if same_symbol_count >= 1:
+                return False, f"Position already exists for {symbol} (max 1 per symbol)"
             
             # All checks passed
             return True, "Position approved"
@@ -387,12 +558,25 @@ class RobustRiskManager:
             else:
                 overall_risk = RiskLevel.LOW
             
+            # CRITICAL FIX: Calculate correlation risk between positions
+            correlation_risk = self._calculate_correlation_risk(positions)
+            
+            # Add correlation risk to overall assessment
+            if correlation_risk > 0.8:
+                risk_factors.append("high_correlation")
+                if overall_risk == RiskLevel.LOW:
+                    overall_risk = RiskLevel.MEDIUM
+                elif overall_risk == RiskLevel.MEDIUM:
+                    overall_risk = RiskLevel.HIGH
+            elif correlation_risk > 0.6:
+                risk_factors.append("medium_correlation")
+            
             return PortfolioRisk(
                 total_exposure=total_exposure,
                 total_unrealized_pnl=total_pnl,
                 max_drawdown=self.current_drawdown,
                 open_positions=len(positions),
-                correlation_risk=0.0,  # Simplified for now
+                correlation_risk=correlation_risk,
                 overall_risk_level=overall_risk
             )
             
@@ -441,6 +625,65 @@ class RobustRiskManager:
             logging.error(f"Error in emergency close check: {e}")
             return True, f"Emergency check error: {e}"  # Err on safe side
     
+    def _calculate_correlation_risk(self, positions: List[PositionRisk]) -> float:
+        """
+        CRITICAL FIX: Calculate correlation risk between portfolio positions
+        
+        Args:
+            positions: List of current positions
+            
+        Returns:
+            float: Correlation risk score (0.0-1.0)
+        """
+        try:
+            if len(positions) < 2:
+                return 0.0  # No correlation with less than 2 positions
+            
+            # Simplified correlation calculation based on asset types
+            base_assets = [pos.symbol.split('/')[0] if '/' in pos.symbol else pos.symbol[:3] 
+                          for pos in positions]
+            
+            # Define asset correlation groups
+            major_crypto = ['BTC', 'ETH']
+            altcoins = ['SOL', 'ADA', 'MATIC', 'LINK', 'DOT', 'UNI', 'AVAX']
+            meme_coins = ['DOGE', 'SHIB', 'PEPE', 'FLOKI', 'WIF', 'BONK']
+            defi_tokens = ['AAVE', 'COMP', 'SNX', 'UNI', 'SUSHI']
+            
+            # Count positions by correlation groups
+            group_counts = {
+                'major_crypto': sum(1 for asset in base_assets if asset in major_crypto),
+                'altcoins': sum(1 for asset in base_assets if asset in altcoins),
+                'meme_coins': sum(1 for asset in base_assets if asset in meme_coins),
+                'defi_tokens': sum(1 for asset in base_assets if asset in defi_tokens)
+            }
+            
+            # Calculate correlation risk
+            total_positions = len(positions)
+            correlation_risk = 0.0
+            
+            for group, count in group_counts.items():
+                if count > 1:
+                    # High correlation risk if multiple positions in same group
+                    group_correlation = (count / total_positions) ** 2
+                    correlation_risk = max(correlation_risk, group_correlation)
+            
+            # Additional penalty for same-asset positions
+            asset_counts = {}
+            for asset in base_assets:
+                asset_counts[asset] = asset_counts.get(asset, 0) + 1
+            
+            for asset, count in asset_counts.items():
+                if count > 1:
+                    same_asset_risk = count / total_positions
+                    correlation_risk = max(correlation_risk, same_asset_risk)
+            
+            logging.debug(f"Portfolio correlation risk: {correlation_risk:.3f} (groups: {group_counts})")
+            return min(1.0, correlation_risk)  # Cap at 1.0
+            
+        except Exception as e:
+            logging.error(f"Error calculating correlation risk: {e}")
+            return 0.5  # Conservative middle value on error
+
     def get_risk_adjusted_margin(self,
                                base_margin: float,
                                portfolio_risk: PortfolioRisk) -> float:

@@ -30,7 +30,7 @@ from fetcher import fetch_markets, get_top_symbols, fetch_min_amounts, fetch_and
 try:
     from core.database_cache import global_db_cache, display_database_stats
     DATABASE_SYSTEM_LOADED = True
-    logging.info("🗄️ Database system integration loaded")
+    # Silenced: logging.info("🗄️ Database system integration loaded")
 except ImportError as e:
     logging.warning(f"⚠️ Database system integration not available: {e}")
     DATABASE_SYSTEM_LOADED = False
@@ -43,7 +43,7 @@ from trainer import (
 from predictor import predict_signal_ensemble, get_color_normal
 from trade_manager import (
     get_real_balance, manage_position, get_open_positions,
-    update_orders_status
+    update_orders_status, sync_positions_at_startup
 )
 from data_utils import prepare_data
 from trainer import ensure_trained_models_dir
@@ -76,6 +76,15 @@ try:
 except ImportError as e:
     logging.warning(f"⚠️ Position Tracker not available: {e}")
     POSITION_TRACKER_AVAILABLE = False
+
+# Import RL agent system
+try:
+    from core.rl_agent import global_rl_agent, build_market_context
+    RL_AGENT_AVAILABLE = True
+    # Silenced: logging.info("🤖 RL Signal Filter loaded")
+except ImportError as e:
+    logging.warning(f"⚠️ RL Agent not available: {e}")
+    RL_AGENT_AVAILABLE = False
 
 if sys.platform.startswith('win'):
     import asyncio
@@ -366,6 +375,100 @@ def calculate_ensemble_confidence(tf_predictions, ensemble_value):
     except Exception as e:
         return f"Confidence calculation error: {e}"
 
+def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, risk_manager_available=False):
+    """
+    Display structured decision analysis for each symbol
+    
+    Shows the complete decision pipeline: Consensus -> ML -> RL -> Risk Manager -> Final Decision
+    """
+    try:
+        symbol_short = symbol.replace('/USDT:USDT', '')
+        
+        print(colored(f"\n🔍 {symbol_short} Analysis:", "cyan", attrs=['bold']))
+        
+        # 1. CONSENSUS TIMEFRAME ANALYSIS
+        tf_predictions = signal_data.get('tf_predictions', {})
+        if tf_predictions:
+            tf_details = []
+            signal_names = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}
+            for tf, pred in tf_predictions.items():
+                signal_name = signal_names.get(pred, 'UNKNOWN')
+                color = 'red' if signal_name == 'SELL' else 'green' if signal_name == 'BUY' else 'yellow'
+                tf_details.append(colored(f"{tf}={signal_name}", color))
+            
+            # Calculate consensus percentage
+            signal_counts = {}
+            for pred in tf_predictions.values():
+                signal_name = signal_names.get(pred, 'UNKNOWN')
+                signal_counts[signal_name] = signal_counts.get(signal_name, 0) + 1
+            
+            winning_signal = max(signal_counts.items(), key=lambda x: x[1])[0]
+            consensus_pct = (signal_counts[winning_signal] / len(tf_predictions)) * 100
+            
+            consensus_color = 'green' if consensus_pct >= 66 else 'yellow' if consensus_pct >= 50 else 'red'
+            print(f"  📊 Consensus: {', '.join(tf_details)} → {colored(f'{consensus_pct:.0f}% agreement', consensus_color)}")
+        
+        # 2. ML CONFIDENCE
+        ml_confidence = signal_data.get('confidence', 0)
+        confidence_color = 'green' if ml_confidence >= 0.7 else 'yellow' if ml_confidence >= 0.5 else 'red'
+        print(f"  🧠 ML Confidence: {colored(f'{ml_confidence:.1%}', confidence_color)}")
+        
+        # 3. RL APPROVAL WITH DETAILED REASONING
+        if rl_available:
+            rl_details = signal_data.get('rl_details', {})
+            rl_approved = signal_data.get('rl_approved', False)
+            rl_confidence = signal_data.get('rl_confidence', 0)
+            
+            if rl_approved:
+                rl_color = 'green' if rl_confidence >= 0.6 else 'yellow'
+                print(f"  🤖 RL Approval: {colored('✅ APPROVED', 'green')} (RL confidence: {colored(f'{rl_confidence:.1%}', rl_color)})")
+                
+                # Show approval reasons
+                if rl_details.get('approvals'):
+                    for approval in rl_details['approvals'][:2]:  # Show top 2 reasons
+                        print(colored(f"      ✅ {approval}", 'green'))
+            else:
+                print(f"  🤖 RL Approval: {colored('❌ REJECTED', 'red')}")
+                
+                # Show detailed rejection reasons
+                factors = rl_details.get('factors', {})
+                issues = rl_details.get('issues', [])
+                
+                # Show key factors that caused rejection
+                for factor_name, factor_info in factors.items():
+                    if factor_info.get('status') in ['TOO_HIGH', 'TOO_LOW', 'WEAK', 'LOW']:
+                        status_color = 'red' if factor_info['status'] in ['TOO_HIGH', 'TOO_LOW'] else 'yellow'
+                        factor_display = factor_name.replace('_', ' ').title()
+                        print(colored(f"      ❌ {factor_display}: {factor_info['value']} (limit: {factor_info['threshold']})", status_color))
+                
+                # Primary reason
+                primary_reason = rl_details.get('primary_reason', 'Unknown reason')
+                print(colored(f"      🔒 Primary: {primary_reason}", 'red'))
+        else:
+            print(f"  🤖 RL Approval: {colored('⚪ N/A', 'white')} (RL system not available)")
+        
+        # 4. RISK MANAGER VALIDATION
+        if risk_manager_available:
+            print(f"  🛡️ Risk Manager: {colored('✅ APPROVED', 'green')} (position size validated)")
+        else:
+            print(f"  🛡️ Risk Manager: {colored('⚪ FALLBACK', 'yellow')} (using conservative sizing)")
+        
+        # 5. FINAL DECISION
+        final_action = signal_data.get('signal_name', 'SKIP')
+        if final_action in ['BUY', 'SELL']:
+            action_color = 'green'
+            action_symbol = '🎯'
+        else:
+            action_color = 'red'
+            action_symbol = '⏭️'
+            final_action = 'SKIP'
+        
+        print(f"  {action_symbol} {colored('DECISION:', 'white', attrs=['bold'])} {colored(f'{final_action}', action_color, attrs=['bold'])}")
+        
+    except Exception as e:
+        logging.error(f"Error displaying decision analysis for {symbol}: {e}")
+        print(colored(f"  ❌ Analysis Error: {str(e)[:50]}...", "red"))
+
 async def trade_signals():
     global async_exchange, xgb_models, xgb_scalers, min_amounts
 
@@ -495,10 +598,73 @@ async def trade_signals():
                         result = predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, TIME_STEPS)
                         prediction_results[symbol] = result
 
-                # Process prediction results into signal format
+                # NEW: Display decision analysis for each symbol (with broader scope)
+                print(colored("\n🔍 DECISION ANALYSIS FOR ALL SYMBOLS", "cyan", attrs=['bold']))
+                print(colored("=" * 80, "cyan"))
+                
+                # Process all prediction results and show decision analysis
                 for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
                     try:
+                        # Create signal data for analysis display
+                        signal_data = {
+                            'symbol': symbol,
+                            'signal': final_signal,
+                            'signal_name': 'BUY' if final_signal == 1 else 'SELL' if final_signal is not None and final_signal != 2 else 'NEUTRAL',
+                            'confidence': ensemble_value if ensemble_value is not None else 0.0,
+                            'tf_predictions': tf_predictions,
+                            'price': 0
+                        }
+                        
+                        # Get RL decision with detailed reasons (if available)
+                        if RL_AGENT_AVAILABLE and final_signal is not None and final_signal != 2:
+                            try:
+                                market_context = build_market_context(symbol, all_symbol_data[symbol])
+                                portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
+                                
+                                # Get RL decision with detailed analysis
+                                should_execute, rl_confidence, rl_details = global_rl_agent.should_execute_signal(
+                                    signal_data, market_context, portfolio_state
+                                )
+                                
+                                signal_data['rl_approved'] = should_execute
+                                signal_data['rl_confidence'] = rl_confidence
+                                signal_data['rl_details'] = rl_details
+                                
+                            except Exception as rl_error:
+                                logging.warning(f"RL analysis error for {symbol}: {rl_error}")
+                                # Fallback: no RL data
+                                signal_data['rl_approved'] = True
+                                signal_data['rl_confidence'] = 0.6
+                                signal_data['rl_details'] = {
+                                    'primary_reason': f'RL Error: {str(rl_error)[:50]}...',
+                                    'factors': {},
+                                    'final_verdict': 'FALLBACK_APPROVED'
+                                }
+                        
+                        # Show decision analysis for this symbol
+                        display_symbol_decision_analysis(
+                            symbol, 
+                            signal_data,
+                            rl_available=RL_AGENT_AVAILABLE,
+                            risk_manager_available=True
+                        )
+                        
+                    except Exception as e:
+                        logging.error(f"Error in decision analysis for {symbol}: {e}")
+                        continue
+                
+                print(colored("=" * 80, "cyan"))
+                
+                # CRITICAL FIX: Process prediction results into signal format (for actual execution)
+                logging.info(colored("🔧 Processing prediction results for execution...", "yellow"))
+                
+                for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
+                    try:
+                        symbol_short = symbol.replace('/USDT:USDT', '')
+                        logging.debug(f"🔍 Processing {symbol_short}: ensemble={ensemble_value}, signal={final_signal}")
+                        
                         if ensemble_value is None or final_signal is None or final_signal == 2:
+                            logging.debug(f"⏭️ Skipping {symbol_short}: ensemble={ensemble_value}, signal={final_signal}")
                             continue
 
                         # Store signal with confidence details
@@ -522,11 +688,48 @@ async def trade_signals():
                             'dataframes': all_symbol_data[symbol]  # Use pre-fetched data
                         }
                         
-                        all_signals.append(signal_data)
+                        # 🤖 RL FILTER LAYER - CRITICAL FIX WITH DEBUG
+                        if RL_AGENT_AVAILABLE:
+                            try:
+                                # Build market context for RL decision
+                                market_context = build_market_context(symbol, all_symbol_data[symbol])
+                                portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
+                                
+                                # Get RL decision
+                                should_execute, rl_confidence, rl_details = global_rl_agent.should_execute_signal(
+                                    signal_data, market_context, portfolio_state
+                                )
+                                
+                                logging.debug(f"🤖 RL Decision for {symbol_short}: should_execute={should_execute}, confidence={rl_confidence:.1%}")
+                                
+                                if should_execute:
+                                    # RL approves signal
+                                    signal_data['rl_confidence'] = rl_confidence
+                                    signal_data['rl_approved'] = True
+                                    all_signals.append(signal_data)
+                                    logging.info(f"✅ Added to execution queue: {symbol_short} {signal_data['signal_name']} (XGB:{ensemble_value:.1%}, RL:{rl_confidence:.1%})")
+                                else:
+                                    # RL rejects signal - but we already showed the analysis above
+                                    logging.info(f"❌ RL Rejected execution: {symbol_short} {signal_data['signal_name']} (reason: {rl_details.get('primary_reason', 'Unknown')})")
+                                
+                            except Exception as rl_error:
+                                logging.warning(f"RL filter error for {symbol}: {rl_error}")
+                                # Fallback: accept signal without RL filtering
+                                all_signals.append(signal_data)
+                                logging.info(f"🔄 Added via fallback: {symbol_short} {signal_data['signal_name']} (RL error fallback)")
+                        else:
+                            # No RL available, accept all XGBoost signals
+                            all_signals.append(signal_data)
+                            logging.info(f"➕ Added (no RL): {symbol_short} {signal_data['signal_name']} (XGB:{ensemble_value:.1%})")
                         
                     except Exception as e:
                         logging.error(f"Error processing signal for {symbol}: {e}")
                         continue
+                
+                # DEBUG: Log final all_signals count
+                logging.info(colored(f"🔢 Final signals ready for execution: {len(all_signals)}", "cyan"))
+                for i, sig in enumerate(all_signals, 1):
+                    logging.debug(f"   {i}. {sig['symbol'].replace('/USDT:USDT', '')} {sig['signal_name']} - {sig['confidence']:.1%}")
 
             # PHASE 2: RANK BY CONFIDENCE AND SELECT TOP SIGNALS
             print()
@@ -535,8 +738,10 @@ async def trade_signals():
             if not all_signals:
                 logging.warning(colored("⚠️ No signals found this cycle", "yellow"))
             else:
-                # Sort by confidence (highest first)
-                all_signals.sort(key=lambda x: x['confidence'], reverse=True)
+                # Sort by ML confidence (highest first)
+                all_signals.sort(key=lambda x: x.get('confidence', 0.0), reverse=True)
+                
+                logging.info("🔧 Signals ranked by ML confidence")
                 
                 # Show top 10 signals
                 logging.info(colored("🏆 TOP 10 SIGNALS BY CONFIDENCE:", "yellow", attrs=['bold']))
@@ -567,7 +772,19 @@ async def trade_signals():
                         final_signal = signal['signal']
                         dataframes = signal['dataframes']
                         
-                        logging.info(colored(f"🎯 Executing {signal['signal_name']} for {symbol} (confidence: {signal['confidence']:.1%})", "cyan"))
+                        # Show RL info if available
+                        rl_info = f", RL:{signal.get('rl_confidence', 0):.1%}" if signal.get('rl_approved') else ""
+                        logging.info(colored(f"🎯 Executing {signal['signal_name']} for {symbol} (XGB:{signal['confidence']:.1%}{rl_info})", "cyan"))
+                        
+                        # Store RL state for learning (if RL was used)
+                        rl_state_for_position = None
+                        if RL_AGENT_AVAILABLE and signal.get('rl_approved'):
+                            try:
+                                market_context = build_market_context(symbol, signal['dataframes'])
+                                portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
+                                rl_state_for_position = global_rl_agent.build_rl_state(signal, market_context, portfolio_state)
+                            except Exception as rl_state_error:
+                                logging.warning(f"Error building RL state for position: {rl_state_error}")
                         
                         # Execute the trade
                         result = await manage_position(
@@ -575,15 +792,36 @@ async def trade_signals():
                             None, None, None, None, dataframes[TIMEFRAME_DEFAULT]
                         )
                         
-                        # Generate automatic backtest for this signal
-                        await generate_signal_backtest(symbol, dataframes, signal)
+                        # Add RL state to opened position for future learning
+                        if RL_AGENT_AVAILABLE and POSITION_TRACKER_AVAILABLE and rl_state_for_position is not None:
+                            try:
+                                # Find the most recently opened position for this symbol
+                                for pos_id, position in global_position_tracker.active_positions.items():
+                                    if position['symbol'] == symbol and 'rl_state' not in position:
+                                        position['rl_state'] = rl_state_for_position
+                                        global_position_tracker.save_session()
+                                        logging.debug(f"💾 RL state saved for position {symbol}")
+                                        break
+                            except Exception as rl_save_error:
+                                logging.warning(f"Error saving RL state to position: {rl_save_error}")
                         
-                        if result == "insufficient_balance":
+                        # Check if trade was successful before generating backtest
+                        if isinstance(result, dict) and result.get('trade_id'):
+                            # Trade successful - generate automatic backtest
+                            await generate_signal_backtest(symbol, dataframes, signal)
+                            logging.debug(f"📊 Backtest generated for successful {symbol} trade")
+                        elif result == "insufficient_balance":
                             logging.warning(f"❌ {symbol}: Insufficient balance")
                             break  # Stop trying if no balance
                         elif result == "max_trades_reached":
                             logging.warning(f"❌ Max trades reached")
                             break  # Stop if max trades reached
+                        elif result == "risk_rejected":
+                            logging.info(f"⚠️ {symbol}: Trade rejected by risk manager")
+                            # Continue to next signal - don't break the loop
+                        else:
+                            logging.warning(f"⚠️ {symbol}: Trade execution returned: {result}")
+                            # Continue to next signal for other errors too
                             
                     except Exception as e:
                         logging.error(f"❌ Error executing {symbol}: {e}")
@@ -591,6 +829,92 @@ async def trade_signals():
             else:
                 logging.info(colored("😐 No signals to execute this cycle", "yellow"))
 
+            # CRITICAL FIX: Sync ALL real positions from Bybit every cycle (not just at startup)
+            if POSITION_TRACKER_AVAILABLE and not config.DEMO_MODE:
+                try:
+                    # Get current positions from Bybit
+                    logging.debug("🔄 Syncing positions from Bybit...")
+                    real_positions = await async_exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
+                    active_real_positions = [p for p in real_positions if float(p.get('contracts', 0)) > 0]
+                    
+                    # Update position tracker with ALL real positions
+                    for pos in active_real_positions:
+                        try:
+                            symbol = pos.get('symbol')
+                            side = 'BUY' if float(pos.get('contracts', 0)) > 0 else 'SELL'
+                            entry_price = float(pos.get('entryPrice', 0))
+                            contracts = abs(float(pos.get('contracts', 0)))
+                            position_size = contracts * entry_price  # USD value
+                            unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+                            
+                            if symbol and entry_price > 0:
+                                # Check if position already exists in tracker
+                                existing_pos_id = None
+                                for pos_id, tracked_pos in global_position_tracker.active_positions.items():
+                                    if tracked_pos['symbol'] == symbol:
+                                        existing_pos_id = pos_id
+                                        break
+                                
+                                if existing_pos_id:
+                                    # Update existing position
+                                    global_position_tracker.active_positions[existing_pos_id].update({
+                                        'current_price': entry_price,
+                                        'unrealized_pnl_pct': (unrealized_pnl / position_size) * 100,
+                                        'unrealized_pnl_usd': unrealized_pnl,
+                                        'position_size': position_size  # Update size if changed
+                                    })
+                                else:
+                                    # Add new position not tracked yet
+                                    position_id = f"sync_{symbol}_{datetime.now().strftime('%H%M%S')}"
+                                    
+                                    # Calculate protective levels for new imports
+                                    protective_stop_pct = 40.0
+                                    if side == 'BUY':
+                                        protective_stop_loss = entry_price * (1 - protective_stop_pct / 100)
+                                        protective_tp = entry_price * (1 + (protective_stop_pct / 100) * 0.5)
+                                        trailing_trigger = entry_price * 1.01
+                                    else:
+                                        protective_stop_loss = entry_price * (1 + protective_stop_pct / 100)
+                                        protective_tp = entry_price * (1 - (protective_stop_pct / 100) * 0.5)
+                                        trailing_trigger = entry_price * 0.99
+                                    
+                                    position_data = {
+                                        'position_id': position_id,
+                                        'symbol': symbol,
+                                        'side': side,
+                                        'entry_price': entry_price,
+                                        'entry_time': datetime.now().isoformat(),
+                                        'position_size': position_size,
+                                        'leverage': LEVERAGE,
+                                        'confidence': 0.7,
+                                        'atr': entry_price * 0.02,
+                                        'take_profit': protective_tp,
+                                        'stop_loss': protective_stop_loss,
+                                        'trailing_trigger': trailing_trigger,
+                                        'initial_stop_loss': protective_stop_loss,
+                                        'trailing_active': False,
+                                        'current_price': entry_price,
+                                        'unrealized_pnl_pct': (unrealized_pnl / position_size) * 100,
+                                        'unrealized_pnl_usd': unrealized_pnl,
+                                        'max_favorable_pnl': 0.0,
+                                        'status': 'OPEN',
+                                        'imported': True,
+                                        'protective_sl_set': True
+                                    }
+                                    
+                                    global_position_tracker.active_positions[position_id] = position_data
+                                    
+                                    logging.info(colored(f"📥 New position detected: {symbol} {side} @ {entry_price:.6f}", "yellow"))
+                        except Exception as sync_error:
+                            logging.warning(f"Error syncing position {symbol}: {sync_error}")
+                            continue
+                    
+                    global_position_tracker.save_session()
+                    logging.debug(f"✅ Position sync complete: {len(global_position_tracker.active_positions)} positions tracked")
+                    
+                except Exception as sync_error:
+                    logging.warning(f"Position sync error: {sync_error}")
+            
             # Update position tracker with current prices for real-time PnL
             if POSITION_TRACKER_AVAILABLE:
                 try:
@@ -613,7 +937,37 @@ async def trade_signals():
                             position['exit_price'], 
                             position['exit_reason']
                         )
-                        logging.info(colored(f"🎯 {position['symbol']} closed: {position['exit_reason']} PnL: {position['final_pnl_pct']:+.2f}%", "yellow"))
+                        
+                        # 🧠 RL LEARNING FROM TRADE RESULTS (NEW!)
+                        if RL_AGENT_AVAILABLE and 'rl_state' in position:
+                            try:
+                                # Calculate reward for RL learning
+                                trade_result = {
+                                    'final_pnl_pct': position['final_pnl_pct'],
+                                    'exit_reason': position['exit_reason'],
+                                    'trade_duration': position.get('trade_duration', 0)
+                                }
+                                
+                                portfolio_state = global_position_tracker.get_session_summary()
+                                reward = global_rl_agent.calculate_reward(trade_result, portfolio_state)
+                                
+                                # Record experience for RL learning
+                                global_rl_agent.record_trade_result(
+                                    position['rl_state'], 
+                                    True,  # Action was to execute (since trade happened)
+                                    reward
+                                )
+                                
+                                # Update RL model if enough experience
+                                global_rl_agent.update_model()
+                                global_rl_agent.save_model()
+                                
+                                logging.debug(f"🧠 RL learned from {position['symbol']}: PnL {position['final_pnl_pct']:+.2f}%, Reward {reward:.3f}")
+                                
+                            except Exception as rl_learn_error:
+                                logging.warning(f"RL learning error: {rl_learn_error}")
+                        
+                        logging.debug(f"🎯 {position['symbol']} closed: {position['exit_reason']} PnL: {position['final_pnl_pct']:+.2f}%")
                     
                     # Display enhanced wallet status
                     summary = global_position_tracker.get_session_summary()
@@ -744,6 +1098,7 @@ async def main():
         
         logging.info(colored("🧠 Initializing ML models...", "cyan"))
         
+        model_status = {}
         for tf in ENABLED_TIMEFRAMES:
             xgb_models[tf], xgb_scalers[tf] = await asyncio.to_thread(load_xgboost_model_func, tf)
         
@@ -758,17 +1113,49 @@ async def main():
                     
                     if xgb_models[tf] and training_metrics:
                         logging.info(colored(f"✅ Model trained for {tf}: Accuracy {training_metrics.get('val_accuracy', 0):.3f}", "green"))
+                        model_status[tf] = True
                         
                         try:
                             await run_integrated_backtest(top_symbols_training[0], tf, async_exchange)
                         except Exception as bt_error:
                             logging.warning(f"Backtest demo failed: {bt_error}")
+                    else:
+                        model_status[tf] = False
                     
                 else:
                     raise Exception(f"XGBoost model for timeframe {tf} not available. Train models first.")
+            else:
+                model_status[tf] = True
 
-        logging.info(colored("🎉 All models ready!", "green"))
+        # CONSOLIDATED MODEL STATUS DISPLAY
+        working_models = sum(1 for status in model_status.values() if status)
+        total_models = len(ENABLED_TIMEFRAMES)
+        
+        logging.info(colored("=" * 50, "green"))
+        logging.info(colored("🤖 ML MODELS STATUS", "green", attrs=['bold']))
+        
+        for tf in ENABLED_TIMEFRAMES:
+            status_emoji = "✅" if model_status.get(tf, False) else "❌"
+            status_text = colored("READY", "green") if model_status.get(tf, False) else colored("FAILED", "red")
+            logging.info(colored(f"  {tf:>4}: {status_emoji} {status_text}", "white"))
+        
+        logging.info(colored(f"🎯 Status: {working_models}/{total_models} models ready for parallel prediction", "green"))
+        logging.info(colored("=" * 50, "green"))
         show_charts_info()
+
+        # 🔄 NEW: Sync positions at startup
+        logging.info(colored("🔄 STARTUP POSITION SYNC", "cyan", attrs=['bold']))
+        synced_positions = await sync_positions_at_startup(async_exchange)
+        
+        if config.DEMO_MODE:
+            logging.info(colored(f"🎮 Demo mode initialized: Fresh session started", "magenta"))
+        else:
+            if synced_positions > 0:
+                logging.info(colored(f"📊 Live mode: {synced_positions} existing positions imported from Bybit", "cyan"))
+            else:
+                logging.info(colored("🆕 Live mode: No existing positions - starting fresh", "green"))
+        
+        logging.info(colored("-" * 80, "cyan"))
 
         # Start trading signals
         await asyncio.gather(trade_signals())
@@ -778,9 +1165,25 @@ async def main():
     except Exception as e:
         error_msg = str(e)
         logging.error(f"{colored('Error in main loop:', 'red')} {error_msg}")
+        
+        # ENHANCED ERROR RECOVERY - Avoid restart loops
         if "invalid request, please check your server timestamp" in error_msg:
-            logging.info(colored("Timestamp error detected. Restarting script...", "red"))
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            logging.warning(colored("⚠️ Timestamp error detected. Attempting recovery...", "yellow"))
+            try:
+                # Try to reload time difference and markets
+                await async_exchange.load_time_difference()
+                await async_exchange.load_markets()
+                logging.info(colored("✅ Exchange time synchronization recovered", "green"))
+                # Continue with normal operation instead of restart
+                await asyncio.sleep(10)  # Brief pause before continuing
+            except Exception as recovery_error:
+                logging.error(f"❌ Recovery failed: {recovery_error}")
+                logging.info(colored("🔄 Attempting full restart as last resort...", "red"))
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+        else:
+            # For other errors, log and continue with delay
+            logging.warning(colored(f"⚠️ Non-critical error in main loop, continuing after delay", "yellow"))
+            await asyncio.sleep(30)  # 30s delay before retry
     finally:
         await async_exchange.close()
         logging.info(colored("Program terminated.", "red"))

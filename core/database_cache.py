@@ -44,7 +44,7 @@ class DatabaseCache:
         
         self.init_database()
         self.load_stats()
-        logging.info(f"🗄️ Database Cache initialized: {self.db_path}")
+        # Silenced: logging.info(f"🗄️ Database Cache initialized: {self.db_path}")
     
     def init_database(self):
         """Initialize database tables and indexes"""
@@ -136,7 +136,7 @@ class DatabaseCache:
                 ''')
                 
                 conn.commit()
-                logging.info("🗄️ Database tables and indexes created/verified")
+                # Silenced: logging.info("🗄️ Database tables and indexes created/verified")
                 
         except Exception as e:
             logging.error(f"❌ Database initialization failed: {e}")

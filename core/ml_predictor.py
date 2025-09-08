@@ -36,16 +36,25 @@ class RobustMLPredictor:
     Robust ML Predictor that handles model loading failures gracefully
     """
     
-    def __init__(self, timeframes: list):
+    def __init__(self, timeframes: list, preloaded_models=None, preloaded_scalers=None):
         self.timeframes = timeframes
         self.models = {}
         self.scalers = {}
         self.model_status = {}
-        self._load_all_models()
+        
+        # If models are already loaded, use them directly (for parallel workers)
+        if preloaded_models is not None and preloaded_scalers is not None:
+            self.models = preloaded_models
+            self.scalers = preloaded_scalers
+            self.model_status = {tf: True for tf in timeframes if tf in preloaded_models}
+            logging.debug(f"✅ Using preloaded models for {len(self.model_status)} timeframes")
+        else:
+            # Load from disk only if not preloaded
+            self._load_all_models()
     
     def _load_all_models(self):
         """Load all models with comprehensive validation"""
-        logging.info("🔄 Loading ML models with robust validation...")
+        logging.debug("🔄 Loading ML models from disk...")  # Changed to debug to avoid spam
         
         for tf in self.timeframes:
             success = self._load_model_for_timeframe(tf)
@@ -60,7 +69,7 @@ class RobustMLPredictor:
         elif working_models < total_models:
             logging.warning(f"⚠️ Only {working_models}/{total_models} models loaded successfully")
         else:
-            logging.info(f"✅ All {working_models} ML models loaded successfully")
+            logging.debug(f"✅ All {working_models} ML models loaded from disk")  # Changed to debug
     
     def _load_model_for_timeframe(self, timeframe: str) -> bool:
         """Load model and scaler for a specific timeframe with validation"""
@@ -107,7 +116,7 @@ class RobustMLPredictor:
             # If we get here, model is valid
             self.models[timeframe] = model
             self.scalers[timeframe] = scaler
-            logging.info(f"✅ Model loaded and validated for {timeframe}")
+            logging.debug(f"✅ Model loaded and validated for {timeframe}")  # Changed to debug
             return True
             
         except Exception as e:
@@ -368,11 +377,15 @@ def predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_st
         # Use only working timeframes
         filtered_dataframes = {tf: dataframes[tf] for tf in working_timeframes}
         
-        # Create temporary predictor instance
-        predictor = RobustMLPredictor(working_timeframes)
-        predictor.models = {tf: xgb_models[tf] for tf in working_timeframes}
-        predictor.scalers = {tf: xgb_scalers[tf] for tf in working_timeframes}
-        predictor.model_status = {tf: True for tf in working_timeframes}
+        # Create predictor instance with preloaded models (no disk loading!)
+        filtered_models = {tf: xgb_models[tf] for tf in working_timeframes}
+        filtered_scalers = {tf: xgb_scalers[tf] for tf in working_timeframes}
+        
+        predictor = RobustMLPredictor(
+            timeframes=working_timeframes,
+            preloaded_models=filtered_models,
+            preloaded_scalers=filtered_scalers
+        )
         
         # Make prediction
         return predictor.predict_for_symbol(symbol, filtered_dataframes, time_steps)

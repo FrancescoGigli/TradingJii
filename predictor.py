@@ -13,10 +13,11 @@ from config import (
 )
 from data_utils import prepare_data
 
-# Import the robust ML predictor
+# CRITICAL FIX: Use unified robust ML predictor as primary
 try:
-    from core.ml_predictor import predict_signal_ensemble as robust_predict_signal_ensemble
+    from core.ml_predictor import predict_signal_ensemble as robust_predict_signal_ensemble, RobustMLPredictor
     ROBUST_PREDICTOR_AVAILABLE = True
+    logging.debug("✅ Using RobustMLPredictor as primary ensemble system")
 except ImportError as e:
     logging.warning(f"⚠️ Robust ML Predictor not available: {e}")
     ROBUST_PREDICTOR_AVAILABLE = False
@@ -198,22 +199,38 @@ def predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_st
         logging.error(f"❌ All predictions failed for {symbol}")
         return None, None, {}
     
-    # Simple ensemble voting
-    all_votes = list(xgb_preds.values())
-    votes_counter = {}
-    for vote in all_votes:
-        votes_counter[vote] = votes_counter.get(vote, 0) + 1
+    # CRITICAL FIX: Weighted ensemble voting using timeframe weights
+    from config import TIMEFRAME_WEIGHTS
     
-    final_signal = max(votes_counter.items(), key=lambda x: x[1])[0]
-    total_votes = sum(votes_counter.values())
-    confidence_value = votes_counter[final_signal] / total_votes
+    # Calculate weighted votes for each class
+    weighted_votes = {0: 0.0, 1: 0.0, 2: 0.0}  # SELL, BUY, NEUTRAL
+    total_weight = 0.0
+    
+    for tf, vote in xgb_preds.items():
+        weight = TIMEFRAME_WEIGHTS.get(tf, 1.0)  # Get weight from config
+        weighted_votes[vote] += weight
+        total_weight += weight
+        
+        logging.debug(f"{symbol} [{tf}]: Vote={vote}, Weight={weight}")
+    
+    # Find winning signal based on weighted votes
+    final_signal = max(weighted_votes.items(), key=lambda x: x[1])[0]
+    
+    # Calculate weighted confidence (not simple majority)
+    confidence_value = weighted_votes[final_signal] / total_weight if total_weight > 0 else 0.0
+    
+    # Log weighted voting results
+    signal_names = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}
+    logging.debug(f"{symbol} weighted votes: {dict((signal_names[k], f'{v:.2f}') for k, v in weighted_votes.items())}")
     
     # Log results
-    logging.info(f"{symbol}: Final signal {final_signal} with {confidence_value:.3f} confidence (votes: {votes_counter})")
+    winning_signal_name = signal_names[final_signal]
+    logging.info(f"{symbol}: Final signal {winning_signal_name} with {confidence_value:.3f} weighted confidence")
     
-    # Apply confidence threshold
-    if confidence_value < 0.6:  # Simple threshold
-        logging.info(f"{symbol}: Low confidence {confidence_value:.3f}, returning None")
+    # QUICK WIN FIX: Use centralized confidence threshold
+    from config import SIGNAL_CONFIDENCE_THRESHOLD
+    if confidence_value < SIGNAL_CONFIDENCE_THRESHOLD:
+        logging.info(f"{symbol}: Low confidence {confidence_value:.3f} (below {SIGNAL_CONFIDENCE_THRESHOLD}), returning None")
         return confidence_value, None, xgb_preds
     
     return confidence_value, final_signal, xgb_preds

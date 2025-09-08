@@ -378,44 +378,78 @@ def display_wallet_and_positions(position_tracker_summary: Dict, leverage: int =
         
         print(colored("═" * 80, "cyan"))
         
-        # Active positions table
+        # Active positions table with complete TP/SL details
         if active_count > 0:
-            print(colored("📋 ACTIVE POSITIONS (Real-Time PnL)", "yellow", attrs=['bold']))
-            print(colored("─" * 95, "yellow"))
+            print(colored("📋 ACTIVE POSITIONS (Complete Details)", "yellow", attrs=['bold']))
+            print(colored("─" * 130, "yellow"))
             
-            # Table header
-            header = f"{'#':<2} {'SYMBOL':<12} {'SIDE':<4} {'ENTRY':<10} {'CURRENT':<10} {'SL':<10} {'PnL%':<8} {'PnL$':<8} {'STATUS':<10}"
+            # Wider table header with TP included
+            header = f"{'#':<2} {'SYMBOL':<10} {'SIDE':<4} {'ENTRY':<12} {'CURRENT':<12} {'STOP LOSS':<12} {'TAKE PROFIT':<12} {'PnL%':<8} {'PnL$':<8} {'STATUS':<12}"
             print(colored(header, "white", attrs=['bold']))
-            print(colored("─" * 95, "white"))
+            print(colored("─" * 130, "white"))
             
-            # Active positions rows
+            # Active positions rows with full details
             for i, (pos_id, position) in enumerate(global_position_tracker.active_positions.items(), 1):
-                symbol_short = position['symbol'].replace('/USDT:USDT', '')[:12]
+                symbol_short = position['symbol'].replace('/USDT:USDT', '')[:10]
                 side = position['side'][:4]
                 entry = position['entry_price']
                 current = position['current_price']
-                sl = position['stop_loss']
+                sl = position.get('stop_loss', 0)
+                tp = position.get('take_profit', 0)
                 pnl_pct = position['unrealized_pnl_pct']
                 pnl_usd = position['unrealized_pnl_usd']
                 
-                # Determine status with color
+                # Enhanced status with trailing info
                 if position.get('trailing_active', False):
-                    status = colored('TRAILING', 'yellow')
+                    status = colored('🎪 TRAILING', 'yellow', attrs=['bold'])
+                elif pnl_pct > 1.0:  # In profit > 1%
+                    status = colored('📈 PROFIT', 'green')
+                elif pnl_pct < -1.0:  # In loss > 1%
+                    status = colored('📉 LOSS', 'red')
                 else:
-                    status = colored('OPEN', 'green')
+                    status = colored('⚪ OPEN', 'white')
                 
-                # Color PnL based on profit/loss
+                # Color PnL based on profit/loss with enhanced formatting
                 if pnl_pct > 0:
-                    pnl_pct_colored = colored(f"+{pnl_pct:.2f}%", 'green')
-                    pnl_usd_colored = colored(f"+${pnl_usd:.2f}", 'green')
+                    pnl_pct_colored = colored(f"+{pnl_pct:.2f}%", 'green', attrs=['bold'])
+                    pnl_usd_colored = colored(f"+${pnl_usd:.2f}", 'green', attrs=['bold'])
+                elif pnl_pct < -2.0:  # Significant loss
+                    pnl_pct_colored = colored(f"{pnl_pct:.2f}%", 'red', attrs=['bold'])
+                    pnl_usd_colored = colored(f"-${abs(pnl_usd):.2f}", 'red', attrs=['bold'])
                 else:
                     pnl_pct_colored = colored(f"{pnl_pct:.2f}%", 'red')
                     pnl_usd_colored = colored(f"-${abs(pnl_usd):.2f}", 'red')
                 
-                row = f"{i:<2} {symbol_short:<12} {side:<4} ${entry:<9.6f} ${current:<9.6f} ${sl:<9.6f} {pnl_pct_colored:<8} {pnl_usd_colored:<8} {status}"
+                # Format prices with proper precision
+                entry_str = f"${entry:.6f}"
+                current_str = f"${current:.6f}"
+                sl_str = f"${sl:.6f}" if sl > 0 else "N/A"
+                tp_str = f"${tp:.6f}" if tp > 0 else "N/A"
+                
+                row = f"{i:<2} {symbol_short:<10} {side:<4} {entry_str:<12} {current_str:<12} {sl_str:<12} {tp_str:<12} {pnl_pct_colored:<8} {pnl_usd_colored:<8} {status}"
                 print(row)
+                
+                # Additional details row for each position
+                if sl > 0 or tp > 0:
+                    # Calculate distances to TP/SL
+                    if side == 'BUY':
+                        sl_dist = ((current - sl) / current) * 100 if sl > 0 else 0
+                        tp_dist = ((tp - current) / current) * 100 if tp > 0 else 0
+                    else:  # SELL
+                        sl_dist = ((sl - current) / current) * 100 if sl > 0 else 0  
+                        tp_dist = ((current - tp) / current) * 100 if tp > 0 else 0
+                    
+                    # Enhanced details row
+                    details = f"   ├─ 🎯 Distance to TP: {colored(f'{tp_dist:+.2f}%', 'green') if tp > 0 else colored('N/A', 'gray')} | 🛡️ Distance to SL: {colored(f'{sl_dist:+.2f}%', 'red') if sl > 0 else colored('N/A', 'gray')}"
+                    print(colored(details, 'cyan'))
+                    
+                    # Show max favorable move
+                    max_favorable = position.get('max_favorable_pnl', 0)
+                    confidence = position.get('confidence', 0) * 100
+                    details2 = f"   └─ 📈 Max Profit Seen: {colored(f'{max_favorable:+.2f}%', 'green')} | 🎯 Signal Confidence: {colored(f'{confidence:.0f}%', 'cyan')}"
+                    print(colored(details2, 'cyan'))
             
-            print(colored("─" * 95, "yellow"))
+            print(colored("─" * 130, "yellow"))
             
             # Session totals
             unrealized_pnl_pct, unrealized_pnl_usd = global_position_tracker.get_total_unrealized_pnl()

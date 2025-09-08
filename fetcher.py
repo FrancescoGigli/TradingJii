@@ -16,17 +16,20 @@ from asyncio import Semaphore
 try:
     from core.database_cache import fetch_with_database, global_db_cache, global_db_manager, display_database_stats
     DATABASE_CACHE_AVAILABLE = True
-    logging.info("🗄️ Database cache system loaded successfully")
+    # Silenced: logging.info("🗄️ Database cache system loaded successfully")
 except ImportError as e:
     logging.warning(f"⚠️ Database cache system not available: {e}")
     DATABASE_CACHE_AVAILABLE = False
 
 def is_candle_closed(candle_timestamp, timeframe):
     """
-    Determina se una candela è completamente chiusa basandosi sul timeframe.
+    ENHANCED: Determina se una candela è completamente chiusa con validazione robusta
     
-    CRITICAL FIX: Assicura consistenza tra backtest e live trading
-    usando solo candele completamente chiuse.
+    CRITICAL FIXES V2:
+    - Timezone handling migliorato
+    - Validation dei parametri di input
+    - Timeframe parsing più robusto
+    - Error recovery completo
     
     Args:
         candle_timestamp (pd.Timestamp): Timestamp della candela
@@ -36,42 +39,89 @@ def is_candle_closed(candle_timestamp, timeframe):
         bool: True se la candela è chiusa, False se ancora aperta
     """
     try:
+        # Input validation
+        if candle_timestamp is None:
+            logging.error("Candle timestamp is None")
+            return True  # Safe fallback
+        
+        if not isinstance(timeframe, str) or not timeframe:
+            logging.error(f"Invalid timeframe: {timeframe}")
+            return True  # Safe fallback
+        
+        # Get current time
         current_time = pd.Timestamp.now(tz='UTC')
         
-        # Converti candle_timestamp in UTC se necessario
+        # Enhanced timezone handling
+        if isinstance(candle_timestamp, str):
+            candle_timestamp = pd.Timestamp(candle_timestamp)
+        
         if candle_timestamp.tz is None:
             candle_timestamp = candle_timestamp.tz_localize('UTC')
         else:
             candle_timestamp = candle_timestamp.tz_convert('UTC')
         
-        # Calcola la durata del timeframe in minuti
-        if timeframe.endswith('m'):
-            minutes = int(timeframe[:-1])
-        elif timeframe.endswith('h'):
-            hours = int(timeframe[:-1])
-            minutes = hours * 60
-        elif timeframe.endswith('d'):
-            days = int(timeframe[:-1])
-            minutes = days * 24 * 60
+        # Enhanced timeframe parsing with validation
+        timeframe_lower = timeframe.lower().strip()
+        minutes = 0
+        
+        if timeframe_lower.endswith('m'):
+            try:
+                minutes = int(timeframe_lower[:-1])
+                if minutes <= 0:
+                    raise ValueError("Invalid minutes")
+            except ValueError:
+                logging.warning(f"Invalid minute timeframe: {timeframe}, using 15m")
+                minutes = 15
+                
+        elif timeframe_lower.endswith('h'):
+            try:
+                hours = int(timeframe_lower[:-1])
+                if hours <= 0:
+                    raise ValueError("Invalid hours")
+                minutes = hours * 60
+            except ValueError:
+                logging.warning(f"Invalid hour timeframe: {timeframe}, using 1h")
+                minutes = 60
+                
+        elif timeframe_lower.endswith('d'):
+            try:
+                days = int(timeframe_lower[:-1])
+                if days <= 0:
+                    raise ValueError("Invalid days")
+                minutes = days * 24 * 60
+            except ValueError:
+                logging.warning(f"Invalid day timeframe: {timeframe}, using 1d")
+                minutes = 24 * 60
         else:
-            logging.warning(f"Unknown timeframe format: {timeframe}, assuming 15m")
+            logging.warning(f"Unknown timeframe format: {timeframe}, using 15m fallback")
             minutes = 15
         
-        # Una candela è chiusa se il tempo corrente >= inizio candela + durata timeframe
+        # Calculate candle end time with validation
+        if minutes <= 0:
+            logging.error(f"Invalid calculated minutes: {minutes}")
+            return True  # Safe fallback
+        
         candle_end_time = candle_timestamp + pd.Timedelta(minutes=minutes)
+        
+        # Validate calculated times
+        if candle_end_time <= candle_timestamp:
+            logging.error("Invalid candle end time calculation")
+            return True  # Safe fallback
+        
         is_closed = current_time >= candle_end_time
         
-        # Log per debug (solo per le ultime candele)
+        # Debug logging for open candles (rate limited)
         if not is_closed:
             time_remaining = candle_end_time - current_time
-            logging.debug(f"Candle {candle_timestamp} [{timeframe}] still open, closes in {time_remaining}")
+            # Only log occasionally to avoid spam
+            if hash(str(candle_timestamp)) % 100 == 0:  # Log ~1% of open candles
+                logging.debug(f"Candle {candle_timestamp} [{timeframe}] still open, closes in {time_remaining}")
         
         return is_closed
         
     except Exception as e:
-        logging.error(f"Error checking candle closure: {e}")
-        # Safe fallback: assume candle is closed if we can't determine
-        return True
+        logging.error(f"Critical error in candle closure check: {e}")
+        # Safe fallback: assume can
 async def fetch_markets(exchange):
     return await exchange.load_markets()
 
@@ -275,7 +325,7 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
             enhanced_data = global_db_cache.get_enhanced_cached_data(symbol, timeframe)
             
             if enhanced_data is not None and len(enhanced_data) > 0:
-                # Check if data is fresh enough
+                # CRITICAL FIX: Strict data freshness validation for ML predictions
                 last_timestamp = enhanced_data.index[-1]
                 now = pd.Timestamp.now(tz='UTC')
                 if last_timestamp.tz is None:
@@ -283,7 +333,10 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
                 
                 age_minutes = (now - last_timestamp).total_seconds() / 60
                 
-                if age_minutes <= 5:  # Fresh enhanced data!
+                # CRITICAL: Tightened freshness requirement for trading decisions
+                max_age_for_trading = 2  # Maximum 2 minutes for trading signals (was 5)
+                
+                if age_minutes <= max_age_for_trading:  # Strict freshness for trading
                     # 🎉 JACKPOT: Return pre-calculated indicators (10x speedup!)
                     logging.debug(f"🚀 {symbol_short}[{timeframe}]: ENHANCED cache hit - ALL indicators ready ({age_minutes:.1f}m old)")
                     
