@@ -247,19 +247,94 @@ class TradingTerminalDisplay:
         print(colored(progress_line, "cyan"), end='\r')
         
     def display_cycle_complete(self):
-        """Display cycle completion with statistics"""
-        print(colored("\n🔄 ANALYSIS CYCLE COMPLETE", "green", attrs=['bold']))
-        print(colored("=" * 80, "green"))
-        
-        # Show session summary
-        self.print_session_summary()
-        
-        # Show recent signals table if any
-        if self.signals_history:
-            self.print_signal_table(recent_signals_limit=5)
-        
-        print(colored("⏳ Next cycle in 5 minutes...", "blue", attrs=['bold']))
-        print()
+        """Display active and closed positions summary"""
+        try:
+            from core.smart_position_manager import global_smart_position_manager
+            
+            print(colored("\n📊 TRADING SESSION STATUS", "green", attrs=['bold']))
+            print(colored("=" * 100, "green"))
+            
+            # Get position data
+            open_positions = global_smart_position_manager.get_active_positions()
+            closed_positions = global_smart_position_manager.get_closed_positions()
+            session_summary = global_smart_position_manager.get_session_summary()
+            
+            # Display open positions
+            if open_positions:
+                print(colored("🟢 POSIZIONI ATTUALMENTE APERTE", "green", attrs=['bold']))
+                print(colored("┌─────┬────────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan"))
+                print(colored("│  #  │ SYMBOL │ SIDE │    ENTRY    │   CURRENT   │  PNL %   │   PNL $   │", "white", attrs=['bold']))
+                print(colored("├─────┼────────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan"))
+                
+                for i, pos in enumerate(open_positions, 1):
+                    symbol = pos.symbol.replace('/USDT:USDT', '')[:6]
+                    side_color = "green" if pos.side == "buy" else "red"
+                    pnl_color = "green" if pos.unrealized_pnl_pct > 0 else "red" if pos.unrealized_pnl_pct < 0 else "white"
+                    
+                    print(colored(f"│{i:^5}│", "white") + 
+                          colored(f"{symbol:^8}", "cyan") + colored("│", "white") +
+                          colored(f"{pos.side.upper():^6}", side_color) + colored("│", "white") +
+                          colored(f"${pos.entry_price:.6f}".center(13), "white") + colored("│", "white") +
+                          colored(f"${pos.current_price:.6f}".center(13), "white") + colored("│", "white") +
+                          colored(f"{pos.unrealized_pnl_pct:+.2f}%".center(10), pnl_color) + colored("│", "white") +
+                          colored(f"${pos.unrealized_pnl_usd:+.2f}".center(11), pnl_color) + colored("│", "white"))
+                
+                print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan"))
+                
+                # Total for open positions
+                total_pnl_usd = session_summary.get('unrealized_pnl', 0)
+                total_pnl_pct = session_summary.get('total_pnl_pct', 0)
+                pnl_color = "green" if total_pnl_usd > 0 else "red" if total_pnl_usd < 0 else "white"
+                
+                print(colored(f"💰 TOTALE APERTE: {len(open_positions)} posizioni | ", "white") + 
+                      colored(f"P&L: ${total_pnl_usd:+.2f} ({total_pnl_pct:+.2f}%)", pnl_color, attrs=['bold']))
+            else:
+                print(colored("📭 NESSUNA POSIZIONE APERTA AL MOMENTO", "yellow"))
+            
+            print()
+            
+            # Display closed positions (this session)
+            if closed_positions:
+                recent_closed = closed_positions[-5:]  # Show last 5
+                print(colored("🔴 POSIZIONI CHIUSE (SESSIONE CORRENTE)", "red", attrs=['bold']))
+                print(colored("┌─────┬────────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan"))
+                print(colored("│  #  │ SYMBOL │ SIDE │   CLOSE $   │   REASON    │  PNL %   │   PNL $   │", "white", attrs=['bold']))
+                print(colored("├─────┼────────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan"))
+                
+                for i, pos in enumerate(recent_closed, 1):
+                    symbol = pos.symbol.replace('/USDT:USDT', '')[:6]
+                    side_color = "green" if pos.side == "buy" else "red"
+                    pnl_color = "green" if pos.final_pnl_pct > 0 else "red"
+                    reason = (pos.close_reason or "UNKNOWN")[:11]
+                    
+                    print(colored(f"│{i:^5}│", "white") + 
+                          colored(f"{symbol:^8}", "cyan") + colored("│", "white") +
+                          colored(f"{pos.side.upper():^6}", side_color) + colored("│", "white") +
+                          colored(f"${pos.current_price:.6f}".center(13), "white") + colored("│", "white") +
+                          colored(f"{reason:^13}", "yellow") + colored("│", "white") +
+                          colored(f"{pos.final_pnl_pct:+.2f}%".center(10), pnl_color) + colored("│", "white") +
+                          colored(f"${pos.final_pnl_usd:+.2f}".center(11), pnl_color) + colored("│", "white"))
+                
+                print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan"))
+                
+                # Total for closed positions
+                total_realized = sum(pos.final_pnl_usd for pos in closed_positions if pos.final_pnl_usd)
+                realized_color = "green" if total_realized > 0 else "red" if total_realized < 0 else "white"
+                
+                print(colored(f"💰 TOTALE CHIUSE: {len(closed_positions)} posizioni | ", "white") + 
+                      colored(f"Realized P&L: ${total_realized:+.2f}", realized_color, attrs=['bold']))
+            else:
+                print(colored("📋 NESSUNA POSIZIONE CHIUSA QUESTA SESSIONE", "yellow"))
+            
+            print(colored("=" * 100, "green"))
+            print(colored("⏳ Prossimo ciclo in 5 minuti...", "blue", attrs=['bold']))
+            print()
+            
+        except Exception as e:
+            logging.error(f"Error displaying trading session status: {e}")
+            # Fallback display
+            print(colored("📊 SESSION STATUS", "yellow"))
+            print(colored("⏳ Next cycle in 5 minutes...", "blue"))
     
     def display_model_loading_status(self, timeframes: List[str], status: Dict[str, bool]):
         """Display model loading status with visual indicators"""

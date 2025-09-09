@@ -616,34 +616,37 @@ async def trade_signals():
                         result = predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, TIME_STEPS)
                         prediction_results[symbol] = result
 
-                # OPTIMIZED: Collect executable signals first, then show targeted decision analysis
-                executable_signals = {}
+                # ENHANCED: Show COMPLETE analysis for ALL symbols (transparency)
+                print(colored(f"\n🔍 COMPLETE ANALYSIS FOR ALL SYMBOLS ({len(prediction_results)}/10)", "cyan", attrs=['bold']))
+                print(colored("=" * 80, "cyan"))
                 
-                # First pass: identify executable signals
+                # Process ALL prediction results and show decision analysis
                 for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
-                    if ensemble_value is not None and final_signal is not None and final_signal != 2:
-                        executable_signals[symbol] = (ensemble_value, final_signal, tf_predictions)
-                
-                # Show decision analysis only for executable signals
-                if executable_signals:
-                    print(colored(f"\n🔍 DECISION ANALYSIS FOR EXECUTABLE SIGNALS ({len(executable_signals)} signals)", "cyan", attrs=['bold']))
-                    print(colored("=" * 80, "cyan"))
-                
-                    # Process executable prediction results and show decision analysis
-                    for symbol, (ensemble_value, final_signal, tf_predictions) in executable_signals.items():
                         try:
                             # Create signal data for analysis display
+                            signal_name = 'BUY' if final_signal == 1 else 'SELL' if final_signal == 0 else 'NEUTRAL'
                             signal_data = {
                                 'symbol': symbol,
                                 'signal': final_signal,
-                                'signal_name': 'BUY' if final_signal == 1 else 'SELL' if final_signal is not None and final_signal != 2 else 'NEUTRAL',
+                                'signal_name': signal_name,
                                 'confidence': ensemble_value if ensemble_value is not None else 0.0,
                                 'tf_predictions': tf_predictions,
                                 'price': 0
                             }
                             
-                            # Get RL decision with detailed reasons (if available)
-                            if RL_AGENT_AVAILABLE and final_signal is not None and final_signal != 2:
+                            # Handle NEUTRAL signals (skip RL analysis)
+                            if final_signal is None or final_signal == 2 or ensemble_value is None:
+                                signal_data['rl_approved'] = False
+                                signal_data['rl_confidence'] = 0.0
+                                signal_data['rl_details'] = {
+                                    'primary_reason': 'NEUTRAL signal - no RL analysis performed',
+                                    'factors': {},
+                                    'final_verdict': 'SKIPPED_NEUTRAL'
+                                }
+                                signal_data['signal_name'] = 'NEUTRAL'
+                            
+                            # Get RL decision for BUY/SELL signals only
+                            elif RL_AGENT_AVAILABLE and final_signal in [0, 1]:
                                 try:
                                     market_context = build_market_context(symbol, all_symbol_data[symbol])
                                     portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
@@ -660,13 +663,22 @@ async def trade_signals():
                                 except Exception as rl_error:
                                     logging.warning(f"RL analysis error for {symbol}: {rl_error}")
                                     # Fallback: no RL data
-                                    signal_data['rl_approved'] = True
-                                    signal_data['rl_confidence'] = 0.6
+                                    signal_data['rl_approved'] = False
+                                    signal_data['rl_confidence'] = 0.0
                                     signal_data['rl_details'] = {
                                         'primary_reason': f'RL Error: {str(rl_error)[:50]}...',
                                         'factors': {},
-                                        'final_verdict': 'FALLBACK_APPROVED'
+                                        'final_verdict': 'ERROR_FALLBACK'
                                     }
+                            else:
+                                # RL not available but signal is BUY/SELL
+                                signal_data['rl_approved'] = True  # Default approve when RL unavailable
+                                signal_data['rl_confidence'] = 0.6
+                                signal_data['rl_details'] = {
+                                    'primary_reason': 'RL system not available',
+                                    'factors': {},
+                                    'final_verdict': 'RL_UNAVAILABLE'
+                                }
                             
                             # Show decision analysis for this symbol
                             display_symbol_decision_analysis(
@@ -802,12 +814,15 @@ async def trade_signals():
             if signals_to_execute:
                 logging.info(colored(f"🚀 PHASE 3: EXECUTING TOP {len(signals_to_execute)} SIGNALS", "blue", attrs=['bold']))
                 
+                # Track margin usage during execution
+                executed_trades = 0
+                
                 for signal in signals_to_execute:
                     try:
                         symbol = signal['symbol']
                         confidence = signal['confidence']
                         
-                        # Check if we can open new position
+                        # Check if we can open new position with CURRENT balance
                         can_open, reason = global_trading_orchestrator.can_open_new_position(symbol, usdt_balance)
                         if not can_open:
                             logging.warning(colored(f"⚠️ {symbol}: {reason}", "yellow"))
@@ -831,20 +846,36 @@ async def trade_signals():
                             volatility=volatility
                         )
                         
+                        # CALCULATE MARGIN BEFORE EXECUTING
+                        levels = global_risk_calculator.calculate_position_levels(
+                            market_data, signal['signal_name'].lower(), confidence, usdt_balance
+                        )
+                        
+                        # CHECK BALANCE SUFFICIENCY BEFORE EXECUTION
+                        if levels.margin > usdt_balance:
+                            logging.warning(colored(f"⚠️ {symbol}: Insufficient balance ${usdt_balance:.2f} < ${levels.margin:.2f} margin required", "yellow"))
+                            break  # Stop execution - balance exhausted
+                        
                         # Execute trade with new clean modules
                         result = await global_trading_orchestrator.execute_new_trade(
                             async_exchange, signal, market_data, usdt_balance
                         )
                         
                         if result.success:
+                            executed_trades += 1
+                            # CRITICAL FIX: Update available balance after successful trade
+                            usdt_balance -= levels.margin
                             logging.info(colored(f"✅ {symbol}: Trade successful - Position: {result.position_id}", "green"))
+                            logging.info(colored(f"💰 Balance updated: ${usdt_balance:.2f} remaining (used ${levels.margin:.2f} margin)", "cyan"))
+                            
                             # PERFORMANCE FIX: Backtest disabled during live trading (was causing 10+ minutes overhead)
                             # await generate_signal_backtest(symbol, signal['dataframes'], signal)  # DISABLED for performance
                         else:
                             logging.warning(colored(f"❌ {symbol}: {result.error}", "yellow"))
                             
                             # Break conditions
-                            if "insufficient balance" in result.error.lower():
+                            if "insufficient balance" in result.error.lower() or "ab not enough" in result.error.lower():
+                                logging.warning(colored(f"💸 Balance exhausted after {executed_trades} trades - stopping execution", "yellow"))
                                 break  # Stop if no balance
                             elif "maximum" in result.error.lower():
                                 break  # Stop if max positions reached
@@ -852,6 +883,10 @@ async def trade_signals():
                     except Exception as e:
                         logging.error(f"❌ Error executing {symbol}: {e}")
                         continue
+                
+                # Log execution summary
+                if executed_trades > 0:
+                    logging.info(colored(f"📊 EXECUTION SUMMARY: {executed_trades}/{len(signals_to_execute)} signals executed successfully", "green"))
             else:
                 logging.info(colored("😐 No signals to execute this cycle", "yellow"))
 

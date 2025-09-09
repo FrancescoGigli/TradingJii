@@ -164,17 +164,20 @@ class TradingOrchestrator:
                 logging.info(colored("🆕 No existing positions on Bybit - starting fresh", "green"))
                 return {}
             
-            # 2. ENHANCED DISPLAY EXISTING POSITIONS TABLE
+            # 2. ENHANCED DISPLAY WITH PERFECT CELL FORMATTING
             print(colored("\n🏦 POSIZIONI ESISTENTI SU BYBIT", "cyan", attrs=['bold']))
-            print(colored("=" * 150, "cyan"))
-            print(colored(f"{'#':<2} {'SYMBOL':<12} {'SIDE':<6} {'ENTRY':<12} {'CURRENT':<12} {'SIZE':<10} {'VALUE':<12} {'SL':<12} {'TP':<12} {'PNL $':<10} {'PNL%':<8}", "white", attrs=['bold']))
-            print(colored("-" * 150, "cyan"))
+            print(colored("┌" + "─" * 3 + "┬" + "─" * 8 + "┬" + "─" * 6 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 8 + "┬" + "─" * 10 + "┬" + "─" * 20 + "┬" + "─" * 20 + "┬" + "─" * 10 + "┬" + "─" * 8 + "┐", "cyan"))
+            print(colored(f"│{'#':<3}│{'SYMBOL':<8}│{'SIDE':<6}│{'ENTRY':<12}│{'CURRENT':<12}│{'SIZE':<8}│{'VALUE':<10}│{'STOP LOSS':<20}│{'TAKE PROFIT':<20}│{'PNL $':<10}│{'PNL%':<8}│", "white", attrs=['bold']))
+            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
             
             total_value = 0.0
             total_pnl = 0.0
             
             for i, pos in enumerate(active_positions, 1):
-                symbol = pos.get('symbol', 'N/A').replace('USDT', '')
+                # Clean symbol format: "HYPE/USDT:USDT" → "HYPE"
+                symbol_raw = pos.get('symbol', 'N/A')
+                symbol = symbol_raw.replace('/USDT:USDT', '').replace('USDT', '')
+                
                 contracts = float(pos.get('contracts', 0))
                 side = 'LONG' if contracts > 0 else 'SHORT'
                 entry_price = float(pos.get('entryPrice', 0))
@@ -193,41 +196,56 @@ class TradingOrchestrator:
                 stop_loss = pos.get('stopLossPrice', None)
                 take_profit = pos.get('takeProfitPrice', None)
                 
-                # Calculate SL percentage from entry
+                # CORRECTED: Calculate SL/TP percentages considering 10x leverage effect
                 if stop_loss and entry_price > 0:
                     sl_price = float(stop_loss)
-                    sl_pct = ((sl_price - entry_price) / entry_price) * 100
-                    sl_text = f"${sl_price:.4f} ({sl_pct:+.1f}%)"
+                    price_change_pct = ((sl_price - entry_price) / entry_price) * 100
+                    # With 10x leverage: 1% price move = 10% P&L impact
+                    leverage_effect_pct = price_change_pct * 10
+                    sl_text = f"${sl_price:.4f} ({leverage_effect_pct:+.1f}%)"
                 else:
                     sl_text = "Not Set"
                 
-                # Calculate TP percentage from entry  
+                # CORRECTED: TP calculation with leverage effect
                 if take_profit and entry_price > 0:
                     tp_price = float(take_profit)
-                    tp_pct = ((tp_price - entry_price) / entry_price) * 100
-                    tp_text = f"${tp_price:.4f} ({tp_pct:+.1f}%)"
+                    price_change_pct = ((tp_price - entry_price) / entry_price) * 100
+                    # With 10x leverage: 1% price move = 10% P&L impact
+                    leverage_effect_pct = price_change_pct * 10
+                    tp_text = f"${tp_price:.4f} ({leverage_effect_pct:+.1f}%)"
                 else:
                     tp_text = "Not Set"
+                
+                # Format other values
                 size_text = f"{abs(contracts):.1f}"
                 entry_text = f"${entry_price:.6f}"
                 current_text = f"${mark_price:.6f}"
                 value_text = f"${position_value:,.0f}"
-                pnl_usd_text = f"{unrealized_pnl:+.2f}$"
-                pnl_pct_text = f"{pnl_pct:+.2f}%"
+                pnl_usd_text = f"+{unrealized_pnl:.2f}$" if unrealized_pnl >= 0 else f"{unrealized_pnl:.2f}$"
+                pnl_pct_text = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
                 
                 # Color based on PnL
                 pnl_color = "green" if unrealized_pnl > 0 else "red" if unrealized_pnl < 0 else "white"
                 side_color = "green" if side == "LONG" else "red"
                 
-                print(f"{i:<2} {colored(symbol, 'cyan'):<12} {colored(side, side_color):<6} {entry_text:<12} {current_text:<12} {size_text:<10} {value_text:<12} {sl_text:<12} {tp_text:<12} {colored(pnl_usd_text, pnl_color):<10} {colored(pnl_pct_text, pnl_color):<8}")
+                # PERFECT CELL FORMATTING
+                print(colored(f"│{i:<3}│{symbol:<8}│", "white") + 
+                      colored(f"{side:<6}", side_color) + 
+                      colored(f"│{entry_text:<12}│{current_text:<12}│{size_text:<8}│{value_text:<10}│{sl_text:<20}│{tp_text:<20}│", "white") +
+                      colored(f"{pnl_usd_text:<10}", pnl_color) + colored("│", "white") +
+                      colored(f"{pnl_pct_text:<8}", pnl_color) + colored("│", "white"))
             
-            # Total summary row
+            # Total summary row with cells
             total_pnl_pct = (total_pnl / total_value) * 100 if total_value > 0 else 0
             total_pnl_color = "green" if total_pnl > 0 else "red" if total_pnl < 0 else "white"
             
-            print(colored("-" * 150, "cyan"))
-            print(f"{'TOTAL':<2} {'':<12} {'':<6} {'':<12} {'':<12} {'':<10} {colored(f'${total_value:,.0f}', 'white'):<12} {'':<12} {'':<12} {colored(f'{total_pnl:+.2f}$', total_pnl_color):<10} {colored(f'{total_pnl_pct:+.2f}%', total_pnl_color):<8}")
-            print(colored("=" * 150, "cyan"))
+            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
+            print(colored(f"│{'TOT':<3}│{'':<8}│{'':<6}│{'':<12}│{'':<12}│{'':<8}│", "white") +
+                  colored(f"${total_value:,.0f}".ljust(10), "white") + colored("│", "white") +
+                  colored(f"{'':<20}│{'':<20}│", "white") +
+                  colored(f"{total_pnl:+.2f}$".ljust(10), total_pnl_color) + colored("│", "white") +
+                  colored(f"{total_pnl_pct:+.2f}%".ljust(8), total_pnl_color) + colored("│", "white"))
+            print(colored("└" + "─" * 3 + "┴" + "─" * 8 + "┴" + "─" * 6 + "┴" + "─" * 12 + "┴" + "─" * 12 + "┴" + "─" * 8 + "┴" + "─" * 10 + "┴" + "─" * 20 + "┴" + "─" * 20 + "┴" + "─" * 10 + "┴" + "─" * 8 + "┘", "cyan"))
             print(colored(f"📊 SUMMARY: {len(active_positions)} positions | Total Value: ${total_value:,.0f} | Total P&L: {total_pnl:+.2f}$ ({total_pnl_pct:+.2f}%)", "green"))
             print()
             
