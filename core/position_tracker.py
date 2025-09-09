@@ -224,7 +224,7 @@ class PositionTracker:
             
     def calculate_tp_sl(self, entry_price: float, side: str, leverage: int, atr: float = None) -> Dict:
         """
-        CRITICAL FIX: Unified TP/SL calculation using RobustRiskManager
+        CLEAN: Simple TP/SL calculation
         
         Args:
             entry_price: Entry price of position
@@ -236,55 +236,7 @@ class PositionTracker:
             Dict with 'take_profit', 'stop_loss', 'trailing_trigger' prices
         """
         try:
-            # Use unified risk manager if available
-            from core.risk_manager import RobustRiskManager
-            risk_manager = RobustRiskManager()
-            
-            # Calculate stop loss using risk manager
-            stop_loss = risk_manager.calculate_stop_loss(
-                symbol="unified",  # Symbol doesn't matter for this calculation
-                side=side,
-                entry_price=entry_price,
-                atr=atr or entry_price * 0.02,  # 2% fallback ATR
-                volatility=None
-            )
-            
-            # Calculate take profit using risk manager
-            take_profit = risk_manager.calculate_take_profit(
-                symbol="unified",
-                side=side,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                risk_reward_ratio=2.0
-            )
-            
-            # Calculate trailing trigger (start trailing at +1% profit)
-            trailing_trigger_pct = 1.0
-            if side.upper() == 'BUY' or side.upper() == 'LONG':
-                trailing_trigger = entry_price * (1 + trailing_trigger_pct / 100)
-            else:
-                trailing_trigger = entry_price * (1 - trailing_trigger_pct / 100)
-            
-            # Calculate percentages for logging
-            if side.upper() == 'BUY' or side.upper() == 'LONG':
-                sl_pct = (entry_price - stop_loss) / entry_price * 100
-                tp_pct = (take_profit - entry_price) / entry_price * 100
-            else:
-                sl_pct = (stop_loss - entry_price) / entry_price * 100
-                tp_pct = (entry_price - take_profit) / entry_price * 100
-            
-            return {
-                'take_profit': take_profit,
-                'stop_loss': stop_loss,
-                'trailing_trigger': trailing_trigger,
-                'sl_pct': abs(sl_pct),
-                'tp_pct': abs(tp_pct)
-            }
-            
-        except Exception as e:
-            logging.warning(f"Risk manager TP/SL calculation failed: {e}, using fallback")
-            
-            # Legacy fallback logic
+            # Simple leverage-based calculation
             BASE_RISK_PCT = 3.0
             sl_pct = BASE_RISK_PCT / leverage
             tp_pct = sl_pct * 2
@@ -294,7 +246,7 @@ class PositionTracker:
                 stop_loss = entry_price * (1 - sl_pct / 100)
                 take_profit = entry_price * (1 + tp_pct / 100)
                 trailing_trigger = entry_price * (1 + trailing_trigger_pct / 100)
-            else:
+            else:  # SELL
                 stop_loss = entry_price * (1 + sl_pct / 100)
                 take_profit = entry_price * (1 - tp_pct / 100)
                 trailing_trigger = entry_price * (1 - trailing_trigger_pct / 100)
@@ -305,6 +257,17 @@ class PositionTracker:
                 'trailing_trigger': trailing_trigger,
                 'sl_pct': sl_pct,
                 'tp_pct': tp_pct
+            }
+            
+        except Exception as e:
+            logging.error(f"Error calculating TP/SL levels: {e}")
+            # Safe fallback
+            return {
+                'take_profit': entry_price * (1.05 if side.upper() in ['BUY', 'LONG'] else 0.95),
+                'stop_loss': entry_price * (0.95 if side.upper() in ['BUY', 'LONG'] else 1.05),
+                'trailing_trigger': entry_price * (1.01 if side.upper() in ['BUY', 'LONG'] else 0.99),
+                'sl_pct': 5.0,
+                'tp_pct': 10.0
             }
     
     def open_position(self, symbol: str, side: str, entry_price: float, 

@@ -56,28 +56,9 @@ def safe_format_float(value, decimals=2, default="N/A", prefix=""):
     except (ValueError, TypeError):
         return default
 
-# Import the robust risk management system (V2: Thread-safe Singleton)
-try:
-    from core.risk_manager import RobustRiskManager, PositionRisk, calculate_safe_position_size, calculate_dynamic_stop_loss
-    RISK_MANAGER_AVAILABLE = True
-    
-    # Get singleton instance (thread-safe)
-    global_risk_manager = RobustRiskManager()
-    logging.debug("🔒 Thread-safe Risk Manager singleton loaded")
-    
-except ImportError as e:
-    logging.warning(f"⚠️ Advanced Risk Manager not available: {e}")
-    RISK_MANAGER_AVAILABLE = False
-    global_risk_manager = None
-
-# Import the Unified Trading Engine
-try:
-    from core.trading_engine import UnifiedTradingEngine, initialize_trading_engine
-    UNIFIED_TRADING_ENGINE_AVAILABLE = True
-    logging.debug("🚀 Unified Trading Engine available")
-except ImportError as e:
-    logging.warning(f"⚠️ Unified Trading Engine not available: {e}")
-    UNIFIED_TRADING_ENGINE_AVAILABLE = False
+# CLEAN: Obsolete imports removed (replaced by new modules)
+RISK_MANAGER_AVAILABLE = False  # Replaced by risk_calculator.py
+UNIFIED_TRADING_ENGINE_AVAILABLE = False  # Replaced by order_manager.py
 
 # Import enhanced terminal display
 try:

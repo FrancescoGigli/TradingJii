@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="ta")
 np.seterr(divide='ignore', invalid='ignore')
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import asyncio
 import logging
 import re
@@ -21,7 +21,8 @@ from config import (
     EXCLUDED_SYMBOLS, TIME_STEPS, TRADE_CYCLE_INTERVAL,
     MODEL_RATES,  # I rate definiti in config; la somma DEVE essere pari a 1
     TOP_TRAIN_CRYPTO, TOP_ANALYSIS_CRYPTO, EXPECTED_COLUMNS,
-    TRAIN_IF_NOT_FOUND  # Variabile di controllo per il training
+    TRAIN_IF_NOT_FOUND,  # Variabile di controllo per il training
+    LEVERAGE  # CRITICAL FIX: Import missing LEVERAGE constant
 )
 from logging_config import *
 from fetcher import fetch_markets, get_top_symbols, fetch_min_amounts, fetch_and_save_data, fetch_all_data_parallel, fetch_symbol_data_parallel
@@ -41,10 +42,8 @@ from trainer import (
     train_xgboost_model_wrapper
 )
 from predictor import predict_signal_ensemble, get_color_normal
-from trade_manager import (
-    get_real_balance, manage_position, get_open_positions,
-    update_orders_status, sync_positions_at_startup
-)
+# CLEAN: Use only essential functions from trade_manager (balance recovery only)
+from trade_manager import get_real_balance
 from data_utils import prepare_data
 from trainer import ensure_trained_models_dir
 
@@ -85,6 +84,18 @@ try:
 except ImportError as e:
     logging.warning(f"⚠️ RL Agent not available: {e}")
     RL_AGENT_AVAILABLE = False
+
+# Import new clean modules
+try:
+    from core.order_manager import global_order_manager
+    from core.position_manager import global_position_manager
+    from core.risk_calculator import global_risk_calculator
+    from core.trading_orchestrator import global_trading_orchestrator
+    CLEAN_MODULES_AVAILABLE = True
+    logging.debug("🎯 Clean trading modules loaded")
+except ImportError as e:
+    logging.warning(f"⚠️ Clean modules not available: {e}")
+    CLEAN_MODULES_AVAILABLE = False
 
 if sys.platform.startswith('win'):
     import asyncio
@@ -195,12 +206,7 @@ def normalize_weights(raw_weights):
     return normalized
 normalized_weights = normalize_weights(raw_weights)
 
-# --- Funzioni ausiliarie ---
-async def track_orders():
-    while True:
-        await update_orders_status(async_exchange)
-        await asyncio.sleep(60)
-
+# --- Funzioni ausiliarie pulite ---
 async def countdown_timer(duration):
     for remaining in tqdm(range(duration, 0, -1), desc="Attesa ciclo successivo", ncols=80, ascii=True):
         await asyncio.sleep(1)
@@ -470,7 +476,7 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
         print(colored(f"  ❌ Analysis Error: {str(e)[:50]}...", "red"))
 
 async def trade_signals():
-    global async_exchange, xgb_models, xgb_scalers, min_amounts
+    global async_exchange, xgb_models, xgb_scalers, min_amounts, first_cycle
 
     while True:
         try:
@@ -500,7 +506,18 @@ async def trade_signals():
                 logging.warning(colored("⚠️ Failed to get USDT balance. Retrying in 5 seconds.", "yellow"))
                 await asyncio.sleep(5)
                 return
-            open_positions_count = await get_open_positions(async_exchange)
+            
+            # CLEAN: Get position count using new modules
+            if CLEAN_MODULES_AVAILABLE:
+                open_positions_count = global_position_manager.get_position_count()
+            else:
+                # Fallback: direct count from exchange
+                try:
+                    positions = await async_exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
+                    open_positions_count = len([p for p in positions if float(p.get('contracts', 0)) > 0])
+                except Exception as e:
+                    logging.warning(f"Could not get position count: {e}")
+                    open_positions_count = 0
 
             # 📊 OPTIMIZED DATA FETCHING - Clean Output
             print(colored("\n📥 DATA DOWNLOAD - Optimized Display", "yellow", attrs=['bold']))
@@ -758,8 +775,17 @@ async def trade_signals():
                 
                 print(colored("-" * 120, "yellow"))
                 
-            # PHASE 3: EXECUTE BEST SIGNALS AND GENERATE BACKTESTS
+            # PHASE 3: EXECUTE SIGNALS WITH CLEAN MODULES
             from config import MAX_CONCURRENT_POSITIONS
+            from core.trading_orchestrator import global_trading_orchestrator
+            from core.risk_calculator import MarketData
+            
+            # Import existing position protection at startup
+            if first_cycle:  # Only run once at startup
+                protection_results = await global_trading_orchestrator.protect_existing_positions(async_exchange)
+                logging.info(colored(f"🛡️ Existing positions protection: {len(protection_results)} processed", "cyan"))
+            
+            # Execute new signals  
             max_positions = MAX_CONCURRENT_POSITIONS - open_positions_count
             signals_to_execute = all_signals[:min(max_positions, len(all_signals))]
             
@@ -769,60 +795,49 @@ async def trade_signals():
                 for signal in signals_to_execute:
                     try:
                         symbol = signal['symbol']
-                        final_signal = signal['signal']
-                        dataframes = signal['dataframes']
+                        confidence = signal['confidence']
                         
-                        # Show RL info if available
-                        rl_info = f", RL:{signal.get('rl_confidence', 0):.1%}" if signal.get('rl_approved') else ""
-                        logging.info(colored(f"🎯 Executing {signal['signal_name']} for {symbol} (XGB:{signal['confidence']:.1%}{rl_info})", "cyan"))
+                        # Check if we can open new position
+                        can_open, reason = global_trading_orchestrator.can_open_new_position(symbol, usdt_balance)
+                        if not can_open:
+                            logging.warning(colored(f"⚠️ {symbol}: {reason}", "yellow"))
+                            continue
                         
-                        # Store RL state for learning (if RL was used)
-                        rl_state_for_position = None
-                        if RL_AGENT_AVAILABLE and signal.get('rl_approved'):
-                            try:
-                                market_context = build_market_context(symbol, signal['dataframes'])
-                                portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
-                                rl_state_for_position = global_rl_agent.build_rl_state(signal, market_context, portfolio_state)
-                            except Exception as rl_state_error:
-                                logging.warning(f"Error building RL state for position: {rl_state_error}")
+                        # Get market data from dataframes
+                        df = signal['dataframes'][TIMEFRAME_DEFAULT]
+                        if df is None or len(df) == 0:
+                            logging.warning(f"⚠️ {symbol}: No market data available")
+                            continue
                         
-                        # Execute the trade
-                        result = await manage_position(
-                            async_exchange, symbol, final_signal, usdt_balance, min_amounts,
-                            None, None, None, None, dataframes[TIMEFRAME_DEFAULT]
+                        latest_candle = df.iloc[-1]
+                        current_price = latest_candle.get('close', 0)
+                        atr = latest_candle.get('atr', current_price * 0.02)
+                        volatility = latest_candle.get('volatility', 0.0)
+                        
+                        market_data = MarketData(
+                            price=current_price,
+                            atr=atr,
+                            volatility=volatility
                         )
                         
-                        # Add RL state to opened position for future learning
-                        if RL_AGENT_AVAILABLE and POSITION_TRACKER_AVAILABLE and rl_state_for_position is not None:
-                            try:
-                                # Find the most recently opened position for this symbol
-                                for pos_id, position in global_position_tracker.active_positions.items():
-                                    if position['symbol'] == symbol and 'rl_state' not in position:
-                                        position['rl_state'] = rl_state_for_position
-                                        global_position_tracker.save_session()
-                                        logging.debug(f"💾 RL state saved for position {symbol}")
-                                        break
-                            except Exception as rl_save_error:
-                                logging.warning(f"Error saving RL state to position: {rl_save_error}")
+                        # Execute trade with new clean modules
+                        result = await global_trading_orchestrator.execute_new_trade(
+                            async_exchange, signal, market_data, usdt_balance
+                        )
                         
-                        # Check if trade was successful before generating backtest
-                        if isinstance(result, dict) and result.get('trade_id'):
-                            # Trade successful - generate automatic backtest
-                            await generate_signal_backtest(symbol, dataframes, signal)
-                            logging.debug(f"📊 Backtest generated for successful {symbol} trade")
-                        elif result == "insufficient_balance":
-                            logging.warning(f"❌ {symbol}: Insufficient balance")
-                            break  # Stop trying if no balance
-                        elif result == "max_trades_reached":
-                            logging.warning(f"❌ Max trades reached")
-                            break  # Stop if max trades reached
-                        elif result == "risk_rejected":
-                            logging.info(f"⚠️ {symbol}: Trade rejected by risk manager")
-                            # Continue to next signal - don't break the loop
+                        if result.success:
+                            logging.info(colored(f"✅ {symbol}: Trade successful - Position: {result.position_id}", "green"))
+                            # Generate backtest only for successful trades
+                            await generate_signal_backtest(symbol, signal['dataframes'], signal)
                         else:
-                            logging.warning(f"⚠️ {symbol}: Trade execution returned: {result}")
-                            # Continue to next signal for other errors too
+                            logging.warning(colored(f"❌ {symbol}: {result.error}", "yellow"))
                             
+                            # Break conditions
+                            if "insufficient balance" in result.error.lower():
+                                break  # Stop if no balance
+                            elif "maximum" in result.error.lower():
+                                break  # Stop if max positions reached
+                        
                     except Exception as e:
                         logging.error(f"❌ Error executing {symbol}: {e}")
                         continue
@@ -969,9 +984,9 @@ async def trade_signals():
                         
                         logging.debug(f"🎯 {position['symbol']} closed: {position['exit_reason']} PnL: {position['final_pnl_pct']:+.2f}%")
                     
-                    # Display enhanced wallet status
-                    summary = global_position_tracker.get_session_summary()
-                    display_wallet_and_positions(summary, leverage=10)
+                    # CLEAN DISPLAY: Use new display system  
+                    from core.clean_display import display_trading_status
+                    display_trading_status(global_position_manager, global_order_manager, usdt_balance)
                     
                 except Exception as tracker_error:
                     logging.warning(f"Position tracker error: {tracker_error}")
@@ -1006,7 +1021,6 @@ async def trade_signals():
             logging.info(colored(f"📈 Estimated speedup: {speedup_factor:.1f}x vs sequential approach", "green"))
             
             # Display detailed database statistics every few cycles
-            global first_cycle
             if first_cycle:
                 first_cycle = False
                 if DATABASE_SYSTEM_LOADED:
@@ -1032,8 +1046,62 @@ async def main():
     logging.info(colored("🚀 Avvio trading bot ristrutturato con cache ottimizzata", "cyan"))
 
     async_exchange = ccxt_async.bybit(exchange_config)
-    await async_exchange.load_markets()
-    await async_exchange.load_time_difference()
+    
+    # 🚀 CRITICAL FIX: Enhanced timestamp synchronization with Bybit
+    logging.info(colored("🕐 TIMESTAMP SYNC: Sincronizzazione avanzata con server Bybit...", "yellow"))
+    
+    max_sync_attempts = 3
+    sync_success = False
+    
+    for attempt in range(max_sync_attempts):
+        try:
+            # Step 1: Load markets first
+            await async_exchange.load_markets()
+            
+            # Step 2: Force timestamp synchronization
+            await async_exchange.load_time_difference()
+            
+            # Step 3: Verify synchronization quality
+            server_time = await async_exchange.fetch_time()
+            local_time = async_exchange.milliseconds()
+            time_diff = abs(server_time - local_time)
+            
+            logging.info(colored(f"⏰ Sync attempt {attempt + 1}: Server={server_time}, Local={local_time}, Diff={time_diff}ms", "cyan"))
+            
+            # Step 4: Validate sync quality
+            if time_diff <= 2000:  # Less than 2 seconds is excellent
+                logging.info(colored(f"✅ TIMESTAMP SYNC SUCCESS: Differenza {time_diff}ms (eccellente)", "green"))
+                sync_success = True
+                break
+            elif time_diff <= 5000:  # Less than 5 seconds is acceptable
+                logging.info(colored(f"✅ TIMESTAMP SYNC OK: Differenza {time_diff}ms (accettabile)", "green"))
+                sync_success = True
+                break
+            else:
+                logging.warning(colored(f"⚠️ Large time difference: {time_diff}ms, retry {attempt + 1}/{max_sync_attempts}", "yellow"))
+                if attempt < max_sync_attempts - 1:
+                    await asyncio.sleep(1)  # Wait before retry
+                
+        except Exception as sync_error:
+            logging.error(colored(f"❌ Sync attempt {attempt + 1} failed: {sync_error}", "red"))
+            if attempt < max_sync_attempts - 1:
+                await asyncio.sleep(2)  # Longer wait on error
+    
+    if not sync_success:
+        logging.warning(colored("⚠️ TIMESTAMP SYNC: Problemi di sincronizzazione, ma continuando con recv_window esteso", "yellow"))
+        logging.info(colored("💡 TIP: Considera di sincronizzare l'orologio di sistema con 'w32tm /resync /force'", "cyan"))
+    
+    # Step 5: Final validation with test API call
+    try:
+        test_balance = await async_exchange.fetch_balance()
+        logging.info(colored("🎯 CONNESSIONE BYBIT: Test API riuscito - connessione stabile", "green"))
+    except Exception as test_error:
+        error_str = str(test_error).lower()
+        if "timestamp" in error_str or "recv_window" in error_str:
+            logging.error(colored("🚨 TIMESTAMP ISSUE PERSISTE: Verifica sincronizzazione sistema", "red"))
+            logging.info(colored("🔧 SOLUZIONI: 1) w32tm /resync /force, 2) Riavvia sistema, 3) Verifica timezone", "yellow"))
+        else:
+            logging.warning(colored(f"⚠️ Test connessione fallito (potrebbe essere normale): {test_error}", "yellow"))
 
     try:
         markets = await fetch_markets(async_exchange)
@@ -1143,15 +1211,21 @@ async def main():
         logging.info(colored("=" * 50, "green"))
         show_charts_info()
 
-        # 🔄 NEW: Sync positions at startup
-        logging.info(colored("🔄 STARTUP POSITION SYNC", "cyan", attrs=['bold']))
-        synced_positions = await sync_positions_at_startup(async_exchange)
+        # 🔄 CLEAN STARTUP WITH NEW MODULES
+        logging.info(colored("🔄 STARTUP POSITION PROTECTION", "cyan", attrs=['bold']))
         
         if config.DEMO_MODE:
-            logging.info(colored(f"🎮 Demo mode initialized: Fresh session started", "magenta"))
+            logging.info(colored("🎮 Demo mode: Fresh session started", "magenta"))
         else:
-            if synced_positions > 0:
-                logging.info(colored(f"📊 Live mode: {synced_positions} existing positions imported from Bybit", "cyan"))
+            # Use new clean OrderManager to protect existing positions
+            from core.trading_orchestrator import global_trading_orchestrator
+            
+            protection_results = await global_trading_orchestrator.protect_existing_positions(async_exchange)
+            
+            if protection_results:
+                successful = sum(1 for result in protection_results.values() if result.success)
+                total = len(protection_results)
+                logging.info(colored(f"🛡️ Live mode: {successful}/{total} existing positions protected", "cyan"))
             else:
                 logging.info(colored("🆕 Live mode: No existing positions - starting fresh", "green"))
         
