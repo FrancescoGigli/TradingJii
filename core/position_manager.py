@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Position:
-    """Clean position data structure"""
+    """Extended position data structure with trailing support"""
     position_id: str
     symbol: str
     side: str  # 'buy' or 'sell'
@@ -28,21 +28,28 @@ class Position:
     position_size: float  # USD value
     leverage: int
     
-    # Protection levels
-    stop_loss: float
-    take_profit: float
-    trailing_trigger: float
+    # TRAILING SYSTEM FIELDS
+    sl_catastrofico_id: Optional[str] = None    # ID ordine exchange (backup ampio)
+    trailing_attivo: bool = False               # Boolean stato trailing
+    best_price: Optional[float] = None          # Miglior prezzo favorevole
+    sl_corrente: Optional[float] = None         # Stop interno bot (no exchange)
+    breakeven_price: Optional[float] = None     # Entry + commissioni
+    timer_attivazione: int = 0                  # Contatore barre sopra breakeven
+    atr_value: float = 0.0                      # ATR per calcoli trailing
     
-    # Order IDs for cleanup
-    sl_order_id: Optional[str] = None
-    tp_order_id: Optional[str] = None
+    # LEGACY FIELDS (per compatibility - da rimuovere gradualmente)
+    stop_loss: float = 0.0                      # Old static stop
+    take_profit: float = 0.0                    # Old static TP (non usato)
+    trailing_trigger: float = 0.0              # Old trigger (non usato)
+    sl_order_id: Optional[str] = None           # Old SL order ID (non usato)
+    tp_order_id: Optional[str] = None           # Old TP order ID (non usato)
     
     # Runtime data
     current_price: float = 0.0
     unrealized_pnl_pct: float = 0.0
     unrealized_pnl_usd: float = 0.0
     max_favorable_pnl: float = 0.0
-    trailing_active: bool = False
+    trailing_active: bool = False               # Legacy field
     
     # Metadata
     confidence: float = 0.7
@@ -312,8 +319,74 @@ class PositionManager:
         except Exception as e:
             logging.error(f"Error loading positions: {e}")
     
+    def create_trailing_position(self, symbol: str, side: str, entry_price: float, 
+                               position_size: float, atr: float, 
+                               catastrophic_sl_id: str, leverage: int = 10, 
+                               confidence: float = 0.7) -> str:
+        """
+        Create new position with trailing stop system
+        
+        Args:
+            symbol: Trading symbol
+            side: Position side
+            entry_price: Entry price
+            position_size: Position size USD
+            atr: Average True Range
+            catastrophic_sl_id: ID of catastrophic stop order
+            leverage: Position leverage
+            confidence: ML confidence
+            
+        Returns:
+            str: Position ID
+        """
+        try:
+            position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Calculate breakeven (entry + commissioni)
+            commission_rate = 0.0006  # 0.06%
+            commission_cost = entry_price * commission_rate
+            
+            if side.lower() == 'buy':
+                breakeven_price = entry_price + commission_cost
+            else:
+                breakeven_price = entry_price - commission_cost
+            
+            position = Position(
+                position_id=position_id,
+                symbol=symbol,
+                side=side.lower(),
+                entry_price=entry_price,
+                position_size=position_size,
+                leverage=leverage,
+                # NEW TRAILING FIELDS
+                sl_catastrofico_id=catastrophic_sl_id,
+                trailing_attivo=False,
+                best_price=None,
+                sl_corrente=None,
+                breakeven_price=breakeven_price,
+                timer_attivazione=0,
+                atr_value=atr,
+                # Legacy fields (for compatibility)
+                stop_loss=0.0,
+                take_profit=0.0,
+                trailing_trigger=0.0,
+                current_price=entry_price,
+                confidence=confidence,
+                entry_time=datetime.now().isoformat()
+            )
+            
+            self.positions[position_id] = position
+            self.save_positions()
+            
+            logging.info(f"🎯 Trailing position created: {position_id} | Breakeven: ${breakeven_price:.6f}")
+            return position_id
+            
+        except Exception as e:
+            logging.error(f"Error creating trailing position: {e}")
+            return ""
+    
     def save_positions(self):
-        """Save positions to storage"""
+        """Save positions to storage with all trailing fields"""
         try:
             # Convert Position objects to dict for JSON
             positions_dict = {}
@@ -325,6 +398,15 @@ class PositionManager:
                     'entry_price': position.entry_price,
                     'position_size': position.position_size,
                     'leverage': position.leverage,
+                    # TRAILING FIELDS
+                    'sl_catastrofico_id': position.sl_catastrofico_id,
+                    'trailing_attivo': position.trailing_attivo,
+                    'best_price': position.best_price,
+                    'sl_corrente': position.sl_corrente,
+                    'breakeven_price': position.breakeven_price,
+                    'timer_attivazione': position.timer_attivazione,
+                    'atr_value': position.atr_value,
+                    # Legacy fields
                     'stop_loss': position.stop_loss,
                     'take_profit': position.take_profit,
                     'trailing_trigger': position.trailing_trigger,
@@ -353,6 +435,39 @@ class PositionManager:
             
         except Exception as e:
             logging.error(f"Error saving positions: {e}")
+    
+    def update_trailing_fields(self, position_id: str, trailing_data: Dict) -> bool:
+        """
+        Update position with trailing data
+        
+        Args:
+            position_id: Position ID
+            trailing_data: Trailing state data
+            
+        Returns:
+            bool: Success
+        """
+        try:
+            if position_id not in self.positions:
+                return False
+            
+            position = self.positions[position_id]
+            position.trailing_attivo = trailing_data.get('trailing_attivo', False)
+            position.best_price = trailing_data.get('best_price')
+            position.sl_corrente = trailing_data.get('sl_corrente')
+            position.timer_attivazione = trailing_data.get('timer_attivazione', 0)
+            
+            self.save_positions()
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error updating trailing fields: {e}")
+            return False
+    
+    def get_trailing_positions(self) -> List[Position]:
+        """Get all positions that need trailing monitoring"""
+        return [pos for pos in self.positions.values() 
+                if pos.breakeven_price is not None]
 
 # Global position manager instance  
 global_position_manager = PositionManager()

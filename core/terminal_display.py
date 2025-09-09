@@ -163,7 +163,9 @@ class TradingTerminalDisplay:
         # Balance display
         balance_str = f"${balance:,.2f}"
         print(f"{colored('💰 Balance:', 'cyan')} {colored(balance_str, 'yellow', attrs=['bold'])}")
-        print(f"{colored('🔢 Open Positions:', 'cyan')} {colored(str(open_positions), 'white')} / 3 max")
+        # Import from config to avoid hardcoding
+        from config import MAX_CONCURRENT_POSITIONS
+        print(f"{colored('🔢 Open Positions:', 'cyan')} {colored(str(open_positions), 'white')} / {MAX_CONCURRENT_POSITIONS} max")
         
         # Risk level color coding
         risk_colors = {'LOW': 'green', 'MEDIUM': 'yellow', 'HIGH': 'red', 'CRITICAL': 'magenta'}

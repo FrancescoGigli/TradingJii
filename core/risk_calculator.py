@@ -122,34 +122,36 @@ class RiskCalculator:
             float: Stop loss price
         """
         try:
-            # Base stop distance using ATR
-            stop_distance = atr * self.atr_multiplier
+            # CONSERVATIVE: Use smaller ATR multiplier for tighter stops
+            conservative_multiplier = 1.5  # Reduced from 2.0
+            stop_distance = atr * conservative_multiplier
             
-            # Volatility adjustment
-            if volatility > 0:
-                vol_multiplier = max(0.8, min(2.0, 1.0 + abs(volatility) / 100))
-                stop_distance *= vol_multiplier
+            # Limit stop distance to max 3% of price
+            max_stop_distance = entry_price * 0.03
+            stop_distance = min(stop_distance, max_stop_distance)
             
-            # Ensure minimum stop distance (1.5%)
-            min_stop_distance = entry_price * 0.015
+            # Ensure minimum stop distance (1%)
+            min_stop_distance = entry_price * 0.01
             stop_distance = max(stop_distance, min_stop_distance)
             
             # Calculate stop loss price
             if side.lower() == 'buy':
-                stop_loss = entry_price - stop_distance
-                # Ensure reasonable limit (max 15% loss)
-                stop_loss = max(stop_loss, entry_price * 0.85)
-            else:
-                stop_loss = entry_price + stop_distance
-                # Ensure reasonable limit (max 15% loss)
-                stop_loss = min(stop_loss, entry_price * 1.15)
+                stop_loss = entry_price - stop_distance  # Below entry for BUY
+                # Ensure reasonable bounds (max 5% loss)
+                stop_loss = max(stop_loss, entry_price * 0.95)
+            else:  # SELL position
+                stop_loss = entry_price + stop_distance  # Above entry for SELL
+                # Ensure reasonable bounds (max 5% loss)
+                stop_loss = min(stop_loss, entry_price * 1.05)
+            
+            logging.debug(f"🛡️ SL Calc: Entry ${entry_price:.6f} | Side {side} | Distance {stop_distance:.6f} | SL ${stop_loss:.6f}")
             
             return stop_loss
             
         except Exception as e:
             logging.error(f"Error calculating stop loss: {e}")
-            # Emergency fallback: 5% stop
-            return entry_price * (0.95 if side.lower() == 'buy' else 1.05)
+            # Emergency fallback: 2% stop
+            return entry_price * (0.98 if side.lower() == 'buy' else 1.02)
     
     def calculate_take_profit_price(self, entry_price: float, side: str, 
                                    stop_loss: float, ratio: float = None) -> float:
@@ -167,26 +169,28 @@ class RiskCalculator:
         """
         try:
             if ratio is None:
-                ratio = self.risk_reward_ratio
+                ratio = 1.5  # CONSERVATIVE: Reduced from 2.0 to 1.5 for more realistic targets
             
             # Calculate risk distance
             if side.lower() == 'buy':
-                risk = entry_price - stop_loss
-                take_profit = entry_price + (risk * ratio)
-                # Cap at max 30% profit
-                take_profit = min(take_profit, entry_price * 1.30)
-            else:
-                risk = stop_loss - entry_price  
-                take_profit = entry_price - (risk * ratio)
-                # Cap at max 30% profit
-                take_profit = max(take_profit, entry_price * 0.70)
+                risk = abs(entry_price - stop_loss)  # Use abs to ensure positive
+                take_profit = entry_price + (risk * ratio)  # Above entry for BUY
+                # CONSERVATIVE: Cap at max 8% profit instead of 30%
+                take_profit = min(take_profit, entry_price * 1.08)
+            else:  # SELL position
+                risk = abs(stop_loss - entry_price)  # Use abs to ensure positive  
+                take_profit = entry_price - (risk * ratio)  # Below entry for SELL
+                # CONSERVATIVE: Cap at max 8% profit instead of 30%
+                take_profit = max(take_profit, entry_price * 0.92)
+            
+            logging.debug(f"🎯 TP Calc: Entry ${entry_price:.6f} | Side {side} | Risk {risk:.6f} | Ratio {ratio:.1f} | TP ${take_profit:.6f}")
             
             return take_profit
             
         except Exception as e:
             logging.error(f"Error calculating take profit: {e}")
-            # Conservative fallback: 10% profit target
-            return entry_price * (1.10 if side.lower() == 'buy' else 0.90)
+            # Conservative fallback: 4% profit target
+            return entry_price * (1.04 if side.lower() == 'buy' else 0.96)
     
     def calculate_position_levels(self, market_data: MarketData, side: str, 
                                  confidence: float, balance: float) -> PositionLevels:

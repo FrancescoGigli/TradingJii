@@ -615,60 +615,69 @@ async def trade_signals():
                         result = predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, TIME_STEPS)
                         prediction_results[symbol] = result
 
-                # NEW: Display decision analysis for each symbol (with broader scope)
-                print(colored("\n🔍 DECISION ANALYSIS FOR ALL SYMBOLS", "cyan", attrs=['bold']))
-                print(colored("=" * 80, "cyan"))
+                # OPTIMIZED: Collect executable signals first, then show targeted decision analysis
+                executable_signals = {}
                 
-                # Process all prediction results and show decision analysis
+                # First pass: identify executable signals
                 for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
-                    try:
-                        # Create signal data for analysis display
-                        signal_data = {
-                            'symbol': symbol,
-                            'signal': final_signal,
-                            'signal_name': 'BUY' if final_signal == 1 else 'SELL' if final_signal is not None and final_signal != 2 else 'NEUTRAL',
-                            'confidence': ensemble_value if ensemble_value is not None else 0.0,
-                            'tf_predictions': tf_predictions,
-                            'price': 0
-                        }
-                        
-                        # Get RL decision with detailed reasons (if available)
-                        if RL_AGENT_AVAILABLE and final_signal is not None and final_signal != 2:
-                            try:
-                                market_context = build_market_context(symbol, all_symbol_data[symbol])
-                                portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
-                                
-                                # Get RL decision with detailed analysis
-                                should_execute, rl_confidence, rl_details = global_rl_agent.should_execute_signal(
-                                    signal_data, market_context, portfolio_state
-                                )
-                                
-                                signal_data['rl_approved'] = should_execute
-                                signal_data['rl_confidence'] = rl_confidence
-                                signal_data['rl_details'] = rl_details
-                                
-                            except Exception as rl_error:
-                                logging.warning(f"RL analysis error for {symbol}: {rl_error}")
-                                # Fallback: no RL data
-                                signal_data['rl_approved'] = True
-                                signal_data['rl_confidence'] = 0.6
-                                signal_data['rl_details'] = {
-                                    'primary_reason': f'RL Error: {str(rl_error)[:50]}...',
-                                    'factors': {},
-                                    'final_verdict': 'FALLBACK_APPROVED'
-                                }
-                        
-                        # Show decision analysis for this symbol
-                        display_symbol_decision_analysis(
-                            symbol, 
-                            signal_data,
-                            rl_available=RL_AGENT_AVAILABLE,
-                            risk_manager_available=True
-                        )
-                        
-                    except Exception as e:
-                        logging.error(f"Error in decision analysis for {symbol}: {e}")
-                        continue
+                    if ensemble_value is not None and final_signal is not None and final_signal != 2:
+                        executable_signals[symbol] = (ensemble_value, final_signal, tf_predictions)
+                
+                # Show decision analysis only for executable signals
+                if executable_signals:
+                    print(colored(f"\n🔍 DECISION ANALYSIS FOR EXECUTABLE SIGNALS ({len(executable_signals)} signals)", "cyan", attrs=['bold']))
+                    print(colored("=" * 80, "cyan"))
+                
+                    # Process executable prediction results and show decision analysis
+                    for symbol, (ensemble_value, final_signal, tf_predictions) in executable_signals.items():
+                        try:
+                            # Create signal data for analysis display
+                            signal_data = {
+                                'symbol': symbol,
+                                'signal': final_signal,
+                                'signal_name': 'BUY' if final_signal == 1 else 'SELL' if final_signal is not None and final_signal != 2 else 'NEUTRAL',
+                                'confidence': ensemble_value if ensemble_value is not None else 0.0,
+                                'tf_predictions': tf_predictions,
+                                'price': 0
+                            }
+                            
+                            # Get RL decision with detailed reasons (if available)
+                            if RL_AGENT_AVAILABLE and final_signal is not None and final_signal != 2:
+                                try:
+                                    market_context = build_market_context(symbol, all_symbol_data[symbol])
+                                    portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
+                                    
+                                    # Get RL decision with detailed analysis
+                                    should_execute, rl_confidence, rl_details = global_rl_agent.should_execute_signal(
+                                        signal_data, market_context, portfolio_state
+                                    )
+                                    
+                                    signal_data['rl_approved'] = should_execute
+                                    signal_data['rl_confidence'] = rl_confidence
+                                    signal_data['rl_details'] = rl_details
+                                    
+                                except Exception as rl_error:
+                                    logging.warning(f"RL analysis error for {symbol}: {rl_error}")
+                                    # Fallback: no RL data
+                                    signal_data['rl_approved'] = True
+                                    signal_data['rl_confidence'] = 0.6
+                                    signal_data['rl_details'] = {
+                                        'primary_reason': f'RL Error: {str(rl_error)[:50]}...',
+                                        'factors': {},
+                                        'final_verdict': 'FALLBACK_APPROVED'
+                                    }
+                            
+                            # Show decision analysis for this symbol
+                            display_symbol_decision_analysis(
+                                symbol, 
+                                signal_data,
+                                rl_available=RL_AGENT_AVAILABLE,
+                                risk_manager_available=True
+                            )
+                            
+                        except Exception as e:
+                            logging.error(f"Error in decision analysis for {symbol}: {e}")
+                            continue
                 
                 print(colored("=" * 80, "cyan"))
                 
@@ -811,7 +820,8 @@ async def trade_signals():
                         
                         latest_candle = df.iloc[-1]
                         current_price = latest_candle.get('close', 0)
-                        atr = latest_candle.get('atr', current_price * 0.02)
+                        # CRITICAL FIX: More reasonable ATR fallback (0.3% instead of 2%)
+                        atr = latest_candle.get('atr', current_price * 0.003)  # 0.3% fallback instead of 2%
                         volatility = latest_candle.get('volatility', 0.0)
                         
                         market_data = MarketData(
@@ -827,8 +837,8 @@ async def trade_signals():
                         
                         if result.success:
                             logging.info(colored(f"✅ {symbol}: Trade successful - Position: {result.position_id}", "green"))
-                            # Generate backtest only for successful trades
-                            await generate_signal_backtest(symbol, signal['dataframes'], signal)
+                            # PERFORMANCE FIX: Backtest disabled during live trading (was causing 10+ minutes overhead)
+                            # await generate_signal_backtest(symbol, signal['dataframes'], signal)  # DISABLED for performance
                         else:
                             logging.warning(colored(f"❌ {symbol}: {result.error}", "yellow"))
                             
@@ -930,8 +940,23 @@ async def trade_signals():
                 except Exception as sync_error:
                     logging.warning(f"Position sync error: {sync_error}")
             
-            # Update position tracker with current prices for real-time PnL
-            if POSITION_TRACKER_AVAILABLE:
+            # NEW: Update trailing stop system for real-time monitoring  
+            if CLEAN_MODULES_AVAILABLE:
+                try:
+                    # Execute trailing stop monitoring and exits
+                    closed_positions = await global_trading_orchestrator.update_trailing_positions(async_exchange)
+                    
+                    # Log trailing exits
+                    for position in closed_positions:
+                        logging.info(colored(f"🎯 Trailing Exit: {position.symbol} {position.side.upper()} @ ${position.current_price:.6f}", "green"))
+                        logging.info(colored(f"   💰 Final PnL: {position.unrealized_pnl_pct:+.2f}% (${position.unrealized_pnl_usd:+.2f})", 
+                                           "green" if position.unrealized_pnl_pct > 0 else "red"))
+                        
+                except Exception as trailing_error:
+                    logging.warning(f"Trailing system error: {trailing_error}")
+            
+            # FALLBACK: Legacy position tracking (if clean modules not available)
+            elif POSITION_TRACKER_AVAILABLE:
                 try:
                     # Collect current prices for active positions
                     current_prices = {}
@@ -984,9 +1009,10 @@ async def trade_signals():
                         
                         logging.debug(f"🎯 {position['symbol']} closed: {position['exit_reason']} PnL: {position['final_pnl_pct']:+.2f}%")
                     
-                    # CLEAN DISPLAY: Use new display system  
-                    from core.clean_display import display_trading_status
-                    display_trading_status(global_position_manager, global_order_manager, usdt_balance)
+                    # SMART DISPLAY: Use enhanced dual-table display system
+                    from core.smart_display import display_smart_trading_status
+                    from core.smart_position_manager import global_smart_position_manager
+                    await display_smart_trading_status(global_smart_position_manager, async_exchange, usdt_balance)
                     
                 except Exception as tracker_error:
                     logging.warning(f"Position tracker error: {tracker_error}")
@@ -1183,10 +1209,11 @@ async def main():
                         logging.info(colored(f"✅ Model trained for {tf}: Accuracy {training_metrics.get('val_accuracy', 0):.3f}", "green"))
                         model_status[tf] = True
                         
+                        # VALIDATION: Run backtest after model training to validate performance
                         try:
                             await run_integrated_backtest(top_symbols_training[0], tf, async_exchange)
                         except Exception as bt_error:
-                            logging.warning(f"Backtest demo failed: {bt_error}")
+                            logging.warning(f"Backtest validation failed: {bt_error}")
                     else:
                         model_status[tf] = False
                     

@@ -61,11 +61,15 @@ class OrderManager:
                 logging.error(colored(f"❌ {error_msg}", "red"))
                 return OrderExecutionResult(False, None, error_msg)
             
-            order_id = order.get('id')
-            entry_price = order.get('average') or order.get('price', 0)
-            status = order.get('status', 'unknown')
+            order_id = order.get('id') or 'N/A'
+            entry_price = order.get('average') or order.get('price') or 0.0
+            status = order.get('status') or 'unknown'
             
-            logging.info(colored(f"✅ MARKET ORDER SUCCESS: ID {order_id} | Price: ${entry_price:.6f} | Status: {status.upper()}", "green", attrs=['bold']))
+            # CRITICAL FIX: Validate all variables before formatting
+            if entry_price and entry_price > 0:
+                logging.info(colored(f"✅ MARKET ORDER SUCCESS: ID {order_id} | Price: ${entry_price:.6f} | Status: {status.upper()}", "green", attrs=['bold']))
+            else:
+                logging.info(colored(f"✅ MARKET ORDER SUCCESS: ID {order_id} | Price: N/A | Status: {status.upper()}", "green", attrs=['bold']))
             
             return OrderExecutionResult(True, order_id, None)
             
@@ -77,51 +81,62 @@ class OrderManager:
     async def set_trading_stop(self, exchange, symbol: str, stop_loss: float = None, 
                               take_profit: float = None, position_idx: int = 0) -> OrderExecutionResult:
         """
-        CORRECT: Use Bybit's set_trading_stop API (from your working example)
+        🚀 CORRECT BYBIT API: Use exact API format that works
+        
+        Uses: /v5/position/trading-stop endpoint with correct parameters
         
         Args:
-            exchange: Bybit exchange instance
-            symbol: Trading symbol
+            exchange: Bybit exchange instance  
+            symbol: Trading symbol (convert to Bybit format)
             stop_loss: Stop loss price (optional)
             take_profit: Take profit price (optional)
-            position_idx: Position index (default 0)
+            position_idx: Position index (0 for one-way mode)
             
         Returns:
             OrderExecutionResult: Success/failure
         """
         try:
-            logging.info(colored(f"🛡️ SETTING TRADING STOP: {symbol} | SL: ${stop_loss:.6f} | TP: ${take_profit:.6f}", "yellow", attrs=['bold']))
+            # Convert symbol format for Bybit API (remove '/USDT:USDT' → 'BTCUSDT')
+            bybit_symbol = symbol.replace('/USDT:USDT', 'USDT').replace('/', '')
             
-            # Use Bybit's set_trading_stop API (the correct way!)
+            # CRITICAL FIX: Handle None values in formatting
+            sl_text = f"${stop_loss:.6f}" if stop_loss is not None else "None"
+            tp_text = f"${take_profit:.6f}" if take_profit is not None else "None"
+            
+            logging.info(colored(f"🛡️ SETTING TRADING STOP: {bybit_symbol} | SL: {sl_text} | TP: {tp_text}", "yellow", attrs=['bold']))
+            
+            # CORRECT BYBIT API PARAMETERS (exactly as you specified)
             params = {
                 'category': 'linear',  # For USDT perpetuals
-                'symbol': symbol,
-                'tpslMode': 'Full',
-                'positionIdx': position_idx
+                'symbol': bybit_symbol,  # Use correct Bybit symbol format
+                'tpslMode': 'Full',    # Apply to full position
+                'positionIdx': position_idx  # 0 for one-way mode
             }
             
             if stop_loss:
-                params['stopLoss'] = str(stop_loss)
+                params['stopLoss'] = str(stop_loss)  # Must be string
             if take_profit:
-                params['takeProfit'] = str(take_profit)
+                params['takeProfit'] = str(take_profit)  # Must be string
             
-            # CRITICAL FIX: Use ccxt method for trading stop
-            if hasattr(exchange, 'set_trading_stop'):
-                result = await exchange.set_trading_stop(**params)
-            else:
-                # Fallback: try direct API call
-                result = await exchange.private_post_v5_position_trading_stop(params)
+            # CRITICAL FIX: Use direct Bybit API endpoint
+            # This calls exactly: /v5/position/trading-stop
+            result = await exchange.private_post_v5_position_trading_stop(params)
             
-            if result.get('retCode') == 0:
-                logging.info(colored(f"✅ TRADING STOP SUCCESS: {symbol}", "green", attrs=['bold']))
-                return OrderExecutionResult(True, "trading_stop", None)
+            logging.debug(f"🔍 Bybit API response: {result}")
+            
+            ret_code = result.get('retCode', -1)
+            ret_msg = result.get('retMsg', 'Unknown response')
+            
+            if ret_code == 0:
+                logging.info(colored(f"✅ TRADING STOP SUCCESS: {bybit_symbol} | Response: {ret_msg}", "green", attrs=['bold']))
+                return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}", None)
             else:
-                error_msg = f"Bybit trading stop failed: {result}"
+                error_msg = f"Bybit API error {ret_code}: {ret_msg}"
                 logging.error(colored(f"❌ {error_msg}", "red"))
                 return OrderExecutionResult(False, None, error_msg)
             
         except Exception as e:
-            error_msg = f"Trading stop failed: {str(e)}"
+            error_msg = f"Trading stop API call failed: {str(e)}"
             logging.error(colored(f"❌ {error_msg}", "red"))
             return OrderExecutionResult(False, None, error_msg)
     

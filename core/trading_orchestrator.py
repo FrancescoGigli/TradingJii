@@ -20,7 +20,9 @@ from termcolor import colored
 # Import new clean modules
 from core.order_manager import global_order_manager, OrderExecutionResult
 from core.risk_calculator import global_risk_calculator, MarketData, PositionLevels
+from core.smart_position_manager import global_smart_position_manager
 from core.position_manager import global_position_manager, Position
+from core.trailing_stop_manager import TrailingStopManager
 
 class TradingResult:
     """Simple result for trading operations"""
@@ -41,7 +43,11 @@ class TradingOrchestrator:
     def __init__(self):
         self.order_manager = global_order_manager
         self.risk_calculator = global_risk_calculator
-        self.position_manager = global_position_manager
+        self.position_manager = global_position_manager  # Use clean position manager for trailing
+        self.smart_position_manager = global_smart_position_manager  # Keep for sync
+        
+        # Initialize trailing stop manager
+        self.trailing_manager = TrailingStopManager(self.order_manager, self.position_manager)
         
     async def execute_new_trade(self, exchange, signal_data: Dict, market_data: MarketData, 
                                balance: float) -> TradingResult:
@@ -99,34 +105,31 @@ class TradingOrchestrator:
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
             
-            # 6. Create position in tracker
-            position_id = self.position_manager.create_position(
+            # 6. NEW: Create catastrophic stop on exchange (backup only)
+            catastrophic_sl_id = await self.trailing_manager.create_catastrophic_stop(
+                exchange, symbol, side, market_data.price
+            )
+            
+            if catastrophic_sl_id is None:
+                logging.warning(colored("⚠️ Failed to create catastrophic stop, continuing with internal tracking only", "yellow"))
+            
+            # 7. Create position with trailing system (NO fixed TP/SL)
+            position_id = self.position_manager.create_trailing_position(
                 symbol=symbol,
                 side=side,
                 entry_price=market_data.price,
                 position_size=levels.position_size * market_data.price,  # Convert to USD
-                stop_loss=levels.stop_loss,
-                take_profit=levels.take_profit,
+                atr=market_data.atr,
+                catastrophic_sl_id=catastrophic_sl_id,
                 leverage=10,
                 confidence=confidence
             )
             
-            # 7. Setup protection orders
-            protection_results = await self.order_manager.setup_position_protection(
-                exchange, symbol, side, levels.position_size, levels.stop_loss, levels.take_profit
-            )
-            
-            # 8. Update position with order IDs
-            sl_id = protection_results['stop_loss'].order_id
-            tp_id = protection_results['take_profit'].order_id
-            
-            self.position_manager.update_position_orders(position_id, sl_id, tp_id)
-            
-            # 9. Return comprehensive result
+            # 8. Return result (no TP/SL orders, only market + catastrophic stop)
             order_ids = {
                 'main': market_result.order_id,
-                'stop_loss': sl_id,
-                'take_profit': tp_id
+                'catastrophic_stop': catastrophic_sl_id,
+                'note': 'Trailing system active - no fixed TP/SL'
             }
             
             logging.info(colored(f"✅ TRADE COMPLETE: {symbol} | Position: {position_id}", "green", attrs=['bold']))
@@ -140,10 +143,10 @@ class TradingOrchestrator:
     
     async def protect_existing_positions(self, exchange) -> Dict[str, TradingResult]:
         """
-        SIMPLIFIED: Track existing positions without placing orders
+        🚀 SMART SYNC: Use SmartPositionManager instead of duplicating logic
         
-        Bybit ha regole complesse per ordini su posizioni esistenti.
-        Meglio solo tracking software per trailing stops.
+        The SmartPositionManager handles all Bybit position sync automatically.
+        This method now just delegates to the smart manager.
         
         Args:
             exchange: Bybit exchange instance
@@ -154,66 +157,161 @@ class TradingOrchestrator:
         results = {}
         
         try:
-            logging.info(colored("🛡️ TRACKING EXISTING POSITIONS (Software Only)", "yellow", attrs=['bold']))
+            logging.info(colored("🛡️ SMART POSITION IMPORT (Deduplication Active)", "yellow", attrs=['bold']))
             
-            # Fetch current positions from Bybit
-            positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_positions = [p for p in positions if float(p.get('contracts', 0)) > 0]
+            # Use SmartPositionManager's sync instead of duplicating logic
+            newly_opened, newly_closed = await self.position_manager.sync_with_bybit(exchange)
             
-            if not active_positions:
-                logging.info(colored("✅ No existing positions found", "green"))
-                return results
+            # Convert to expected result format
+            for position in newly_opened:
+                results[position.symbol] = TradingResult(True, position.position_id, "", {
+                    'tracking_type': 'smart_sync',
+                    'note': 'Position synced via SmartPositionManager'
+                })
+                
+                logging.info(colored(f"📊 Smart Import: {position.symbol} {position.side.upper()} @ ${position.entry_price:.6f}", "cyan"))
             
-            # Process each position for SOFTWARE tracking only
-            for pos_data in active_positions:
-                try:
-                    symbol = pos_data.get('symbol')
-                    contracts = abs(float(pos_data.get('contracts', 0)))
-                    side = 'buy' if float(pos_data.get('contracts', 0)) > 0 else 'sell'
-                    entry_price = float(pos_data.get('entryPrice', 0))
-                    
-                    if not symbol or contracts <= 0:
-                        continue
-                    
-                    # Add to position manager for software tracking
-                    position_id = self.position_manager.create_position(
-                        symbol=symbol,
-                        side=side,
-                        entry_price=entry_price,
-                        position_size=contracts * entry_price,  # USD value
-                        stop_loss=entry_price * (0.6 if side == 'buy' else 1.4),  # 40% SL (software tracking)
-                        take_profit=entry_price * (1.2 if side == 'buy' else 0.8),  # 20% TP (software tracking)
-                        leverage=10,
-                        confidence=0.7
-                    )
-                    
-                    logging.info(colored(f"📊 Tracking: {symbol} {side.upper()} @ ${entry_price:.6f} (Software trailing only)", "cyan"))
-                    
-                    # Mark as success (software tracking)
-                    results[symbol] = TradingResult(True, position_id, "", {
-                        'tracking_type': 'software_only',
-                        'note': 'Existing position - software trailing stop only'
-                    })
-                    
-                except Exception as pos_error:
-                    error_msg = f"Position tracking failed: {str(pos_error)}"
-                    logging.error(colored(f"❌ {error_msg}", "red"))
-                    results[pos_data.get('symbol', 'unknown')] = TradingResult(False, "", error_msg)
-            
-            # Summary
-            tracked = len(results)
-            logging.info(colored(f"📊 TRACKING SUMMARY: {tracked} positions under software management", "cyan"))
+            tracked = len(newly_opened)
+            logging.info(colored(f"📊 SMART IMPORT SUMMARY: {tracked} positions imported (no duplicates)", "cyan"))
             
             return results
             
         except Exception as e:
-            error_msg = f"Error tracking existing positions: {str(e)}"
+            error_msg = f"Error in smart position import: {str(e)}"
             logging.error(colored(f"❌ {error_msg}", "red"))
             return {'error': TradingResult(False, "", error_msg)}
     
+    async def update_trailing_positions(self, exchange) -> List[Position]:
+        """
+        NEW: Update all trailing positions and execute exits when hit
+        
+        Args:
+            exchange: Exchange instance
+            
+        Returns:
+            List[Position]: Positions that were closed via trailing
+        """
+        closed_positions = []
+        
+        try:
+            # Get all positions that need trailing monitoring
+            trailing_positions = self.position_manager.get_trailing_positions()
+            
+            if not trailing_positions:
+                return closed_positions
+            
+            logging.debug(f"🔄 Monitoring {len(trailing_positions)} trailing positions")
+            
+            # Fetch current prices for all tracked symbols
+            current_prices = {}
+            for position in trailing_positions:
+                try:
+                    ticker = await exchange.fetch_ticker(position.symbol)
+                    current_prices[position.symbol] = ticker.get('last', 0)
+                except Exception as price_error:
+                    logging.debug(f"Could not get price for {position.symbol}: {price_error}")
+                    continue
+            
+            # Process each position
+            for position in trailing_positions:
+                if position.symbol not in current_prices:
+                    continue
+                    
+                current_price = current_prices[position.symbol]
+                position.current_price = current_price
+                
+                # Calculate PnL
+                if position.side == 'buy':
+                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+                else:
+                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
+                
+                position.unrealized_pnl_pct = pnl_pct
+                position.unrealized_pnl_usd = (pnl_pct / 100) * position.position_size
+                
+                # Check activation conditions if not already trailing
+                if not position.trailing_attivo:
+                    if self.trailing_manager.check_activation_conditions(
+                        self.trailing_manager.initialize_trailing_data(
+                            position.symbol, position.side, position.entry_price, 
+                            position.atr_value, position.sl_catastrofico_id
+                        ), current_price, position.side
+                    ):
+                        # Activate trailing
+                        self.trailing_manager.activate_trailing(
+                            self.trailing_manager.initialize_trailing_data(
+                                position.symbol, position.side, position.entry_price,
+                                position.atr_value, position.sl_catastrofico_id
+                            ), current_price, position.side, position.atr_value
+                        )
+                        position.trailing_attivo = True
+                        position.best_price = current_price
+                        position.sl_corrente = current_price - position.atr_value * 2.0 if position.side == 'buy' else current_price + position.atr_value * 2.0
+                
+                # Update trailing if active
+                if position.trailing_attivo and position.sl_corrente is not None:
+                    # Update best price (monotone)
+                    if position.side == 'buy':
+                        new_best = max(position.best_price or current_price, current_price)
+                    else:
+                        new_best = min(position.best_price or current_price, current_price)
+                    
+                    if new_best != position.best_price:
+                        position.best_price = new_best
+                        # Calculate new trailing stop
+                        trail_distance = position.atr_value * 2.0
+                        
+                        if position.side == 'buy':
+                            new_sl = new_best - trail_distance
+                            position.sl_corrente = max(position.sl_corrente, new_sl)  # Monotone
+                        else:
+                            new_sl = new_best + trail_distance
+                            position.sl_corrente = min(position.sl_corrente, new_sl)  # Monotone
+                        
+                        logging.debug(f"🔄 Trailing update {position.symbol}: Best ${new_best:.6f} | SL ${position.sl_corrente:.6f}")
+                    
+                    # Check if trailing hit
+                    if position.side == 'buy' and current_price <= position.sl_corrente:
+                        # Execute trailing exit
+                        exit_success = await self.trailing_manager.execute_trailing_exit(
+                            exchange, position.symbol, position.side, 
+                            position.position_size / current_price, current_price
+                        )
+                        
+                        if exit_success:
+                            position.status = 'CLOSED_TRAILING'
+                            closed_positions.append(position)
+                            self.position_manager.close_position(position.position_id, current_price, 'TRAILING')
+                            
+                    elif position.side == 'sell' and current_price >= position.sl_corrente:
+                        # Execute trailing exit
+                        exit_success = await self.trailing_manager.execute_trailing_exit(
+                            exchange, position.symbol, position.side,
+                            position.position_size / current_price, current_price
+                        )
+                        
+                        if exit_success:
+                            position.status = 'CLOSED_TRAILING'
+                            closed_positions.append(position)
+                            self.position_manager.close_position(position.position_id, current_price, 'TRAILING')
+            
+            # Save updated positions
+            self.position_manager.save_positions()
+            
+            if closed_positions:
+                logging.info(colored(f"🎯 {len(closed_positions)} positions closed via trailing", "yellow"))
+                for pos in closed_positions:
+                    logging.info(colored(f"   🔒 {pos.symbol} TRAILING: {pos.unrealized_pnl_pct:+.2f}%", "cyan"))
+            
+            return closed_positions
+            
+        except Exception as e:
+            logging.error(f"Error updating trailing positions: {e}")
+            return closed_positions
+
     async def update_positions_with_current_prices(self, exchange, symbols: List[str]) -> List[Position]:
         """
-        Update all positions with current market prices
+        DEPRECATED: Use update_trailing_positions instead
         
         Args:
             exchange: Exchange instance
@@ -222,30 +320,8 @@ class TradingOrchestrator:
         Returns:
             List[Position]: Positions that hit TP/SL and should be closed
         """
-        try:
-            # Fetch current prices
-            current_prices = {}
-            for symbol in symbols:
-                try:
-                    ticker = await exchange.fetch_ticker(symbol)
-                    current_prices[symbol] = ticker.get('last', 0)
-                except Exception as price_error:
-                    logging.debug(f"Could not get price for {symbol}: {price_error}")
-                    continue
-            
-            # Update positions
-            positions_to_close = self.position_manager.update_prices(current_prices)
-            
-            if positions_to_close:
-                logging.info(colored(f"🎯 {len(positions_to_close)} positions hit TP/SL", "yellow"))
-                for pos in positions_to_close:
-                    logging.info(colored(f"   🔒 {pos.symbol} {pos.status}: {pos.unrealized_pnl_pct:+.2f}%", "cyan"))
-            
-            return positions_to_close
-            
-        except Exception as e:
-            logging.error(f"Error updating positions: {e}")
-            return []
+        # Delegate to new trailing system
+        return await self.update_trailing_positions(exchange)
     
     def get_trading_summary(self) -> Dict:
         """Get comprehensive trading summary"""
@@ -287,19 +363,23 @@ class TradingOrchestrator:
             Tuple[bool, str]: (can_open, reason)
         """
         try:
+            # Import from config to avoid hardcoding
+            from config import MAX_CONCURRENT_POSITIONS
+            
             # 1. Check symbol uniqueness
             if self.position_manager.has_position_for_symbol(symbol):
                 return False, f"Position already exists for {symbol}"
             
-            # 2. Check position count limit
-            if self.position_manager.get_position_count() >= 3:
-                return False, "Maximum 3 positions reached"
+            # 2. Check position count limit (now uses config value)
+            current_positions = self.position_manager.get_position_count()
+            if current_positions >= MAX_CONCURRENT_POSITIONS:
+                return False, f"Maximum {MAX_CONCURRENT_POSITIONS} positions reached (current: {current_positions})"
             
             # 3. Check available balance
             if self.position_manager.get_available_balance() < 20.0:  # Min margin
                 return False, "Insufficient available balance"
             
-            return True, "Position can be opened"
+            return True, f"Position can be opened ({current_positions}/{MAX_CONCURRENT_POSITIONS} slots used)"
             
         except Exception as e:
             return False, f"Validation error: {e}"
