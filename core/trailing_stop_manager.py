@@ -62,24 +62,31 @@ class TrailingStopManager:
         
     def calculate_liquidation_price(self, entry_price: float, side: str) -> float:
         """
-        Calcola prezzo di liquidazione approssimativo
+        Calcola prezzo di liquidazione accurato per Bybit leverage 10x
+        
+        Formula Bybit: Liquidazione = Entry ± (Entry / Leverage) × 0.95
+        Per 10x leverage: ~9.5% movement trigger liquidazione
         
         Args:
             entry_price: Prezzo di entrata
             side: Direzione posizione
             
         Returns:
-            float: Prezzo liquidazione stimato
+            float: Prezzo liquidazione preciso
         """
         try:
-            # Formula approssimativa Bybit per leverage 10x
+            # ACCURATE Bybit liquidation formula for 10x leverage
+            # Liquidation happens when unrealized loss ≈ 95% of initial margin
+            liquidation_pct = 0.095  # 9.5% more accurate than 9%
+            
             if side.lower() == 'buy':
-                # Long: liquidazione quando prezzo scende ~9% (per 10x leverage)
-                liquidation = entry_price * (1 - 0.09)
+                # Long: liquidazione quando prezzo scende 9.5%
+                liquidation = entry_price * (1 - liquidation_pct)
             else:
-                # Short: liquidazione quando prezzo sale ~9% (per 10x leverage)  
-                liquidation = entry_price * (1 + 0.09)
-                
+                # Short: liquidazione quando prezzo sale 9.5%
+                liquidation = entry_price * (1 + liquidation_pct)
+            
+            logging.debug(f"💀 Liquidation calc: Entry ${entry_price:.6f} | Liq ${liquidation:.6f} ({liquidation_pct*100:.1f}%)")
             return liquidation
             
         except Exception as e:
@@ -129,18 +136,24 @@ class TrailingStopManager:
             Optional[str]: ID dell'ordine stop catastrofico
         """
         try:
-            # Calcola stop catastrofico vicino alla liquidazione
+            # Calcola stop catastrofico MOLTO vicino alla liquidazione
             liquidation_price = self.calculate_liquidation_price(entry_price, side)
             
-            # Buffer dal prezzo di liquidazione (20% del range)
-            if side.lower() == 'buy':
-                buffer = (entry_price - liquidation_price) * 0.2
-                catastrophic_sl = liquidation_price + buffer
-            else:
-                buffer = (liquidation_price - entry_price) * 0.2
-                catastrophic_sl = liquidation_price - buffer
+            # SMALL buffer dal prezzo di liquidazione (solo 0.5% di sicurezza)
+            safety_buffer_pct = 0.005  # 0.5% buffer invece di 20%
             
-            logging.info(f"🚨 Creating catastrophic stop for {symbol}: ${catastrophic_sl:.6f}")
+            if side.lower() == 'buy':
+                # Long: Stop appena sopra liquidazione  
+                catastrophic_sl = liquidation_price * (1 + safety_buffer_pct)
+            else:
+                # Short: Stop appena sotto liquidazione
+                catastrophic_sl = liquidation_price * (1 - safety_buffer_pct)
+            
+            # Log calculation details
+            loss_from_entry = abs(catastrophic_sl - entry_price) / entry_price * 100
+            logging.info(f"🚨 Creating catastrophic stop for {symbol}:")
+            logging.info(f"   Entry: ${entry_price:.6f} | Liquidation: ${liquidation_price:.6f}")  
+            logging.info(f"   Catastrophic SL: ${catastrophic_sl:.6f} ({loss_from_entry:.1f}% from entry)")
             
             # Usa API esistente per impostare solo stop loss
             result = await self.order_manager.set_trading_stop(

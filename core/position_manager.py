@@ -468,6 +468,30 @@ class PositionManager:
         """Get all positions that need trailing monitoring"""
         return [pos for pos in self.positions.values() 
                 if pos.breakeven_price is not None]
+    
+    def reset_session(self):
+        """
+        🧹 FRESH START: Reset all position tracking for new session
+        
+        Clears all tracked positions and resets balance.
+        Should be called at bot startup to avoid ghost positions.
+        """
+        try:
+            old_count = len(self.positions)
+            
+            # Clear all positions
+            self.positions.clear()
+            
+            # Reset session balance to starting amount
+            self.session_balance = 1000.0
+            
+            # Save clean state to disk
+            self.save_positions()
+            
+            logging.info(f"🧹 POSITION RESET: Cleared {old_count} tracked positions - fresh session started")
+            
+        except Exception as e:
+            logging.error(f"Error resetting session: {e}")
 
 # Global position manager instance  
 global_position_manager = PositionManager()

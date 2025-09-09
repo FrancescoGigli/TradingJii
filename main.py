@@ -91,6 +91,7 @@ try:
     from core.position_manager import global_position_manager
     from core.risk_calculator import global_risk_calculator
     from core.trading_orchestrator import global_trading_orchestrator
+    from core.smart_position_manager import global_smart_position_manager
     CLEAN_MODULES_AVAILABLE = True
     logging.debug("🎯 Clean trading modules loaded")
 except ImportError as e:
@@ -1238,13 +1239,20 @@ async def main():
         logging.info(colored("=" * 50, "green"))
         show_charts_info()
 
-        # 🔄 CLEAN STARTUP WITH NEW MODULES
-        logging.info(colored("🔄 STARTUP POSITION PROTECTION", "cyan", attrs=['bold']))
+        # 🔄 CLEAN STARTUP WITH FRESH SESSION
+        logging.info(colored("🧹 FRESH SESSION STARTUP", "cyan", attrs=['bold']))
+        
+        # 1. RESET ALL INTERNAL POSITION TRACKING (avoid ghost positions)
+        logging.info(colored("🧹 Clearing internal position tracking...", "yellow"))
+        global_position_manager.reset_session()
+        global_smart_position_manager.reset_session()
+        logging.info(colored("✅ Internal tracking reset - ready for fresh sync", "green"))
         
         if config.DEMO_MODE:
             logging.info(colored("🎮 Demo mode: Fresh session started", "magenta"))
         else:
-            # Use new clean OrderManager to protect existing positions
+            # 2. SYNC WITH REAL BYBIT POSITIONS (after reset)
+            logging.info(colored("🔄 SYNCING WITH REAL BYBIT POSITIONS", "cyan"))
             from core.trading_orchestrator import global_trading_orchestrator
             
             protection_results = await global_trading_orchestrator.protect_existing_positions(async_exchange)

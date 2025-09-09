@@ -454,6 +454,33 @@ class SmartPositionManager:
                 
         except Exception as e:
             logging.error(f"Error cleaning up old positions: {e}")
+    
+    def reset_session(self):
+        """
+        🧹 FRESH START: Reset all position tracking for new session
+        
+        Clears all tracked positions (open and closed) and resets balance.
+        Should be called at bot startup to avoid ghost positions.
+        """
+        try:
+            old_open = len(self.open_positions)
+            old_closed = len(self.closed_positions)
+            
+            # Clear all positions
+            self.open_positions.clear()
+            self.closed_positions.clear()
+            
+            # Reset session balance to starting amount
+            self.session_balance = 1000.0
+            self.session_start_balance = 1000.0
+            
+            # Save clean state to disk
+            self.save_positions()
+            
+            logging.info(f"🧹 SMART POSITION RESET: Cleared {old_open} open + {old_closed} closed positions - fresh session started")
+            
+        except Exception as e:
+            logging.error(f"Error resetting smart session: {e}")
 
 # Global smart position manager instance  
 global_smart_position_manager = SmartPositionManager()
