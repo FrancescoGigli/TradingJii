@@ -68,13 +68,8 @@ except ImportError as e:
     logging.warning(f"⚠️ Enhanced Terminal Display not available: {e}")
     ENHANCED_DISPLAY_AVAILABLE = False
 
-# Import position tracking system
-try:
-    from core.position_tracker import global_position_tracker
-    POSITION_TRACKER_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"⚠️ Position Tracker not available: {e}")
-    POSITION_TRACKER_AVAILABLE = False
+# CONSOLIDATED: Using only SmartPositionManager (replaced 3 duplicate systems)
+POSITION_TRACKER_AVAILABLE = True  # Always available via SmartPositionManager
 
 # Import RL agent system
 try:
@@ -85,15 +80,14 @@ except ImportError as e:
     logging.warning(f"⚠️ RL Agent not available: {e}")
     RL_AGENT_AVAILABLE = False
 
-# Import new clean modules
+# Import consolidated clean modules (position duplicates eliminated)
 try:
     from core.order_manager import global_order_manager
-    from core.position_manager import global_position_manager
     from core.risk_calculator import global_risk_calculator
     from core.trading_orchestrator import global_trading_orchestrator
-    from core.smart_position_manager import global_smart_position_manager
+    from core.smart_position_manager import global_smart_position_manager as position_manager
     CLEAN_MODULES_AVAILABLE = True
-    logging.debug("🎯 Clean trading modules loaded")
+    logging.debug("🎯 Clean trading modules loaded (position managers consolidated)")
 except ImportError as e:
     logging.warning(f"⚠️ Clean modules not available: {e}")
     CLEAN_MODULES_AVAILABLE = False
@@ -508,9 +502,9 @@ async def trade_signals():
                 await asyncio.sleep(5)
                 return
             
-            # CLEAN: Get position count using new modules
+            # CLEAN: Get position count using consolidated position manager
             if CLEAN_MODULES_AVAILABLE:
-                open_positions_count = global_position_manager.get_position_count()
+                open_positions_count = position_manager.get_position_count()
             else:
                 # Fallback: direct count from exchange
                 try:
@@ -1279,8 +1273,7 @@ async def main():
         
         # 1. RESET ALL INTERNAL POSITION TRACKING (avoid ghost positions)
         logging.info(colored("🧹 Clearing internal position tracking...", "yellow"))
-        global_position_manager.reset_session()
-        global_smart_position_manager.reset_session()
+        position_manager.reset_session()
         logging.info(colored("✅ Internal tracking reset - ready for fresh sync", "green"))
         
         if config.DEMO_MODE:
