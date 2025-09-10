@@ -77,9 +77,24 @@ class SmartPositionManager:
         self.storage_file = storage_file
         self.open_positions: Dict[str, Position] = {}
         self.closed_positions: Dict[str, Position] = {}
-        self.session_balance = 1000.0
-        self.session_start_balance = 1000.0
+        self.session_balance = 1000.0  # Will be updated with real balance
+        self.session_start_balance = 1000.0  # Will be updated with real balance  
+        self.real_balance_cache = 1000.0  # Cache for real balance from Bybit
         self.load_positions()
+        
+    def update_real_balance(self, real_balance: float):
+        """Update position manager with real balance from Bybit"""
+        try:
+            self.real_balance_cache = real_balance
+            self.session_balance = real_balance
+            # Only update start balance if this is the first update of the session
+            if self.session_start_balance == 1000.0:
+                self.session_start_balance = real_balance
+            
+            logging.debug(f"💰 Balance sync: Real=${real_balance:.2f}, Session=${self.session_balance:.2f}, Start=${self.session_start_balance:.2f}")
+            
+        except Exception as e:
+            logging.error(f"Error updating real balance: {e}")
         
     def _create_position_from_bybit(self, symbol: str, bybit_data: Dict) -> Position:
         """Create Position object from Bybit data"""
@@ -207,16 +222,43 @@ class SmartPositionManager:
                 # Find tracked position and update
                 for position in self.open_positions.values():
                     if position.symbol == symbol:
-                        # Update current price from Bybit
-                        current_price = bybit_data['entry_price']  # Bybit doesn't give current price directly
-                        unrealized_pnl = bybit_data['unrealized_pnl']
+                        # FIXED: Get REAL current market price, not entry price!
+                        try:
+                            # Fetch current market price from exchange
+                            ticker = await exchange.fetch_ticker(symbol)
+                            current_price = float(ticker['last'])  # Real current market price
+                        except Exception as e:
+                            logging.warning(f"Could not fetch current price for {symbol}: {e}")
+                            # Fallback: calculate from unrealized PnL
+                            if bybit_data['unrealized_pnl'] != 0 and position.position_size > 0:
+                                # Reverse calculate current price from PnL
+                                pnl_pct = (bybit_data['unrealized_pnl'] / position.position_size) * 100
+                                if position.side == 'buy':
+                                    current_price = position.entry_price * (1 + pnl_pct / 100)
+                                else:
+                                    current_price = position.entry_price * (1 - pnl_pct / 100)
+                            else:
+                                current_price = position.entry_price  # Last resort fallback
                         
+                        # Update with REAL data
                         position.current_price = current_price
-                        position.unrealized_pnl_usd = unrealized_pnl
+                        position.unrealized_pnl_usd = bybit_data['unrealized_pnl']
                         
-                        # Calculate PnL percentage
-                        if position.position_size > 0:
-                            position.unrealized_pnl_pct = (unrealized_pnl / position.position_size) * 100
+                        # FIXED: Calculate PnL percentage based on MARGIN with leverage (not price)
+                        initial_margin = position.position_size / position.leverage
+                        
+                        # Use REAL unrealized PnL from Bybit (already in USD)
+                        if initial_margin > 0:
+                            position.unrealized_pnl_pct = (bybit_data['unrealized_pnl'] / initial_margin) * 100
+                        else:
+                            # Fallback to price-based calculation if margin is invalid
+                            if position.side == 'buy':
+                                position.unrealized_pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+                            else:
+                                position.unrealized_pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
+                        
+                        # Update max favorable PnL
+                        position.max_favorable_pnl = max(position.max_favorable_pnl, position.unrealized_pnl_pct)
                         
                         break
             

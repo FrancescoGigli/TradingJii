@@ -368,15 +368,15 @@ async def sync_positions_at_startup(exchange):
                             # Create position ID for imported position
                             position_id = f"imported_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                             
-                            # Calculate protective stop loss at 40% for imported positions
-                            protective_stop_pct = 40.0  # 40% stop loss for existing positions
+                            # FIXED: Calculate REASONABLE protective levels (5% SL, 10% TP)
+                            protective_stop_pct = 5.0  # 5% stop loss (reasonable with 10x leverage = 50% capital loss max)
                             if side == 'BUY':
-                                protective_stop_loss = entry_price * (1 - protective_stop_pct / 100)
-                                protective_tp = entry_price * (1 + (protective_stop_pct / 100) * 0.5)  # Half risk for TP
+                                protective_stop_loss = entry_price * (1 - protective_stop_pct / 100)  # 5% below for LONG
+                                protective_tp = entry_price * (1 + protective_stop_pct * 2 / 100)  # 10% above for LONG
                                 trailing_trigger = entry_price * 1.01  # Start trailing at +1%
                             else:  # SELL
-                                protective_stop_loss = entry_price * (1 + protective_stop_pct / 100)  
-                                protective_tp = entry_price * (1 - (protective_stop_pct / 100) * 0.5)  # Half risk for TP
+                                protective_stop_loss = entry_price * (1 + protective_stop_pct / 100)  # 5% above for SHORT
+                                protective_tp = entry_price * (1 - protective_stop_pct * 2 / 100)  # 10% below for SHORT
                                 trailing_trigger = entry_price * 0.99  # Start trailing at -1%
                             
                             # Import position into tracker with protective levels
@@ -391,7 +391,7 @@ async def sync_positions_at_startup(exchange):
                                 'confidence': 0.7,  # Default confidence for imported positions
                                 'atr': entry_price * 0.02,  # Estimated ATR
                                 'take_profit': protective_tp,  # Protective TP calculated
-                                'stop_loss': protective_stop_loss,  # 40% protective SL
+                                'stop_loss': protective_stop_loss,  # 5% protective SL (corrected)
                                 'trailing_trigger': trailing_trigger,  # 1% trailing trigger
                                 'initial_stop_loss': protective_stop_loss,  # Save original SL
                                 'trailing_active': False,  # Will activate at +1%

@@ -1160,13 +1160,14 @@ async def main():
         logging.info(colored("🧹 Clearing internal position tracking...", "yellow"))
         position_manager.reset_session()
         
-        # 2. SYNC BALANCE: Set real Bybit balance in position manager
+        # 2. SYNC BALANCE: Set real Bybit balance in position manager (UNIFIED)
         real_balance = await get_real_balance(async_exchange)
         if real_balance and real_balance > 0:
-            position_manager.session_balance = real_balance
-            position_manager.session_start_balance = real_balance
-            position_manager.save_positions()
+            # Update SmartPositionManager with real balance
+            position_manager.update_real_balance(real_balance)
             logging.info(colored(f"💰 Position manager balance synced: ${real_balance:.2f}", "green"))
+        else:
+            logging.warning("⚠️ Could not sync real balance - using fallback")
         
         logging.info(colored("✅ Internal tracking reset - ready for fresh sync", "green"))
         

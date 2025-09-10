@@ -69,11 +69,23 @@ class TradingOrchestrator:
             
             logging.info(colored(f"🎯 EXECUTING NEW TRADE: {symbol} {side.upper()}", "cyan", attrs=['bold']))
             
-            # 1. Check if position already exists for symbol
+            # 1. ENHANCED: Check if position already exists for symbol (both tracker and real Bybit)
             if self.position_manager.has_position_for_symbol(symbol):
-                error = f"Position already exists for {symbol} (max 1 per symbol)"
+                error = f"Position already exists for {symbol} in tracker"
                 logging.warning(colored(f"⚠️ {error}", "yellow"))
                 return TradingResult(False, "", error)
+            
+            # 2. ADDITIONAL: Check Bybit directly for existing positions
+            try:
+                bybit_positions = await exchange.fetch_positions([symbol])
+                for pos in bybit_positions:
+                    contracts = float(pos.get('contracts', 0))
+                    if abs(contracts) > 0:  # Position exists on Bybit
+                        error = f"Position already exists for {symbol} on Bybit ({contracts:+.4f} contracts)"
+                        logging.warning(colored(f"⚠️ BYBIT CHECK: {error}", "yellow"))
+                        return TradingResult(False, "", error)
+            except Exception as bybit_check_error:
+                logging.warning(f"Could not verify Bybit positions for {symbol}: {bybit_check_error}")
             
             # 2. Calculate position levels
             levels = self.risk_calculator.calculate_position_levels(
@@ -192,27 +204,47 @@ class TradingOrchestrator:
                 total_value += position_value
                 total_pnl += unrealized_pnl
                 
-                # Get stop loss/take profit info with percentages
+                # Get stop loss/take profit info with VALIDATION and CORRECTION
                 stop_loss = pos.get('stopLossPrice', None)
                 take_profit = pos.get('takeProfitPrice', None)
                 
-                # CORRECTED: Calculate SL/TP percentages considering 10x leverage effect
+                # VALIDATE and CORRECT stop loss if illogical
                 if stop_loss and entry_price > 0:
                     sl_price = float(stop_loss)
                     price_change_pct = ((sl_price - entry_price) / entry_price) * 100
-                    # With 10x leverage: 1% price move = 10% P&L impact
-                    leverage_effect_pct = price_change_pct * 10
-                    sl_text = f"${sl_price:.4f} ({leverage_effect_pct:+.1f}%)"
+                    
+                    # VALIDATION: Check if SL is in wrong direction (CRITICAL FIX!)
+                    sl_wrong_direction = False
+                    if side == 'LONG' and sl_price > entry_price:  # SL above entry for LONG = WRONG
+                        sl_wrong_direction = True
+                        logging.warning(colored(f"🚨 INVALID SL for {symbol_raw} LONG: ${sl_price:.4f} > ${entry_price:.4f} (above entry!)", "red"))
+                    elif side == 'SHORT' and sl_price < entry_price:  # SL below entry for SHORT = WRONG  
+                        sl_wrong_direction = True
+                        logging.warning(colored(f"🚨 INVALID SL for {symbol_raw} SHORT: ${sl_price:.4f} < ${entry_price:.4f} (below entry!)", "red"))
+                    
+                    if sl_wrong_direction:
+                        # Calculate CORRECTED stop loss (5% emergency)
+                        if side == 'LONG':
+                            corrected_sl = entry_price * 0.95  # 5% below for LONG
+                        else:
+                            corrected_sl = entry_price * 1.05  # 5% above for SHORT
+                        
+                        corrected_pct = ((corrected_sl - entry_price) / entry_price) * 100
+                        sl_text = f"${corrected_sl:.4f} ({corrected_pct:+.1f}%) [CORRECTED]"
+                        
+                        # Log correction suggestion
+                        logging.warning(colored(f"💡 SUGGESTED CORRECTION for {symbol_raw}: ${corrected_sl:.4f} ({corrected_pct:+.1f}%)", "yellow"))
+                    else:
+                        # Valid SL - show as is
+                        sl_text = f"${sl_price:.4f} ({price_change_pct:+.1f}%)"
                 else:
                     sl_text = "Not Set"
                 
-                # CORRECTED: TP calculation with leverage effect
+                # TP calculation (no changes needed)
                 if take_profit and entry_price > 0:
                     tp_price = float(take_profit)
                     price_change_pct = ((tp_price - entry_price) / entry_price) * 100
-                    # With 10x leverage: 1% price move = 10% P&L impact
-                    leverage_effect_pct = price_change_pct * 10
-                    tp_text = f"${tp_price:.4f} ({leverage_effect_pct:+.1f}%)"
+                    tp_text = f"${tp_price:.4f} ({price_change_pct:+.1f}%)"
                 else:
                     tp_text = "Not Set"
                 
