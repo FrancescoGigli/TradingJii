@@ -262,24 +262,26 @@ class TradingTerminalDisplay:
             # Display open positions
             if open_positions:
                 print(colored("🟢 POSIZIONI ATTUALMENTE APERTE", "green", attrs=['bold']))
-                print(colored("┌─────┬────────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan"))
-                print(colored("│  #  │ SYMBOL │ SIDE │    ENTRY    │   CURRENT   │  PNL %   │   PNL $   │", "white", attrs=['bold']))
-                print(colored("├─────┼────────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan"))
+                print(colored("┌─────┬────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan"))
+                print(colored("│  #  │ SYMBOL │ SIDE │ LEV  │    ENTRY    │   CURRENT   │  PNL %   │   PNL $   │", "white", attrs=['bold']))
+                print(colored("├─────┼────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan"))
                 
                 for i, pos in enumerate(open_positions, 1):
                     symbol = pos.symbol.replace('/USDT:USDT', '')[:6]
                     side_color = "green" if pos.side == "buy" else "red"
                     pnl_color = "green" if pos.unrealized_pnl_pct > 0 else "red" if pos.unrealized_pnl_pct < 0 else "white"
+                    leverage_text = f"{pos.leverage:.0f}x"
                     
                     print(colored(f"│{i:^5}│", "white") + 
                           colored(f"{symbol:^8}", "cyan") + colored("│", "white") +
                           colored(f"{pos.side.upper():^6}", side_color) + colored("│", "white") +
+                          colored(f"{leverage_text:^6}", "yellow") + colored("│", "white") +
                           colored(f"${pos.entry_price:.6f}".center(13), "white") + colored("│", "white") +
                           colored(f"${pos.current_price:.6f}".center(13), "white") + colored("│", "white") +
                           colored(f"{pos.unrealized_pnl_pct:+.2f}%".center(10), pnl_color) + colored("│", "white") +
                           colored(f"${pos.unrealized_pnl_usd:+.2f}".center(11), pnl_color) + colored("│", "white"))
                 
-                print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan"))
+                print(colored("└─────┴────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan"))
                 
                 # Total for open positions
                 total_pnl_usd = session_summary.get('unrealized_pnl', 0)
@@ -422,8 +424,8 @@ def display_wallet_and_positions(position_tracker_summary: Dict, leverage: int =
     Display enhanced wallet status and active positions table
     """
     try:
-        # Import here to avoid circular imports
-        from core.position_tracker import global_position_tracker
+        # Import here to avoid circular imports  
+        from core.smart_position_manager import global_smart_position_manager as global_position_tracker
         
         summary = position_tracker_summary
         

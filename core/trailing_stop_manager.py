@@ -136,24 +136,23 @@ class TrailingStopManager:
             Optional[str]: ID dell'ordine stop catastrofico
         """
         try:
-            # Calcola stop catastrofico MOLTO vicino alla liquidazione
-            liquidation_price = self.calculate_liquidation_price(entry_price, side)
-            
-            # SMALL buffer dal prezzo di liquidazione (solo 0.5% di sicurezza)
-            safety_buffer_pct = 0.005  # 0.5% buffer invece di 20%
+            # CORRECTED: Stop catastrofico a 5% dall'entry (ragionevole con leva 10x)
+            # Con leva 10x: 5% price move = 50% capital loss (acceptable emergency stop)
+            catastrophic_loss_pct = 0.05  # 5% dall'entry invece di 9%
             
             if side.lower() == 'buy':
-                # Long: Stop appena sopra liquidazione  
-                catastrophic_sl = liquidation_price * (1 + safety_buffer_pct)
+                # Long: Stop 5% sotto entry  
+                catastrophic_sl = entry_price * (1 - catastrophic_loss_pct)
             else:
-                # Short: Stop appena sotto liquidazione
-                catastrophic_sl = liquidation_price * (1 - safety_buffer_pct)
+                # Short: Stop 5% sopra entry
+                catastrophic_sl = entry_price * (1 + catastrophic_loss_pct)
             
             # Log calculation details
             loss_from_entry = abs(catastrophic_sl - entry_price) / entry_price * 100
+            leveraged_loss = loss_from_entry * LEVERAGE
             logging.info(f"🚨 Creating catastrophic stop for {symbol}:")
-            logging.info(f"   Entry: ${entry_price:.6f} | Liquidation: ${liquidation_price:.6f}")  
-            logging.info(f"   Catastrophic SL: ${catastrophic_sl:.6f} ({loss_from_entry:.1f}% from entry)")
+            logging.info(f"   Entry: ${entry_price:.6f}")  
+            logging.info(f"   Catastrophic SL: ${catastrophic_sl:.6f} ({loss_from_entry:.1f}% price = {leveraged_loss:.0f}% capital loss)")
             
             # Usa API esistente per impostare solo stop loss
             result = await self.order_manager.set_trading_stop(

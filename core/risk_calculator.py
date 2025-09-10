@@ -62,50 +62,50 @@ class RiskCalculator:
             balance: Account balance
             
         Returns:
-            float: Dynamic margin amount (20-50 USD)
+            float: Dynamic margin amount (20-50 USD range)
         """
         try:
-            # Start with base margin
-            margin = self.base_margin
+            # FIXED: Start with smaller base (25 USD instead of 35)
+            margin = 25.0
             
-            # 1. Volatility adjustment (-15 to +15 USD)
+            # 1. Volatility adjustment (reduced ranges)
             if atr_pct < 1.0:          # Low volatility
-                margin += 12.0
+                margin += 8.0
             elif atr_pct < 2.0:        # Medium-low volatility  
-                margin += 5.0
+                margin += 3.0
             elif atr_pct < 3.0:        # Medium volatility
                 margin += 0.0
             elif atr_pct < 5.0:        # High volatility
-                margin -= 8.0  
+                margin -= 5.0  
             else:                      # Very high volatility
-                margin -= 15.0
+                margin -= 10.0
             
-            # 2. Confidence adjustment (-10 to +10 USD)
-            confidence_adjustment = (confidence - 0.7) * 25
-            margin += max(-10.0, min(10.0, confidence_adjustment))
+            # 2. Confidence adjustment (reduced range)
+            confidence_adjustment = (confidence - 0.7) * 20
+            margin += max(-8.0, min(8.0, confidence_adjustment))
             
-            # 3. Market volatility adjustment (-5 to +5 USD)
+            # 3. Market volatility adjustment (reduced)
             if volatility > 3.0:
-                margin -= 5.0
+                margin -= 3.0
             elif volatility < 1.0:
-                margin += 3.0
+                margin += 2.0
                 
-            # 4. Balance safety adjustment
+            # 4. Balance safety adjustment (reduced)
             if balance < 100:
-                margin -= 5.0
+                margin -= 3.0
             elif balance > 500:
-                margin += 3.0
+                margin += 2.0
             
-            # 5. Enforce bounds
-            final_margin = max(self.min_margin, min(self.max_margin, margin))
+            # 5. STRICT ENFORCEMENT: Always 20-50 USD range
+            final_margin = max(20.0, min(50.0, margin))
             
-            logging.debug(f"💰 Dynamic margin: ATR {atr_pct:.1f}% + Conf {confidence:.1%} = ${final_margin:.2f}")
+            logging.debug(f"💰 Dynamic margin: ATR {atr_pct:.1f}% + Conf {confidence:.1%} = ${final_margin:.2f} (20-50 USD range)")
             
             return final_margin
             
         except Exception as e:
             logging.error(f"Error calculating dynamic margin: {e}")
-            return self.base_margin  # Safe fallback
+            return 25.0  # Safe fallback in 20-50 range
     
     def calculate_stop_loss_price(self, entry_price: float, side: str, atr: float,
                                  volatility: float = 0.0) -> float:

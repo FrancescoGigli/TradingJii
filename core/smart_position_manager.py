@@ -22,7 +22,7 @@ from termcolor import colored
 
 @dataclass
 class Position:
-    """Enhanced position data structure"""
+    """Enhanced position data structure with trailing support"""
     position_id: str
     symbol: str
     side: str  # 'buy' or 'sell'
@@ -45,6 +45,13 @@ class Position:
     unrealized_pnl_usd: float = 0.0
     max_favorable_pnl: float = 0.0
     trailing_active: bool = False
+    
+    # TRAILING SYSTEM FIELDS (compatibility with legacy)
+    trailing_attivo: bool = False               # Italian field name for compatibility
+    best_price: Optional[float] = None          # Best price achieved
+    sl_corrente: Optional[float] = None         # Current trailing stop
+    atr_value: float = 0.0                      # ATR for calculations
+    sl_catastrofico_id: Optional[str] = None    # Catastrophic stop order ID
     
     # Enhanced metadata
     confidence: float = 0.7
@@ -79,14 +86,14 @@ class SmartPositionManager:
         entry_price = bybit_data['entry_price']
         side = bybit_data['side']
         
-        # Calculate protective levels (40% SL, 20% TP)
+        # Calculate CORRECTED protective levels (3% SL, 6% TP)
         if side == 'buy':
-            sl_price = entry_price * 0.6  # 40% below
-            tp_price = entry_price * 1.2  # 20% above
+            sl_price = entry_price * 0.97  # 3% below for LONG
+            tp_price = entry_price * 1.06  # 6% above for LONG
             trailing_trigger = entry_price * 1.01  # 1% above
         else:
-            sl_price = entry_price * 1.4  # 40% above
-            tp_price = entry_price * 0.8  # 20% below
+            sl_price = entry_price * 1.03  # 3% above for SHORT  
+            tp_price = entry_price * 0.94  # 6% below for SHORT
             trailing_trigger = entry_price * 0.99  # 1% below
         
         position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -342,7 +349,12 @@ class SmartPositionManager:
     def get_available_balance(self) -> float:
         """Get available balance for new positions"""
         used_margin = self.get_used_margin()
-        return max(0, self.session_balance - used_margin)
+        available = max(0, self.session_balance - used_margin)
+        
+        # Debug logging per capire il calcolo
+        logging.debug(f"💰 Balance calc: Total=${self.session_balance:.2f}, Used margin=${used_margin:.2f}, Available=${available:.2f}")
+        
+        return available
     
     def update_position_orders(self, position_id: str, sl_order_id: Optional[str], 
                               tp_order_id: Optional[str]) -> bool:
@@ -454,6 +466,52 @@ class SmartPositionManager:
                 
         except Exception as e:
             logging.error(f"Error cleaning up old positions: {e}")
+    
+    def create_trailing_position(self, symbol: str, side: str, entry_price: float, 
+                               position_size: float, atr: float, 
+                               catastrophic_sl_id: str, leverage: int = 10, 
+                               confidence: float = 0.7) -> str:
+        """
+        Create new position with trailing system (compatibility method)
+        
+        Args:
+            symbol: Trading symbol
+            side: Position side
+            entry_price: Entry price
+            position_size: Position size USD
+            atr: Average True Range
+            catastrophic_sl_id: ID of catastrophic stop order
+            leverage: Position leverage
+            confidence: ML confidence
+            
+        Returns:
+            str: Position ID
+        """
+        # Calculate basic protective levels
+        if side.lower() == 'buy':
+            stop_loss = entry_price * 0.97  # 3% stop loss
+            take_profit = entry_price * 1.06  # 6% take profit
+            trailing_trigger = entry_price * 1.01  # 1% trailing trigger
+        else:
+            stop_loss = entry_price * 1.03  # 3% stop loss  
+            take_profit = entry_price * 0.94  # 6% take profit
+            trailing_trigger = entry_price * 0.99  # 1% trailing trigger
+        
+        # Use regular create_position method
+        return self.create_position(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            position_size=position_size,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            leverage=leverage,
+            confidence=confidence
+        )
+    
+    def get_trailing_positions(self) -> List[Position]:
+        """Get all positions that need trailing monitoring (compatibility method)"""
+        return self.get_active_positions()
     
     def reset_session(self):
         """

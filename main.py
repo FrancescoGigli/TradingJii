@@ -643,7 +643,7 @@ async def trade_signals():
                             elif RL_AGENT_AVAILABLE and final_signal in [0, 1]:
                                 try:
                                     market_context = build_market_context(symbol, all_symbol_data[symbol])
-                                    portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
+                                    portfolio_state = position_manager.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
                                     
                                     # Get RL decision with detailed analysis
                                     should_execute, rl_confidence, rl_details = global_rl_agent.should_execute_signal(
@@ -726,7 +726,7 @@ async def trade_signals():
                             try:
                                 # Build market context for RL decision
                                 market_context = build_market_context(symbol, all_symbol_data[symbol])
-                                portfolio_state = global_position_tracker.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
+                                portfolio_state = position_manager.get_session_summary() if POSITION_TRACKER_AVAILABLE else {}
                                 
                                 # Get RL decision
                                 should_execute, rl_confidence, rl_details = global_rl_agent.should_execute_signal(
@@ -808,6 +808,24 @@ async def trade_signals():
             if signals_to_execute:
                 logging.info(colored(f"🚀 PHASE 3: EXECUTING TOP {len(signals_to_execute)} SIGNALS", "blue", attrs=['bold']))
                 
+                # CRITICAL: Set 10x leverage + ISOLATED margin for ALL symbols before trading
+                logging.info(colored("⚖️ SETTING 10x LEVERAGE + ISOLATED MARGIN for all trading symbols...", "yellow"))
+                for symbol in [sig['symbol'] for sig in signals_to_execute]:
+                    try:
+                        # Set leverage to 10x
+                        await async_exchange.set_leverage(LEVERAGE, symbol)
+                        logging.info(colored(f"✅ {symbol}: Leverage set to {LEVERAGE}x", "green"))
+                        
+                        # Set margin mode to ISOLATED
+                        try:
+                            await async_exchange.set_margin_mode('isolated', symbol)
+                            logging.info(colored(f"🔒 {symbol}: Margin mode set to ISOLATED", "green"))
+                        except Exception as margin_error:
+                            logging.warning(colored(f"⚠️ {symbol}: Could not set isolated margin: {margin_error}", "yellow"))
+                            
+                    except Exception as lev_error:
+                        logging.warning(colored(f"⚠️ {symbol}: Could not set leverage to {LEVERAGE}x: {lev_error}", "yellow"))
+                
                 # Track margin usage during execution
                 executed_trades = 0
                 
@@ -884,88 +902,14 @@ async def trade_signals():
             else:
                 logging.info(colored("😐 No signals to execute this cycle", "yellow"))
 
-            # CRITICAL FIX: Sync ALL real positions from Bybit every cycle (not just at startup)
+            # MODERNIZED: Use SmartPositionManager automatic Bybit sync
             if POSITION_TRACKER_AVAILABLE and not config.DEMO_MODE:
                 try:
-                    # Get current positions from Bybit
-                    logging.debug("🔄 Syncing positions from Bybit...")
-                    real_positions = await async_exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-                    active_real_positions = [p for p in real_positions if float(p.get('contracts', 0)) > 0]
+                    # SmartPositionManager handles Bybit sync automatically
+                    newly_opened, newly_closed = await position_manager.sync_with_bybit(async_exchange)
                     
-                    # Update position tracker with ALL real positions
-                    for pos in active_real_positions:
-                        try:
-                            symbol = pos.get('symbol')
-                            side = 'BUY' if float(pos.get('contracts', 0)) > 0 else 'SELL'
-                            entry_price = float(pos.get('entryPrice', 0))
-                            contracts = abs(float(pos.get('contracts', 0)))
-                            position_size = contracts * entry_price  # USD value
-                            unrealized_pnl = float(pos.get('unrealizedPnl', 0))
-                            
-                            if symbol and entry_price > 0:
-                                # Check if position already exists in tracker
-                                existing_pos_id = None
-                                for pos_id, tracked_pos in global_position_tracker.active_positions.items():
-                                    if tracked_pos['symbol'] == symbol:
-                                        existing_pos_id = pos_id
-                                        break
-                                
-                                if existing_pos_id:
-                                    # Update existing position
-                                    global_position_tracker.active_positions[existing_pos_id].update({
-                                        'current_price': entry_price,
-                                        'unrealized_pnl_pct': (unrealized_pnl / position_size) * 100,
-                                        'unrealized_pnl_usd': unrealized_pnl,
-                                        'position_size': position_size  # Update size if changed
-                                    })
-                                else:
-                                    # Add new position not tracked yet
-                                    position_id = f"sync_{symbol}_{datetime.now().strftime('%H%M%S')}"
-                                    
-                                    # Calculate protective levels for new imports
-                                    protective_stop_pct = 40.0
-                                    if side == 'BUY':
-                                        protective_stop_loss = entry_price * (1 - protective_stop_pct / 100)
-                                        protective_tp = entry_price * (1 + (protective_stop_pct / 100) * 0.5)
-                                        trailing_trigger = entry_price * 1.01
-                                    else:
-                                        protective_stop_loss = entry_price * (1 + protective_stop_pct / 100)
-                                        protective_tp = entry_price * (1 - (protective_stop_pct / 100) * 0.5)
-                                        trailing_trigger = entry_price * 0.99
-                                    
-                                    position_data = {
-                                        'position_id': position_id,
-                                        'symbol': symbol,
-                                        'side': side,
-                                        'entry_price': entry_price,
-                                        'entry_time': datetime.now().isoformat(),
-                                        'position_size': position_size,
-                                        'leverage': LEVERAGE,
-                                        'confidence': 0.7,
-                                        'atr': entry_price * 0.02,
-                                        'take_profit': protective_tp,
-                                        'stop_loss': protective_stop_loss,
-                                        'trailing_trigger': trailing_trigger,
-                                        'initial_stop_loss': protective_stop_loss,
-                                        'trailing_active': False,
-                                        'current_price': entry_price,
-                                        'unrealized_pnl_pct': (unrealized_pnl / position_size) * 100,
-                                        'unrealized_pnl_usd': unrealized_pnl,
-                                        'max_favorable_pnl': 0.0,
-                                        'status': 'OPEN',
-                                        'imported': True,
-                                        'protective_sl_set': True
-                                    }
-                                    
-                                    global_position_tracker.active_positions[position_id] = position_data
-                                    
-                                    logging.info(colored(f"📥 New position detected: {symbol} {side} @ {entry_price:.6f}", "yellow"))
-                        except Exception as sync_error:
-                            logging.warning(f"Error syncing position {symbol}: {sync_error}")
-                            continue
-                    
-                    global_position_tracker.save_session()
-                    logging.debug(f"✅ Position sync complete: {len(global_position_tracker.active_positions)} positions tracked")
+                    if newly_opened or newly_closed:
+                        logging.info(colored(f"🔄 Position sync: +{len(newly_opened)} opened, +{len(newly_closed)} closed", "cyan"))
                     
                 except Exception as sync_error:
                     logging.warning(f"Position sync error: {sync_error}")
@@ -985,67 +929,8 @@ async def trade_signals():
                 except Exception as trailing_error:
                     logging.warning(f"Trailing system error: {trailing_error}")
             
-            # FALLBACK: Legacy position tracking (if clean modules not available)
-            elif POSITION_TRACKER_AVAILABLE:
-                try:
-                    # Collect current prices for active positions
-                    current_prices = {}
-                    for symbol in top_symbols_analysis[:10]:  # Check prices for top symbols
-                        try:
-                            ticker = await async_exchange.fetch_ticker(symbol)
-                            current_prices[symbol] = ticker.get('last', 0)
-                        except:
-                            continue
-                    
-                    # Update positions and check for closes
-                    positions_to_close = global_position_tracker.update_positions(current_prices)
-                    
-                    # Close positions that hit TP/SL/Trailing
-                    for position in positions_to_close:
-                        global_position_tracker.close_position(
-                            position['position_id'], 
-                            position['exit_price'], 
-                            position['exit_reason']
-                        )
-                        
-                        # 🧠 RL LEARNING FROM TRADE RESULTS (NEW!)
-                        if RL_AGENT_AVAILABLE and 'rl_state' in position:
-                            try:
-                                # Calculate reward for RL learning
-                                trade_result = {
-                                    'final_pnl_pct': position['final_pnl_pct'],
-                                    'exit_reason': position['exit_reason'],
-                                    'trade_duration': position.get('trade_duration', 0)
-                                }
-                                
-                                portfolio_state = global_position_tracker.get_session_summary()
-                                reward = global_rl_agent.calculate_reward(trade_result, portfolio_state)
-                                
-                                # Record experience for RL learning
-                                global_rl_agent.record_trade_result(
-                                    position['rl_state'], 
-                                    True,  # Action was to execute (since trade happened)
-                                    reward
-                                )
-                                
-                                # Update RL model if enough experience
-                                global_rl_agent.update_model()
-                                global_rl_agent.save_model()
-                                
-                                logging.debug(f"🧠 RL learned from {position['symbol']}: PnL {position['final_pnl_pct']:+.2f}%, Reward {reward:.3f}")
-                                
-                            except Exception as rl_learn_error:
-                                logging.warning(f"RL learning error: {rl_learn_error}")
-                        
-                        logging.debug(f"🎯 {position['symbol']} closed: {position['exit_reason']} PnL: {position['final_pnl_pct']:+.2f}%")
-                    
-                    # SMART DISPLAY: Use enhanced dual-table display system
-                    from core.smart_display import display_smart_trading_status
-                    from core.smart_position_manager import global_smart_position_manager
-                    await display_smart_trading_status(global_smart_position_manager, async_exchange, usdt_balance)
-                    
-                except Exception as tracker_error:
-                    logging.warning(f"Position tracker error: {tracker_error}")
+            # MODERNIZED: Position updates handled by TradingOrchestrator
+            # (Legacy position tracking section removed - using consolidated SmartPositionManager)
 
             # 🏆 PERFORMANCE SUMMARY - Show optimization results
             cycle_total_time = time.time() - cycle_start_time
@@ -1274,6 +1159,15 @@ async def main():
         # 1. RESET ALL INTERNAL POSITION TRACKING (avoid ghost positions)
         logging.info(colored("🧹 Clearing internal position tracking...", "yellow"))
         position_manager.reset_session()
+        
+        # 2. SYNC BALANCE: Set real Bybit balance in position manager
+        real_balance = await get_real_balance(async_exchange)
+        if real_balance and real_balance > 0:
+            position_manager.session_balance = real_balance
+            position_manager.session_start_balance = real_balance
+            position_manager.save_positions()
+            logging.info(colored(f"💰 Position manager balance synced: ${real_balance:.2f}", "green"))
+        
         logging.info(colored("✅ Internal tracking reset - ready for fresh sync", "green"))
         
         if config.DEMO_MODE:

@@ -68,12 +68,12 @@ except ImportError as e:
     logging.warning(f"⚠️ Enhanced Terminal Display not available: {e}")
     ENHANCED_DISPLAY_AVAILABLE = False
 
-# Import position tracking system
+# CONSOLIDATED: Use SmartPositionManager (position duplicates eliminated)
 try:
-    from core.position_tracker import global_position_tracker
+    from core.smart_position_manager import global_smart_position_manager as global_position_tracker
     POSITION_TRACKER_AVAILABLE = True
 except ImportError as e:
-    logging.warning(f"⚠️ Position Tracker not available: {e}")
+    logging.warning(f"⚠️ Smart Position Manager not available: {e}")
     POSITION_TRACKER_AVAILABLE = False
 
 async def place_protective_orders_on_bybit(exchange, symbol, side, position_size, stop_loss_price, take_profit_price):

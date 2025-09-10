@@ -53,8 +53,13 @@ exchange_config = {
 # ----------------------------------------------------------------------
 # Parametri di trading
 # ----------------------------------------------------------------------
-MARGIN_USDT = 40.0
+# DYNAMIC MARGIN: 20-50 USDT based on confidence and risk
+MARGIN_BASE_USDT = 20.0    # Minimum margin per trade
+MARGIN_MAX_USDT = 50.0     # Maximum margin per trade  
 LEVERAGE = 10
+
+# Legacy compatibility (will be calculated dynamically)
+MARGIN_USDT = 25.0  # Average for fallback calculations
 
 ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]
 TIMEFRAME_DEFAULT: str | None = "15m"

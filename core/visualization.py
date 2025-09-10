@@ -205,7 +205,7 @@ class TradingVisualizer:
             predictions = predictions[-min_len:]
             
             # OPTION C: Use SAME position tracker as live trading!
-            from core.position_tracker import PositionTracker
+            from core.smart_position_manager import SmartPositionManager as PositionTracker
             from config import BACKTEST_INITIAL_BALANCE, BACKTEST_LEVERAGE, BACKTEST_BASE_RISK_PCT
             
             # Create isolated position tracker for backtest

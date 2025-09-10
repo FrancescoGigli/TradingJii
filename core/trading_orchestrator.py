@@ -20,8 +20,7 @@ from termcolor import colored
 # Import new clean modules
 from core.order_manager import global_order_manager, OrderExecutionResult
 from core.risk_calculator import global_risk_calculator, MarketData, PositionLevels
-from core.smart_position_manager import global_smart_position_manager
-from core.position_manager import global_position_manager, Position
+from core.smart_position_manager import global_smart_position_manager, Position
 from core.trailing_stop_manager import TrailingStopManager
 
 class TradingResult:
@@ -43,8 +42,8 @@ class TradingOrchestrator:
     def __init__(self):
         self.order_manager = global_order_manager
         self.risk_calculator = global_risk_calculator
-        self.position_manager = global_position_manager  # Use clean position manager for trailing
-        self.smart_position_manager = global_smart_position_manager  # Keep for sync
+        self.position_manager = global_smart_position_manager  # Use consolidated smart position manager
+        self.smart_position_manager = global_smart_position_manager  # Keep for sync (same instance)
         
         # Initialize trailing stop manager
         self.trailing_manager = TrailingStopManager(self.order_manager, self.position_manager)
@@ -164,11 +163,11 @@ class TradingOrchestrator:
                 logging.info(colored("🆕 No existing positions on Bybit - starting fresh", "green"))
                 return {}
             
-            # 2. ENHANCED DISPLAY WITH PERFECT CELL FORMATTING
-            print(colored("\n🏦 POSIZIONI ESISTENTI SU BYBIT", "cyan", attrs=['bold']))
-            print(colored("┌" + "─" * 3 + "┬" + "─" * 8 + "┬" + "─" * 6 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 8 + "┬" + "─" * 10 + "┬" + "─" * 20 + "┬" + "─" * 20 + "┬" + "─" * 10 + "┬" + "─" * 8 + "┐", "cyan"))
-            print(colored(f"│{'#':<3}│{'SYMBOL':<8}│{'SIDE':<6}│{'ENTRY':<12}│{'CURRENT':<12}│{'SIZE':<8}│{'VALUE':<10}│{'STOP LOSS':<20}│{'TAKE PROFIT':<20}│{'PNL $':<10}│{'PNL%':<8}│", "white", attrs=['bold']))
-            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
+            # 2. ENHANCED DISPLAY WITH PERFECT CELL FORMATTING + LEVERAGE COLUMN
+            print(colored("\n🏦 POSIZIONI APERTE SU BYBIT", "cyan", attrs=['bold']))
+            print(colored("┌" + "─" * 3 + "┬" + "─" * 8 + "┬" + "─" * 6 + "┬" + "─" * 6 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 8 + "┬" + "─" * 10 + "┬" + "─" * 20 + "┬" + "─" * 20 + "┬" + "─" * 10 + "┬" + "─" * 8 + "┐", "cyan"))
+            print(colored(f"│{'#':<3}│{'SYMBOL':<8}│{'SIDE':<6}│{'LEV':<6}│{'ENTRY':<12}│{'CURRENT':<12}│{'SIZE':<8}│{'VALUE':<10}│{'STOP LOSS':<20}│{'TAKE PROFIT':<20}│{'PNL $':<10}│{'PNL%':<8}│", "white", attrs=['bold']))
+            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
             
             total_value = 0.0
             total_pnl = 0.0
@@ -183,6 +182,7 @@ class TradingOrchestrator:
                 entry_price = float(pos.get('entryPrice', 0))
                 mark_price = float(pos.get('markPrice', entry_price))
                 unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+                leverage = float(pos.get('leverage', 10))  # Get real leverage from Bybit
                 
                 # Calculate position value and PnL percentage
                 position_value = abs(contracts) * entry_price
@@ -228,10 +228,12 @@ class TradingOrchestrator:
                 pnl_color = "green" if unrealized_pnl > 0 else "red" if unrealized_pnl < 0 else "white"
                 side_color = "green" if side == "LONG" else "red"
                 
-                # PERFECT CELL FORMATTING
+                # PERFECT CELL FORMATTING WITH LEVERAGE COLUMN
+                leverage_text = f"{leverage:.0f}x"
                 print(colored(f"│{i:<3}│{symbol:<8}│", "white") + 
-                      colored(f"{side:<6}", side_color) + 
-                      colored(f"│{entry_text:<12}│{current_text:<12}│{size_text:<8}│{value_text:<10}│{sl_text:<20}│{tp_text:<20}│", "white") +
+                      colored(f"{side:<6}", side_color) + colored("│", "white") +
+                      colored(f"{leverage_text:<6}", "yellow") + colored("│", "white") +
+                      colored(f"{entry_text:<12}│{current_text:<12}│{size_text:<8}│{value_text:<10}│{sl_text:<20}│{tp_text:<20}│", "white") +
                       colored(f"{pnl_usd_text:<10}", pnl_color) + colored("│", "white") +
                       colored(f"{pnl_pct_text:<8}", pnl_color) + colored("│", "white"))
             
@@ -239,13 +241,13 @@ class TradingOrchestrator:
             total_pnl_pct = (total_pnl / total_value) * 100 if total_value > 0 else 0
             total_pnl_color = "green" if total_pnl > 0 else "red" if total_pnl < 0 else "white"
             
-            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
-            print(colored(f"│{'TOT':<3}│{'':<8}│{'':<6}│{'':<12}│{'':<12}│{'':<8}│", "white") +
+            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
+            print(colored(f"│{'TOT':<3}│{'':<8}│{'':<6}│{'':<6}│{'':<12}│{'':<12}│{'':<8}│", "white") +
                   colored(f"${total_value:,.0f}".ljust(10), "white") + colored("│", "white") +
                   colored(f"{'':<20}│{'':<20}│", "white") +
                   colored(f"{total_pnl:+.2f}$".ljust(10), total_pnl_color) + colored("│", "white") +
                   colored(f"{total_pnl_pct:+.2f}%".ljust(8), total_pnl_color) + colored("│", "white"))
-            print(colored("└" + "─" * 3 + "┴" + "─" * 8 + "┴" + "─" * 6 + "┴" + "─" * 12 + "┴" + "─" * 12 + "┴" + "─" * 8 + "┴" + "─" * 10 + "┴" + "─" * 20 + "┴" + "─" * 20 + "┴" + "─" * 10 + "┴" + "─" * 8 + "┘", "cyan"))
+            print(colored("└" + "─" * 3 + "┴" + "─" * 8 + "┴" + "─" * 6 + "┴" + "─" * 6 + "┴" + "─" * 12 + "┴" + "─" * 12 + "┴" + "─" * 8 + "┴" + "─" * 10 + "┴" + "─" * 20 + "┴" + "─" * 20 + "┴" + "─" * 10 + "┴" + "─" * 8 + "┘", "cyan"))
             print(colored(f"📊 SUMMARY: {len(active_positions)} positions | Total Value: ${total_value:,.0f} | Total P&L: {total_pnl:+.2f}$ ({total_pnl_pct:+.2f}%)", "green"))
             print()
             
