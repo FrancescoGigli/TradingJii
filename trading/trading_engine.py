@@ -118,6 +118,11 @@ class TradingEngine:
                     successful = sum(1 for result in protection_results.values() if result.success)
                     total = len(protection_results)
                     logging.info(colored(f"🛡️ Live mode: {successful}/{total} existing positions protected", "cyan"))
+                    
+                    # 🚨 EMERGENZA: Aggiorna stop loss su Bybit dopo migrazione
+                    logging.warning(colored("🚨 EMERGENCY: Updating stop losses on Bybit to 6%", "red"))
+                    await self.position_manager.emergency_update_bybit_stop_losses(exchange, self.global_order_manager)
+                    
                 else:
                     logging.info(colored("🆕 Live mode: No existing positions - starting fresh", "green"))
         
@@ -188,9 +193,17 @@ class TradingEngine:
                 if self.database_system_loaded:
                     self.display_database_stats()
             
-            # Show cycle complete
+            # Show cycle complete with real-time display integration
             if self.enhanced_display_available:
-                self.display_cycle_complete()
+                # Use static summary instead of full display (real-time handles live data)
+                try:
+                    from core.realtime_display import global_realtime_display
+                    if hasattr(global_realtime_display, 'display_static_positions_summary'):
+                        global_realtime_display.display_static_positions_summary()
+                    else:
+                        self.display_cycle_complete()  # Fallback al vecchio
+                except:
+                    self.display_cycle_complete()  # Fallback al vecchio
             
             logging.info(colored("🔄 Cycle complete - waiting for next cycle", "green"))
             
@@ -384,7 +397,14 @@ class TradingEngine:
         while True:
             try:
                 await self.run_trading_cycle(exchange, xgb_models, xgb_scalers)
-                await countdown_timer(config.TRADE_CYCLE_INTERVAL)
+                
+                # 🔧 FIX: Evita conflitto output con real-time display
+                if config.REALTIME_DISPLAY_ENABLED:
+                    # Real-time display già mostra countdown integrato, usa sleep silenzioso
+                    await asyncio.sleep(config.TRADE_CYCLE_INTERVAL)
+                else:
+                    # Usa countdown visuale solo se real-time display è disabilitato
+                    await countdown_timer(config.TRADE_CYCLE_INTERVAL)
                 
             except KeyboardInterrupt:
                 logging.info(colored("Interrupt signal received. Shutting down...", "red"))

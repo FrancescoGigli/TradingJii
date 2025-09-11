@@ -35,6 +35,16 @@ from bot_config import ConfigManager
 from trading import TradingEngine
 from backtest import BacktestEngine
 
+# High-frequency trailing monitor
+from core.trailing_monitor import TrailingMonitor
+from core.trailing_stop_manager import TrailingStopManager
+from core.order_manager import OrderManager
+from config import TRAILING_MONITOR_ENABLED, TRAILING_MONITOR_INTERVAL
+
+# Real-time position display
+from core.realtime_display import initialize_global_realtime_display
+from config import REALTIME_DISPLAY_ENABLED, REALTIME_DISPLAY_INTERVAL
+
 # Model and data imports
 from model_loader import load_xgboost_model_func
 from trainer import train_xgboost_model_wrapper, ensure_trained_models_dir
@@ -58,22 +68,20 @@ async def initialize_exchange():
     
     for attempt in range(max_sync_attempts):
         try:
-            # Load markets and synchronize time
             await async_exchange.load_markets()
             await async_exchange.load_time_difference()
             
-            # Verify synchronization quality
             server_time = await async_exchange.fetch_time()
             local_time = async_exchange.milliseconds()
             time_diff = abs(server_time - local_time)
             
             logging.info(colored(f"⏰ Sync attempt {attempt + 1}: Server={server_time}, Local={local_time}, Diff={time_diff}ms", "cyan"))
             
-            if time_diff <= 2000:  # Excellent sync
+            if time_diff <= 2000:
                 logging.info(colored(f"✅ TIMESTAMP SYNC SUCCESS: Difference {time_diff}ms (excellent)", "green"))
                 sync_success = True
                 break
-            elif time_diff <= 5000:  # Acceptable sync
+            elif time_diff <= 5000:
                 logging.info(colored(f"✅ TIMESTAMP SYNC OK: Difference {time_diff}ms (acceptable)", "green"))
                 sync_success = True
                 break
@@ -91,9 +99,8 @@ async def initialize_exchange():
         logging.warning(colored("⚠️ TIMESTAMP SYNC: Issues detected, continuing with extended recv_window", "yellow"))
         logging.info(colored("💡 TIP: Consider synchronizing system clock with 'w32tm /resync /force'", "cyan"))
     
-    # Final connection test
     try:
-        test_balance = await async_exchange.fetch_balance()
+        await async_exchange.fetch_balance()
         logging.info(colored("🎯 BYBIT CONNECTION: API test successful - stable connection", "green"))
     except Exception as test_error:
         error_str = str(test_error).lower()
@@ -119,7 +126,6 @@ async def initialize_models(config_manager, top_symbols_training):
     model_status = {}
     
     for tf in config_manager.get_timeframes():
-        # Load existing model
         xgb_models[tf], xgb_scalers[tf] = await asyncio.to_thread(load_xgboost_model_func, tf)
     
         if not xgb_models[tf]:
@@ -134,19 +140,13 @@ async def initialize_models(config_manager, top_symbols_training):
                 if xgb_models[tf] and training_metrics:
                     logging.info(colored(f"✅ Model trained for {tf}: Accuracy {training_metrics.get('val_accuracy', 0):.3f}", "green"))
                     model_status[tf] = True
-                    
-                    # Optional: Validate model with backtest (if needed)
-                    # backtest_engine = BacktestEngine()
-                    # await backtest_engine.validate_model_performance(top_symbols_training[0], tf, exchange, xgb_models[tf], xgb_scalers[tf])
                 else:
                     model_status[tf] = False
-                    
             else:
                 raise Exception(f"XGBoost model for timeframe {tf} not available. Train models first.")
         else:
             model_status[tf] = True
 
-    # Display model status
     working_models = sum(1 for status in model_status.values() if status)
     total_models = len(config_manager.get_timeframes())
     
@@ -171,27 +171,19 @@ async def main():
     try:
         logging.info(colored("🚀 Starting Restructured Trading Bot - Live Trading Focus", "cyan"))
         
-        # Initialize configuration
         config_manager = ConfigManager()
         selected_timeframes, selected_models, demo_mode = config_manager.select_config()
         
         logging.info(colored(f"⚙️ Configuration: {len(selected_timeframes)} timeframes, {'DEMO' if demo_mode else 'LIVE'} mode", "cyan"))
         
-        # Initialize exchange
         async_exchange = await initialize_exchange()
-        
-        # Initialize trading engine
         trading_engine = TradingEngine(config_manager)
         
-        # Initialize market data and get top symbols
         min_amounts = await trading_engine.market_analyzer.initialize_markets(
             async_exchange, TOP_ANALYSIS_CRYPTO, EXCLUDED_SYMBOLS
         )
         
-        # Get symbols for training (if needed)
         top_symbols_training = trading_engine.market_analyzer.get_top_symbols()[:TOP_TRAIN_CRYPTO]
-        
-        # Display selected symbols
         display_selected_symbols(
             trading_engine.market_analyzer.get_top_symbols(), 
             "SYMBOLS FOR LIVE ANALYSIS"
@@ -200,38 +192,65 @@ async def main():
         logging.info(f"{colored('Training symbols:', 'cyan')} {len(top_symbols_training)}")
         logging.info(f"{colored('Analysis symbols:', 'cyan')} {len(trading_engine.market_analyzer.get_top_symbols())}")
         
-        # Initialize ML models
         xgb_models, xgb_scalers = await initialize_models(config_manager, top_symbols_training)
-        
-        # Initialize fresh session
         await trading_engine.initialize_session(async_exchange)
+        
+        trailing_monitor = None
+        if TRAILING_MONITOR_ENABLED:
+            try:
+                if trading_engine.clean_modules_available:
+                    position_manager = trading_engine.position_manager
+                    order_manager = trading_engine.global_order_manager
+                    trailing_manager = TrailingStopManager(order_manager, position_manager)
+                    trailing_monitor = TrailingMonitor(position_manager, trailing_manager, order_manager)
+                    await trailing_monitor.start_monitoring(async_exchange)
+                    logging.info(colored(f"⚡ HIGH-FREQUENCY TRAILING: Started monitoring every {TRAILING_MONITOR_INTERVAL}s", "green"))
+                else:
+                    logging.warning(colored("⚠️ Clean modules not available - trailing monitor disabled", "yellow"))
+            except Exception as e:
+                logging.error(colored(f"❌ Failed to start trailing monitor: {e}", "red"))
+        else:
+            logging.info(colored("⚡ High-frequency trailing monitor disabled in config", "yellow"))
+        
+        # 🔥 REAL-TIME DISPLAY
+        realtime_display = None
+        if REALTIME_DISPLAY_ENABLED:
+            try:
+                if trading_engine.clean_modules_available:
+                    position_manager = trading_engine.position_manager
+                    realtime_display = initialize_global_realtime_display(position_manager, trailing_monitor)
+                    if realtime_display:
+                        await realtime_display.start_display(async_exchange)
+                        logging.info(colored("✅ REAL-TIME DISPLAY avviato con successo", "green"))
+                    else:
+                        logging.error("❌ REAL-TIME DISPLAY non inizializzato")
+                else:
+                    logging.warning(colored("⚠️ Clean modules not available - real-time display disabled", "yellow"))
+            except Exception as e:
+                logging.error(colored(f"❌ Failed to start real-time display: {e}", "red"))
+            logging.info(colored(f"📊 REAL-TIME DISPLAY: Aggiornamento ogni {REALTIME_DISPLAY_INTERVAL}s", "cyan"))
+        else:
+            logging.info(colored("📊 Real-time position display disabled in config", "yellow"))
         
         logging.info(colored("🎯 All systems initialized - starting continuous trading...", "green"))
         
-        # Start continuous trading
-        await trading_engine.run_continuous_trading(async_exchange, xgb_models, xgb_scalers)
+        try:
+            await trading_engine.run_continuous_trading(async_exchange, xgb_models, xgb_scalers)
+        finally:
+            if trailing_monitor and trailing_monitor.is_running:
+                logging.info(colored("⚡ Stopping high-frequency trailing monitor...", "yellow"))
+                await trailing_monitor.stop_monitoring()
+            
+            if realtime_display and realtime_display.is_running:
+                logging.info(colored("📊 Stopping real-time position display...", "yellow"))
+                await realtime_display.stop_display()
         
     except KeyboardInterrupt:
         logging.info(colored("Interrupt signal received. Shutting down...", "red"))
     except Exception as e:
         error_msg = str(e)
         logging.error(f"{colored('Error in main loop:', 'red')} {error_msg}")
-        
-        # Enhanced error recovery
-        if "invalid request, please check your server timestamp" in error_msg:
-            logging.warning(colored("⚠️ Timestamp error detected. Attempting recovery...", "yellow"))
-            try:
-                await async_exchange.load_time_difference()
-                await async_exchange.load_markets()
-                logging.info(colored("✅ Exchange time synchronization recovered", "green"))
-                await asyncio.sleep(10)
-            except Exception as recovery_error:
-                logging.error(f"❌ Recovery failed: {recovery_error}")
-                logging.info(colored("🔄 Attempting full restart as last resort...", "red"))
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-        else:
-            logging.warning(colored(f"⚠️ Non-critical error in main loop, continuing after delay", "yellow"))
-            await asyncio.sleep(30)
+        await asyncio.sleep(30)
     finally:
         if 'async_exchange' in locals():
             await async_exchange.close()

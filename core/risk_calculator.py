@@ -126,23 +126,24 @@ class RiskCalculator:
             conservative_multiplier = 1.5  # Reduced from 2.0
             stop_distance = atr * conservative_multiplier
             
-            # Limit stop distance to max 3% of price
-            max_stop_distance = entry_price * 0.03
+            # PROBLEMA TROVATO! Limitava al 3% invece che al 6%
+            # Aggiornato: Limit stop distance to max 6% of price (coerente con nuova logica)
+            max_stop_distance = entry_price * 0.06  # ERA 0.03!
             stop_distance = min(stop_distance, max_stop_distance)
             
             # Ensure minimum stop distance (1%)
             min_stop_distance = entry_price * 0.01
             stop_distance = max(stop_distance, min_stop_distance)
             
-            # Calculate stop loss price
+            # Calculate stop loss price - NUOVA LOGICA 6%
             if side.lower() == 'buy':
                 stop_loss = entry_price - stop_distance  # Below entry for BUY
-                # Ensure reasonable bounds (max 5% loss)
-                stop_loss = max(stop_loss, entry_price * 0.95)
+                # AGGIORNATO: Ensure reasonable bounds (max 6% loss)
+                stop_loss = max(stop_loss, entry_price * 0.94)  # 6% invece di 5%
             else:  # SELL position
                 stop_loss = entry_price + stop_distance  # Above entry for SELL
-                # Ensure reasonable bounds (max 5% loss)
-                stop_loss = min(stop_loss, entry_price * 1.05)
+                # AGGIORNATO: Ensure reasonable bounds (max 6% loss)
+                stop_loss = min(stop_loss, entry_price * 1.06)  # 6% invece di 5%
             
             logging.debug(f"🛡️ SL Calc: Entry ${entry_price:.6f} | Side {side} | Distance {stop_distance:.6f} | SL ${stop_loss:.6f}")
             
@@ -150,8 +151,8 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error calculating stop loss: {e}")
-            # Emergency fallback: 2% stop
-            return entry_price * (0.98 if side.lower() == 'buy' else 1.02)
+            # AGGIORNATO: Emergency fallback al 6% (coerente con nuova logica)
+            return entry_price * (0.94 if side.lower() == 'buy' else 1.06)
     
     def calculate_take_profit_price(self, entry_price: float, side: str, 
                                    stop_loss: float, ratio: float = None) -> float:
@@ -246,15 +247,15 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error calculating position levels: {e}")
-            # Return safe fallback levels
+            # AGGIORNATO: Return safe fallback levels con 6% SL
             return PositionLevels(
                 margin=35.0,
                 position_size=350.0 / market_data.price,
-                stop_loss=market_data.price * (0.95 if side.lower() == 'buy' else 1.05),
+                stop_loss=market_data.price * (0.94 if side.lower() == 'buy' else 1.06),  # 6% SL
                 take_profit=market_data.price * (1.10 if side.lower() == 'buy' else 0.90),
-                risk_pct=5.0,
+                risk_pct=6.0,  # Aggiornato da 5.0 a 6.0
                 reward_pct=10.0,
-                risk_reward_ratio=2.0
+                risk_reward_ratio=1.67  # 10/6 = 1.67
             )
     
     def validate_portfolio_margin(self, existing_margins: list, new_margin: float, 

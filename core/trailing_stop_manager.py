@@ -17,24 +17,28 @@ from typing import Optional, Tuple, Dict
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
-from config import LEVERAGE
+from config import (LEVERAGE, INITIAL_SL_PRICE_PCT, TRAILING_TRIGGER_MIN_PCT, 
+                   TRAILING_TRIGGER_MAX_PCT, TRAILING_DISTANCE_LOW_VOL,
+                   TRAILING_DISTANCE_MED_VOL, TRAILING_DISTANCE_HIGH_VOL,
+                   VOLATILITY_LOW_THRESHOLD, VOLATILITY_HIGH_THRESHOLD)
 
 class PositionState(Enum):
     """Stati delle posizioni per trailing stop"""
-    PROTECTION = "protection"      # Solo stop catastrofico attivo
-    TRACKING = "tracking"          # Monitoraggio pre-attivazione
+    FIXED_SL = "fixed_sl"          # Stop loss fisso al 6% attivo
+    MONITORING = "monitoring"       # Monitoraggio per trigger trailing
     TRAILING = "trailing"          # Trailing stop attivo
 
 @dataclass
 class TrailingData:
-    """Dati trailing per ogni posizione"""
-    sl_catastrofico_id: Optional[str] = None    # ID ordine exchange (backup)
+    """Dati trailing per ogni posizione - NUOVA LOGICA"""
+    entry_price: float                          # Prezzo di entrata
+    side: str                                   # Direzione posizione ('buy'/'sell')
+    trailing_trigger_price: Optional[float] = None  # Prezzo per attivare trailing
     trailing_attivo: bool = False               # Boolean stato trailing
     best_price: Optional[float] = None          # Miglior prezzo favorevole
     sl_corrente: Optional[float] = None         # Stop interno bot
-    breakeven_price: Optional[float] = None     # Entry + commissioni
-    timer_attivazione: int = 0                  # Contatore barre sopra breakeven
-    state: PositionState = PositionState.PROTECTION
+    fixed_sl_price: Optional[float] = None      # Stop loss fisso al 6%
+    state: PositionState = PositionState.FIXED_SL
     last_update: Optional[datetime] = None      # Ultimo aggiornamento
 
 class TrailingStopManager:
@@ -91,8 +95,8 @@ class TrailingStopManager:
             
         except Exception as e:
             logging.error(f"Error calculating liquidation price: {e}")
-            # Fallback conservativo
-            return entry_price * (0.85 if side.lower() == 'buy' else 1.15)
+            # AGGIORNATO: Fallback coerente con 6% SL logic
+            return entry_price * (0.94 if side.lower() == 'buy' else 1.06)
     
     def calculate_breakeven_price(self, entry_price: float, side: str) -> float:
         """
@@ -121,121 +125,126 @@ class TrailingStopManager:
             logging.error(f"Error calculating breakeven: {e}")
             return entry_price  # Fallback: entry price
     
-    async def create_catastrophic_stop(self, exchange, symbol: str, side: str, 
-                                     entry_price: float) -> Optional[str]:
+    def calculate_dynamic_trigger(self, entry_price: float, side: str, atr: float) -> float:
         """
-        Crea stop catastrofico ampio su exchange come backup
+        NUOVA FUNZIONE: Calcola trigger dinamico per attivazione trailing (5-10%)
         
         Args:
-            exchange: Bybit exchange instance
-            symbol: Trading symbol
-            side: Direzione posizione
             entry_price: Prezzo di entrata
+            side: Direzione posizione  
+            atr: Average True Range per volatilità
             
         Returns:
-            Optional[str]: ID dell'ordine stop catastrofico
+            float: Prezzo trigger per attivare trailing
         """
         try:
-            # CORRECTED: Stop catastrofico a 5% dall'entry (ragionevole con leva 10x)
-            # Con leva 10x: 5% price move = 50% capital loss (acceptable emergency stop)
-            catastrophic_loss_pct = 0.05  # 5% dall'entry invece di 9%
+            # Classifica volatilità basata su ATR
+            atr_pct = atr / entry_price
+            
+            if atr_pct < VOLATILITY_LOW_THRESHOLD:      # Bassa volatilità
+                trigger_pct = TRAILING_TRIGGER_MAX_PCT  # 10% (più conservativo)
+            elif atr_pct > VOLATILITY_HIGH_THRESHOLD:   # Alta volatilità  
+                trigger_pct = TRAILING_TRIGGER_MIN_PCT  # 5% (più aggressivo)
+            else:                                       # Media volatilità
+                trigger_pct = (TRAILING_TRIGGER_MIN_PCT + TRAILING_TRIGGER_MAX_PCT) / 2  # 7.5%
             
             if side.lower() == 'buy':
-                # Long: Stop 5% sotto entry  
-                catastrophic_sl = entry_price * (1 - catastrophic_loss_pct)
+                trigger_price = entry_price * (1 + trigger_pct)
             else:
-                # Short: Stop 5% sopra entry
-                catastrophic_sl = entry_price * (1 + catastrophic_loss_pct)
+                trigger_price = entry_price * (1 - trigger_pct)
             
-            # Log calculation details
-            loss_from_entry = abs(catastrophic_sl - entry_price) / entry_price * 100
-            leveraged_loss = loss_from_entry * LEVERAGE
-            logging.info(f"🚨 Creating catastrophic stop for {symbol}:")
-            logging.info(f"   Entry: ${entry_price:.6f}")  
-            logging.info(f"   Catastrophic SL: ${catastrophic_sl:.6f} ({loss_from_entry:.1f}% price = {leveraged_loss:.0f}% capital loss)")
+            logging.debug(f"🎯 Dynamic trigger: ATR={atr_pct*100:.1f}%, Trigger={trigger_pct*100:.1f}%, Price=${trigger_price:.6f}")
+            return trigger_price
             
-            # Usa API esistente per impostare solo stop loss
-            result = await self.order_manager.set_trading_stop(
-                exchange, symbol, catastrophic_sl, None  # Solo SL, no TP
-            )
-            
-            if result.success:
-                logging.info(f"✅ Catastrophic stop set: {result.order_id}")
-                return result.order_id
-            else:
-                logging.error(f"❌ Failed to set catastrophic stop: {result.error}")
-                return None
-                
         except Exception as e:
-            logging.error(f"Error creating catastrophic stop: {e}")
-            return None
+            logging.error(f"Error calculating dynamic trigger: {e}")
+            # Fallback: usa trigger medio
+            fallback_pct = (TRAILING_TRIGGER_MIN_PCT + TRAILING_TRIGGER_MAX_PCT) / 2
+            return entry_price * (1 + fallback_pct if side.lower() == 'buy' else 1 - fallback_pct)
     
     def initialize_trailing_data(self, symbol: str, side: str, entry_price: float, 
-                                atr: float, catastrophic_sl_id: str) -> TrailingData:
+                                atr: float) -> TrailingData:
         """
-        Inizializza dati trailing per nuova posizione
+        AGGIORNATO: Inizializza dati trailing per nuova posizione con nuova logica
         
         Args:
             symbol: Trading symbol
             side: Direzione posizione
-            entry_price: Prezzo di entrata
+            entry_price: Prezzo di entrata  
             atr: Average True Range
-            catastrophic_sl_id: ID stop catastrofico
             
         Returns:
             TrailingData: Dati trailing inizializzati
         """
-        breakeven = self.calculate_breakeven_price(entry_price, side)
-        
-        return TrailingData(
-            sl_catastrofico_id=catastrophic_sl_id,
-            trailing_attivo=False,
-            best_price=None,
-            sl_corrente=None,
-            breakeven_price=breakeven,
-            timer_attivazione=0,
-            state=PositionState.PROTECTION,
-            last_update=datetime.now()
-        )
+        try:
+            # Calcola stop loss fisso al 6%
+            if side.lower() == 'buy':
+                fixed_sl = entry_price * (1 - INITIAL_SL_PRICE_PCT)  # 6% sotto
+            else:
+                fixed_sl = entry_price * (1 + INITIAL_SL_PRICE_PCT)  # 6% sopra
+            
+            # Calcola trigger dinamico per trailing
+            trigger_price = self.calculate_dynamic_trigger(entry_price, side, atr)
+            
+            trailing_data = TrailingData(
+                entry_price=entry_price,
+                side=side,
+                trailing_trigger_price=trigger_price,
+                trailing_attivo=False,
+                best_price=None,
+                sl_corrente=None,
+                fixed_sl_price=fixed_sl,
+                state=PositionState.FIXED_SL,
+                last_update=datetime.now()
+            )
+            
+            logging.info(f"🔧 TRAILING INIT: {symbol} {side.upper()} | Entry=${entry_price:.6f} | Fixed SL=${fixed_sl:.6f} | Trigger=${trigger_price:.6f}")
+            return trailing_data
+            
+        except Exception as e:
+            logging.error(f"Error initializing trailing data: {e}")
+            # Fallback data
+            return TrailingData(
+                entry_price=entry_price,
+                side=side,
+                state=PositionState.FIXED_SL,
+                last_update=datetime.now()
+            )
     
     def check_activation_conditions(self, trailing_data: TrailingData, 
-                                  current_price: float, side: str) -> bool:
+                                  current_price: float) -> bool:
         """
-        Controlla se trailing stop può essere attivato
+        AGGIORNATO: Controlla se trailing stop può essere attivato con nuova logica
         
         Args:
             trailing_data: Dati trailing posizione
             current_price: Prezzo corrente
-            side: Direzione posizione
             
         Returns:
             bool: True se trailing può essere attivato
         """
         try:
-            if trailing_data.breakeven_price is None:
+            if trailing_data.trailing_trigger_price is None:
+                logging.warning("Trailing trigger price not set")
                 return False
             
-            # Calcola se siamo sopra breakeven + buffer
-            target_price = trailing_data.breakeven_price * (
-                1 + self.buffer_breakeven if side.lower() == 'buy' 
-                else 1 - self.buffer_breakeven
-            )
-            
-            if side.lower() == 'buy':
-                above_target = current_price > target_price
+            # NUOVA LOGICA: Controlla se abbiamo raggiunto il trigger dinamico (5-10%)
+            if trailing_data.side.lower() == 'buy':
+                # LONG: attiva se prezzo >= trigger
+                trigger_reached = current_price >= trailing_data.trailing_trigger_price
             else:
-                above_target = current_price < target_price
+                # SHORT: attiva se prezzo <= trigger
+                trigger_reached = current_price <= trailing_data.trailing_trigger_price
             
-            if above_target:
-                trailing_data.timer_attivazione += 1
-                logging.debug(f"📊 Breakeven timer: {trailing_data.timer_attivazione}/{self.bars_required}")
+            if trigger_reached:
+                # Cambia stato a MONITORING per preparare attivazione
+                if trailing_data.state == PositionState.FIXED_SL:
+                    trailing_data.state = PositionState.MONITORING
                 
-                if trailing_data.timer_attivazione >= self.bars_required:
-                    return True
-            else:
-                # Reset timer se torniamo sotto breakeven
-                trailing_data.timer_attivazione = 0
-                
+                profit_pct = abs(current_price - trailing_data.entry_price) / trailing_data.entry_price * 100
+                logging.info(f"🎯 TRIGGER REACHED: Price=${current_price:.6f}, Profit={profit_pct:.1f}%, Ready for trailing")
+                return True
+            
             return False
             
         except Exception as e:
@@ -273,30 +282,34 @@ class TrailingStopManager:
     
     def calculate_trailing_distance(self, price: float, atr: float) -> float:
         """
-        Calcola distanza trailing basata su ATR
+        AGGIORNATO: Calcola distanza trailing dinamica basata su volatilità
         
         Args:
             price: Prezzo di riferimento
-            atr: Average True Range
+            atr: Average True Range per classificare volatilità
             
         Returns:
-            float: Distanza trailing
+            float: Distanza trailing dinamica
         """
         try:
-            # Base distance usando ATR
-            distance = atr * self.atr_multiplier
+            # Classifica volatilità basata su ATR
+            atr_pct = atr / price
             
-            # Applica limiti percentuali
-            min_distance = price * self.min_trail_distance_pct
-            max_distance = price * self.max_trail_distance_pct
+            if atr_pct < VOLATILITY_LOW_THRESHOLD:      # Bassa volatilità
+                distance_pct = TRAILING_DISTANCE_LOW_VOL  # 2%
+            elif atr_pct > VOLATILITY_HIGH_THRESHOLD:   # Alta volatilità
+                distance_pct = TRAILING_DISTANCE_HIGH_VOL # 4%
+            else:                                       # Media volatilità
+                distance_pct = TRAILING_DISTANCE_MED_VOL  # 3%
             
-            distance = max(min_distance, min(distance, max_distance))
+            distance = price * distance_pct
             
+            logging.debug(f"📏 Trailing distance: ATR={atr_pct*100:.1f}%, Distance={distance_pct*100:.1f}%, Value=${distance:.6f}")
             return distance
             
         except Exception as e:
             logging.error(f"Error calculating trailing distance: {e}")
-            return price * 0.02  # Fallback 2%
+            return price * TRAILING_DISTANCE_MED_VOL  # Fallback: 3%
     
     def update_trailing(self, trailing_data: TrailingData, current_price: float, 
                        side: str, atr: float):
@@ -414,7 +427,7 @@ class TrailingStopManager:
     def get_trailing_summary(self, trailing_data: TrailingData, symbol: str, 
                            side: str) -> Dict:
         """
-        Ottieni summary dello stato trailing
+        AGGIORNATO: Summary dello stato trailing con nuova logica
         
         Args:
             trailing_data: Dati trailing posizione
@@ -422,20 +435,19 @@ class TrailingStopManager:
             side: Direzione posizione
             
         Returns:
-            Dict: Summary stato trailing
+            Dict: Summary stato trailing aggiornato
         """
         try:
             return {
                 'symbol': symbol,
                 'side': side,
                 'state': trailing_data.state.value,
+                'entry_price': trailing_data.entry_price,
+                'fixed_sl_price': trailing_data.fixed_sl_price,
+                'trailing_trigger_price': trailing_data.trailing_trigger_price,
                 'trailing_active': trailing_data.trailing_attivo,
                 'best_price': trailing_data.best_price,
                 'sl_corrente': trailing_data.sl_corrente,
-                'breakeven_price': trailing_data.breakeven_price,
-                'timer_activation': trailing_data.timer_attivazione,
-                'bars_required': self.bars_required,
-                'catastrophic_sl_id': trailing_data.sl_catastrofico_id,
                 'last_update': trailing_data.last_update.isoformat() if trailing_data.last_update else None
             }
             

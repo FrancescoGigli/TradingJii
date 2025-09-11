@@ -116,31 +116,43 @@ class TradingOrchestrator:
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
             
-            # 6. NEW: Create catastrophic stop on exchange (backup only)
-            catastrophic_sl_id = await self.trailing_manager.create_catastrophic_stop(
-                exchange, symbol, side, market_data.price
+            # 6. NUOVA LOGICA: Piazza stop loss fisso al 6% su Bybit
+            # Calcola SL al 6%
+            if side == 'buy':
+                sl_price = market_data.price * 0.94  # 6% sotto per LONG
+            else:
+                sl_price = market_data.price * 1.06  # 6% sopra per SHORT
+            
+            # Piazza solo stop loss (nessun TP)
+            sl_result = await self.order_manager.set_trading_stop(
+                exchange, symbol, sl_price, None  # Solo SL, NO TP
             )
             
-            if catastrophic_sl_id is None:
-                logging.warning(colored("⚠️ Failed to create catastrophic stop, continuing with internal tracking only", "yellow"))
+            sl_order_id = None
+            if sl_result.success:
+                sl_order_id = sl_result.order_id
+                sl_pct = ((sl_price - market_data.price) / market_data.price) * 100
+                logging.info(colored(f"✅ Stop Loss set: ${sl_price:.6f} ({sl_pct:+.1f}%)", "green"))
+            else:
+                logging.warning(colored(f"⚠️ Failed to set stop loss: {sl_result.error}", "yellow"))
             
-            # 7. Create position with trailing system (NO fixed TP/SL)
+            # 7. Create position with trailing system (NUOVA LOGICA)
             position_id = self.position_manager.create_trailing_position(
                 symbol=symbol,
                 side=side,
                 entry_price=market_data.price,
                 position_size=levels.position_size * market_data.price,  # Convert to USD
                 atr=market_data.atr,
-                catastrophic_sl_id=catastrophic_sl_id,
+                catastrophic_sl_id=sl_order_id,  # Usa SL order ID invece di catastrophic
                 leverage=10,
                 confidence=confidence
             )
             
-            # 8. Return result (no TP/SL orders, only market + catastrophic stop)
+            # 8. Return result (market + SL fisso al 6%, NO TP)
             order_ids = {
                 'main': market_result.order_id,
-                'catastrophic_stop': catastrophic_sl_id,
-                'note': 'Trailing system active - no fixed TP/SL'
+                'stop_loss': sl_order_id,
+                'note': 'Fixed 6% SL + Trailing system active'
             }
             
             logging.info(colored(f"✅ TRADE COMPLETE: {symbol} | Position: {position_id}", "green", attrs=['bold']))
@@ -175,113 +187,6 @@ class TradingOrchestrator:
                 logging.info(colored("🆕 No existing positions on Bybit - starting fresh", "green"))
                 return {}
             
-            # 2. ENHANCED DISPLAY WITH PERFECT CELL FORMATTING + LEVERAGE COLUMN
-            print(colored("\n🏦 POSIZIONI APERTE SU BYBIT", "cyan", attrs=['bold']))
-            print(colored("┌" + "─" * 3 + "┬" + "─" * 8 + "┬" + "─" * 6 + "┬" + "─" * 6 + "┬" + "─" * 12 + "┬" + "─" * 12 + "┬" + "─" * 8 + "┬" + "─" * 10 + "┬" + "─" * 20 + "┬" + "─" * 20 + "┬" + "─" * 10 + "┬" + "─" * 8 + "┐", "cyan"))
-            print(colored(f"│{'#':<3}│{'SYMBOL':<8}│{'SIDE':<6}│{'LEV':<6}│{'ENTRY':<12}│{'CURRENT':<12}│{'SIZE':<8}│{'VALUE':<10}│{'STOP LOSS':<20}│{'TAKE PROFIT':<20}│{'PNL $':<10}│{'PNL%':<8}│", "white", attrs=['bold']))
-            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
-            
-            total_value = 0.0
-            total_pnl = 0.0
-            
-            for i, pos in enumerate(active_positions, 1):
-                # Clean symbol format: "HYPE/USDT:USDT" → "HYPE"
-                symbol_raw = pos.get('symbol', 'N/A')
-                symbol = symbol_raw.replace('/USDT:USDT', '').replace('USDT', '')
-                
-                contracts = float(pos.get('contracts', 0))
-                side = 'LONG' if contracts > 0 else 'SHORT'
-                entry_price = float(pos.get('entryPrice', 0))
-                mark_price = float(pos.get('markPrice', entry_price))
-                unrealized_pnl = float(pos.get('unrealizedPnl', 0))
-                leverage = float(pos.get('leverage', 10))  # Get real leverage from Bybit
-                
-                # Calculate position value and PnL percentage
-                position_value = abs(contracts) * entry_price
-                pnl_pct = (unrealized_pnl / position_value) * 100 if position_value > 0 else 0
-                
-                # Accumulate totals
-                total_value += position_value
-                total_pnl += unrealized_pnl
-                
-                # Get stop loss/take profit info with VALIDATION and CORRECTION
-                stop_loss = pos.get('stopLossPrice', None)
-                take_profit = pos.get('takeProfitPrice', None)
-                
-                # VALIDATE and CORRECT stop loss if illogical
-                if stop_loss and entry_price > 0:
-                    sl_price = float(stop_loss)
-                    price_change_pct = ((sl_price - entry_price) / entry_price) * 100
-                    
-                    # VALIDATION: Check if SL is in wrong direction (CRITICAL FIX!)
-                    sl_wrong_direction = False
-                    if side == 'LONG' and sl_price > entry_price:  # SL above entry for LONG = WRONG
-                        sl_wrong_direction = True
-                        logging.warning(colored(f"🚨 INVALID SL for {symbol_raw} LONG: ${sl_price:.4f} > ${entry_price:.4f} (above entry!)", "red"))
-                    elif side == 'SHORT' and sl_price < entry_price:  # SL below entry for SHORT = WRONG  
-                        sl_wrong_direction = True
-                        logging.warning(colored(f"🚨 INVALID SL for {symbol_raw} SHORT: ${sl_price:.4f} < ${entry_price:.4f} (below entry!)", "red"))
-                    
-                    if sl_wrong_direction:
-                        # Calculate CORRECTED stop loss (5% emergency)
-                        if side == 'LONG':
-                            corrected_sl = entry_price * 0.95  # 5% below for LONG
-                        else:
-                            corrected_sl = entry_price * 1.05  # 5% above for SHORT
-                        
-                        corrected_pct = ((corrected_sl - entry_price) / entry_price) * 100
-                        sl_text = f"${corrected_sl:.4f} ({corrected_pct:+.1f}%) [CORRECTED]"
-                        
-                        # Log correction suggestion
-                        logging.warning(colored(f"💡 SUGGESTED CORRECTION for {symbol_raw}: ${corrected_sl:.4f} ({corrected_pct:+.1f}%)", "yellow"))
-                    else:
-                        # Valid SL - show as is
-                        sl_text = f"${sl_price:.4f} ({price_change_pct:+.1f}%)"
-                else:
-                    sl_text = "Not Set"
-                
-                # TP calculation (no changes needed)
-                if take_profit and entry_price > 0:
-                    tp_price = float(take_profit)
-                    price_change_pct = ((tp_price - entry_price) / entry_price) * 100
-                    tp_text = f"${tp_price:.4f} ({price_change_pct:+.1f}%)"
-                else:
-                    tp_text = "Not Set"
-                
-                # Format other values
-                size_text = f"{abs(contracts):.1f}"
-                entry_text = f"${entry_price:.6f}"
-                current_text = f"${mark_price:.6f}"
-                value_text = f"${position_value:,.0f}"
-                pnl_usd_text = f"+{unrealized_pnl:.2f}$" if unrealized_pnl >= 0 else f"{unrealized_pnl:.2f}$"
-                pnl_pct_text = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
-                
-                # Color based on PnL
-                pnl_color = "green" if unrealized_pnl > 0 else "red" if unrealized_pnl < 0 else "white"
-                side_color = "green" if side == "LONG" else "red"
-                
-                # PERFECT CELL FORMATTING WITH LEVERAGE COLUMN
-                leverage_text = f"{leverage:.0f}x"
-                print(colored(f"│{i:<3}│{symbol:<8}│", "white") + 
-                      colored(f"{side:<6}", side_color) + colored("│", "white") +
-                      colored(f"{leverage_text:<6}", "yellow") + colored("│", "white") +
-                      colored(f"{entry_text:<12}│{current_text:<12}│{size_text:<8}│{value_text:<10}│{sl_text:<20}│{tp_text:<20}│", "white") +
-                      colored(f"{pnl_usd_text:<10}", pnl_color) + colored("│", "white") +
-                      colored(f"{pnl_pct_text:<8}", pnl_color) + colored("│", "white"))
-            
-            # Total summary row with cells
-            total_pnl_pct = (total_pnl / total_value) * 100 if total_value > 0 else 0
-            total_pnl_color = "green" if total_pnl > 0 else "red" if total_pnl < 0 else "white"
-            
-            print(colored("├" + "─" * 3 + "┼" + "─" * 8 + "┼" + "─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 12 + "┼" + "─" * 12 + "┼" + "─" * 8 + "┼" + "─" * 10 + "┼" + "─" * 20 + "┼" + "─" * 20 + "┼" + "─" * 10 + "┼" + "─" * 8 + "┤", "cyan"))
-            print(colored(f"│{'TOT':<3}│{'':<8}│{'':<6}│{'':<6}│{'':<12}│{'':<12}│{'':<8}│", "white") +
-                  colored(f"${total_value:,.0f}".ljust(10), "white") + colored("│", "white") +
-                  colored(f"{'':<20}│{'':<20}│", "white") +
-                  colored(f"{total_pnl:+.2f}$".ljust(10), total_pnl_color) + colored("│", "white") +
-                  colored(f"{total_pnl_pct:+.2f}%".ljust(8), total_pnl_color) + colored("│", "white"))
-            print(colored("└" + "─" * 3 + "┴" + "─" * 8 + "┴" + "─" * 6 + "┴" + "─" * 6 + "┴" + "─" * 12 + "┴" + "─" * 12 + "┴" + "─" * 8 + "┴" + "─" * 10 + "┴" + "─" * 20 + "┴" + "─" * 20 + "┴" + "─" * 10 + "┴" + "─" * 8 + "┘", "cyan"))
-            print(colored(f"📊 SUMMARY: {len(active_positions)} positions | Total Value: ${total_value:,.0f} | Total P&L: {total_pnl:+.2f}$ ({total_pnl_pct:+.2f}%)", "green"))
-            print()
             
             # 3. Use SMART POSITION MANAGER for sync (FIXED!)
             newly_opened, newly_closed = await self.smart_position_manager.sync_with_bybit(exchange)
@@ -351,24 +256,29 @@ class TradingOrchestrator:
                 position.unrealized_pnl_pct = pnl_pct
                 position.unrealized_pnl_usd = (pnl_pct / 100) * position.position_size
                 
-                # Check activation conditions if not already trailing
+                # Check activation conditions if not already trailing (NUOVA LOGICA)
                 if not position.trailing_attivo:
-                    if self.trailing_manager.check_activation_conditions(
-                        self.trailing_manager.initialize_trailing_data(
-                            position.symbol, position.side, position.entry_price, 
-                            position.atr_value, position.sl_catastrofico_id
-                        ), current_price, position.side
-                    ):
-                        # Activate trailing
+                    # Inizializza trailing data con nuova signature
+                    trailing_data = self.trailing_manager.initialize_trailing_data(
+                        position.symbol, position.side, position.entry_price, position.atr_value
+                    )
+                    
+                    if self.trailing_manager.check_activation_conditions(trailing_data, current_price):
+                        # Activate trailing con nuova logica
                         self.trailing_manager.activate_trailing(
-                            self.trailing_manager.initialize_trailing_data(
-                                position.symbol, position.side, position.entry_price,
-                                position.atr_value, position.sl_catastrofico_id
-                            ), current_price, position.side, position.atr_value
+                            trailing_data, current_price, position.side, position.atr_value
                         )
                         position.trailing_attivo = True
                         position.best_price = current_price
-                        position.sl_corrente = current_price - position.atr_value * 2.0 if position.side == 'buy' else current_price + position.atr_value * 2.0
+                        
+                        # Calcola distanza trailing dinamica invece di ATR*2
+                        trail_distance = self.trailing_manager.calculate_trailing_distance(current_price, position.atr_value)
+                        if position.side == 'buy':
+                            position.sl_corrente = current_price - trail_distance
+                        else:
+                            position.sl_corrente = current_price + trail_distance
+                        
+                        logging.info(colored(f"⚡ TRAILING ACTIVATED: {position.symbol} trigger reached at ${current_price:.6f}", "green"))
                 
                 # Update trailing if active
                 if position.trailing_attivo and position.sl_corrente is not None:

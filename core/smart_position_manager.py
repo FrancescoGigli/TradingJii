@@ -101,15 +101,15 @@ class SmartPositionManager:
         entry_price = bybit_data['entry_price']
         side = bybit_data['side']
         
-        # Calculate CORRECTED protective levels (3% SL, 6% TP)
+        # NUOVA LOGICA: 6% SL (60% del margine con leva 10x), NO TP fisso
         if side == 'buy':
-            sl_price = entry_price * 0.97  # 3% below for LONG
-            tp_price = entry_price * 1.06  # 6% above for LONG
-            trailing_trigger = entry_price * 1.01  # 1% above
+            sl_price = entry_price * 0.94  # 6% below for LONG (era 3%)
+            tp_price = None                # NO TAKE PROFIT fisso (era 6% above)
+            trailing_trigger = entry_price * 1.05  # 5% above (minimo per alta volatilità)
         else:
-            sl_price = entry_price * 1.03  # 3% above for SHORT  
-            tp_price = entry_price * 0.94  # 6% below for SHORT
-            trailing_trigger = entry_price * 0.99  # 1% below
+            sl_price = entry_price * 1.06  # 6% above for SHORT (era 3%)
+            tp_price = None                # NO TAKE PROFIT fisso (era 6% below)  
+            trailing_trigger = entry_price * 0.95  # 5% below (minimo per alta volatilità)
         
         position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         position_size = bybit_data['contracts'] * entry_price
@@ -157,12 +157,17 @@ class SmartPositionManager:
             for pos in active_bybit_positions:
                 symbol = pos.get('symbol')
                 if symbol:
+                    side = pos.get('side', '').lower()  # 🔧 usare direttamente il side da Bybit
+                    contracts = abs(float(pos.get('contracts', 0)))
+                    entry_price = float(pos.get('entryPrice', 0))
+                    unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+
                     bybit_symbols.add(symbol)
                     bybit_position_data[symbol] = {
-                        'contracts': abs(float(pos.get('contracts', 0))),
-                        'side': 'buy' if float(pos.get('contracts', 0)) > 0 else 'sell',
-                        'entry_price': float(pos.get('entryPrice', 0)),
-                        'unrealized_pnl': float(pos.get('unrealizedPnl', 0))
+                        'contracts': contracts,
+                        'side': side,  # ✅ già coerente
+                        'entry_price': entry_price,
+                        'unrealized_pnl': unrealized_pnl
                     }
             
             # 3. Get currently tracked symbols
@@ -242,20 +247,24 @@ class SmartPositionManager:
                         
                         # Update with REAL data
                         position.current_price = current_price
-                        position.unrealized_pnl_usd = bybit_data['unrealized_pnl']
                         
-                        # FIXED: Calculate PnL percentage based on MARGIN with leverage (not price)
+                        # 🔧 FIX CRITICO: Calcola PNL correttamente con leva 10x
+                        # Calcolo price change percentage
+                        price_change_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+                        
+                        # Applica direzione corretta e leverage
+                        if position.side in ['buy', 'long']:
+                            # LONG: guadagna se prezzo sale
+                            position.unrealized_pnl_pct = price_change_pct * position.leverage
+                        else:  # 'sell' o 'short'
+                            # SHORT: guadagna se prezzo scende
+                            position.unrealized_pnl_pct = -price_change_pct * position.leverage
+                        
+                        # Calcola PnL USD basato sul margine iniziale
                         initial_margin = position.position_size / position.leverage
+                        position.unrealized_pnl_usd = (position.unrealized_pnl_pct / 100) * initial_margin
                         
-                        # Use REAL unrealized PnL from Bybit (already in USD)
-                        if initial_margin > 0:
-                            position.unrealized_pnl_pct = (bybit_data['unrealized_pnl'] / initial_margin) * 100
-                        else:
-                            # Fallback to price-based calculation if margin is invalid
-                            if position.side == 'buy':
-                                position.unrealized_pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-                            else:
-                                position.unrealized_pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
+                        logging.debug(f"💰 PNL Fix - {symbol}: Price {price_change_pct:+.2f}% * Lev {position.leverage}x = {position.unrealized_pnl_pct:+.2f}% PNL")
                         
                         # Update max favorable PnL
                         position.max_favorable_pnl = max(position.max_favorable_pnl, position.unrealized_pnl_pct)
@@ -274,13 +283,21 @@ class SmartPositionManager:
             return [], []
     
     def create_position(self, symbol: str, side: str, entry_price: float, 
-                       position_size: float, stop_loss: float, take_profit: float,
+                       position_size: float, stop_loss: float = None, take_profit: float = None,
                        leverage: int = 10, confidence: float = 0.7) -> str:
-        """Create new position in tracker"""
+        """Create new position in tracker with new 6% SL logic"""
         try:
             position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
-            trailing_trigger = entry_price * (1.01 if side.lower() == 'buy' else 0.99)
+            # SICUREZZA: FORZA SEMPRE 6% SL (non accetta override)
+            if side.lower() == 'buy':
+                calculated_sl = entry_price * 0.94  # SEMPRE 6% below - NO OVERRIDE
+                calculated_tp = None  # NO TAKE PROFIT fisso
+                trailing_trigger = entry_price * 1.05  # 5% above (minimo trigger)
+            else:
+                calculated_sl = entry_price * 1.06  # SEMPRE 6% above - NO OVERRIDE
+                calculated_tp = None  # NO TAKE PROFIT fisso
+                trailing_trigger = entry_price * 0.95  # 5% below (minimo trigger)
             
             position = Position(
                 position_id=position_id,
@@ -289,8 +306,8 @@ class SmartPositionManager:
                 entry_price=entry_price,
                 position_size=position_size,
                 leverage=leverage,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
+                stop_loss=calculated_sl,
+                take_profit=calculated_tp,
                 trailing_trigger=trailing_trigger,
                 current_price=entry_price,
                 confidence=confidence,
@@ -300,7 +317,7 @@ class SmartPositionManager:
             self.open_positions[position_id] = position
             self.save_positions()
             
-            logging.debug(f"📊 Position created: {position_id}")
+            logging.debug(f"📊 Position created: {position_id} with 6% SL, no TP")
             return position_id
             
         except Exception as e:
@@ -430,17 +447,19 @@ class SmartPositionManager:
         }
     
     def load_positions(self):
-        """Load positions from storage"""
+        """Load positions from storage with migration support"""
         try:
             with open(self.storage_file, 'r') as f:
                 data = json.load(f)
                 
-                # Load open positions
+                # Load open positions with migration
                 for pos_id, pos_data in data.get('open_positions', {}).items():
                     position = Position(**pos_data)
+                    # MIGRATE to new 6% SL logic if needed
+                    self._migrate_position_to_new_logic(position)
                     self.open_positions[pos_id] = position
                 
-                # Load closed positions
+                # Load closed positions (no migration needed)
                 for pos_id, pos_data in data.get('closed_positions', {}).items():
                     position = Position(**pos_data)
                     self.closed_positions[pos_id] = position
@@ -449,12 +468,56 @@ class SmartPositionManager:
                 self.session_start_balance = data.get('session_start_balance', 1000.0)
                 
             total_positions = len(self.open_positions) + len(self.closed_positions)
-            logging.debug(f"📁 Positions loaded: {len(self.open_positions)} open, {len(self.closed_positions)} closed")
+            migrated = sum(1 for pos in self.open_positions.values() if hasattr(pos, '_migrated'))
+            
+            logging.info(f"📁 Positions loaded: {len(self.open_positions)} open, {len(self.closed_positions)} closed")
+            if migrated > 0:
+                logging.info(f"🔄 Migrated {migrated} existing positions to new 6% SL logic")
             
         except FileNotFoundError:
             logging.debug("📂 No position file found, starting fresh session")
         except Exception as e:
             logging.error(f"Error loading positions: {e}")
+    
+    def _migrate_position_to_new_logic(self, position: Position):
+        """
+        🔄 MIGRATE existing positions to new 6% SL logic
+        ROBUSTO: Aggiorna SEMPRE al 6% SL indipendentemente dal valore precedente
+        
+        Args:
+            position: Position to migrate
+        """
+        try:
+            # Skip if already migrated
+            if hasattr(position, '_migrated') and position._migrated:
+                return
+                
+            entry_price = position.entry_price
+            side = position.side
+            old_sl = position.stop_loss
+            
+            # CRITICO: Preserva la direzione originale! (era bug grave)
+            if side == 'buy':
+                new_sl_6pct = entry_price * 0.94  # 6% below for LONG
+                new_trailing_trigger = entry_price * 1.05  # 5% above
+            else:
+                new_sl_6pct = entry_price * 1.06  # 6% above for SHORT  
+                new_trailing_trigger = entry_price * 0.95  # 5% below
+            
+            # IMPORTANTE: Non modificare la direzione della posizione!
+            # position.side rimane invariata (era bug critico!)
+            
+            # SEMPRE aggiorna alla nuova logica (più robusta)
+            position.stop_loss = new_sl_6pct
+            position.take_profit = None  # Remove TP sempre
+            position.trailing_trigger = new_trailing_trigger
+            position._migrated = True  # Mark as migrated
+            position._needs_sl_update_on_bybit = True  # FLAG per aggiornare SL su Bybit
+            
+            logging.warning(f"🚨 MIGRATED {position.symbol} {side.upper()}: SL {old_sl:.6f}→{new_sl_6pct:.6f} - NEEDS BYBIT UPDATE!")
+                
+        except Exception as e:
+            logging.error(f"Error migrating position {position.position_id}: {e}")
     
     def save_positions(self):
         """Save positions to storage"""
@@ -515,38 +578,32 @@ class SmartPositionManager:
                                confidence: float = 0.7) -> str:
         """
         Create new position with trailing system (compatibility method)
+        Updated to use new 6% SL logic without catastrophic stop
         
         Args:
             symbol: Trading symbol
             side: Position side
             entry_price: Entry price
             position_size: Position size USD
-            atr: Average True Range
-            catastrophic_sl_id: ID of catastrophic stop order
+            atr: Average True Range  
+            catastrophic_sl_id: DEPRECATED - no longer used
             leverage: Position leverage
             confidence: ML confidence
             
         Returns:
             str: Position ID
         """
-        # Calculate basic protective levels
-        if side.lower() == 'buy':
-            stop_loss = entry_price * 0.97  # 3% stop loss
-            take_profit = entry_price * 1.06  # 6% take profit
-            trailing_trigger = entry_price * 1.01  # 1% trailing trigger
-        else:
-            stop_loss = entry_price * 1.03  # 3% stop loss  
-            take_profit = entry_price * 0.94  # 6% take profit
-            trailing_trigger = entry_price * 0.99  # 1% trailing trigger
+        # NUOVA LOGICA: 6% SL fisso, NO TP, NO stop catastrofico
+        # Il parametro catastrophic_sl_id è ignorato (compatibilità legacy)
         
-        # Use regular create_position method
+        # Use regular create_position method with new logic
         return self.create_position(
             symbol=symbol,
             side=side,
             entry_price=entry_price,
             position_size=position_size,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
+            stop_loss=None,  # Usa la logica automatica del 6%
+            take_profit=None,  # NO take profit
             leverage=leverage,
             confidence=confidence
         )
@@ -554,6 +611,56 @@ class SmartPositionManager:
     def get_trailing_positions(self) -> List[Position]:
         """Get all positions that need trailing monitoring (compatibility method)"""
         return self.get_active_positions()
+    
+    async def emergency_update_bybit_stop_losses(self, exchange, order_manager):
+        """
+        🚨 EMERGENZA: Aggiorna stop loss su Bybit per tutte le posizioni migrate
+        
+        Args:
+            exchange: Bybit exchange instance
+            order_manager: Order manager for API calls
+        """
+        try:
+            updated_count = 0
+            
+            for position in self.get_active_positions():
+                # Check if position needs SL update on Bybit
+                if hasattr(position, '_needs_sl_update_on_bybit') and position._needs_sl_update_on_bybit:
+                    
+                    try:
+                        # Calculate correct 6% SL
+                        if position.side == 'buy':
+                            correct_sl = position.entry_price * 0.94  # 6% below
+                        else:
+                            correct_sl = position.entry_price * 1.06  # 6% above
+                        
+                        # Update SL on Bybit
+                        result = await order_manager.set_trading_stop(
+                            exchange, position.symbol, correct_sl, None  # Solo SL, NO TP
+                        )
+                        
+                        if result.success:
+                            position._needs_sl_update_on_bybit = False
+                            position.sl_order_id = result.order_id
+                            updated_count += 1
+                            
+                            sl_pct = ((correct_sl - position.entry_price) / position.entry_price) * 100
+                            logging.warning(f"🚨 BYBIT SL UPDATED {position.symbol}: ${correct_sl:.6f} ({sl_pct:+.1f}%)")
+                        else:
+                            logging.error(f"❌ Failed to update SL for {position.symbol}: {result.error}")
+                            
+                    except Exception as e:
+                        logging.error(f"❌ Error updating SL for {position.symbol}: {e}")
+                        continue
+            
+            if updated_count > 0:
+                self.save_positions()
+                logging.warning(f"🚨 EMERGENCY UPDATE COMPLETE: {updated_count} stop losses updated on Bybit")
+            else:
+                logging.info("✅ No emergency SL updates needed")
+                
+        except Exception as e:
+            logging.error(f"Error in emergency SL update: {e}")
     
     def reset_session(self):
         """
