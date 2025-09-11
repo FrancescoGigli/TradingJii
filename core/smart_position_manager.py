@@ -157,15 +157,35 @@ class SmartPositionManager:
             for pos in active_bybit_positions:
                 symbol = pos.get('symbol')
                 if symbol:
-                    side = pos.get('side', '').lower()  # 🔧 usare direttamente il side da Bybit
-                    contracts = abs(float(pos.get('contracts', 0)))
+                    raw_side = pos.get('side', '')
+                    contracts_raw = pos.get('contracts', 0)
+                    contracts = abs(float(contracts_raw))
                     entry_price = float(pos.get('entryPrice', 0))
                     unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+
+                    # 🚨 EXTENDED DEBUG: Log tutto quello che restituisce Bybit
+                    logging.error(f"🔍 FULL BYBIT DATA {symbol}: {pos}")
+                    logging.error(f"🔍 BYBIT FIELDS {symbol}: raw_side='{raw_side}', contracts_raw={contracts_raw}, contracts={contracts}")
+
+                    # 🔧 CORREZIONE MIGLIORATA: Usa il side originale da Bybit (più sicuro)
+                    if raw_side.lower() in ['buy', 'long']:
+                        side = 'buy'
+                    elif raw_side.lower() in ['sell', 'short']:  
+                        side = 'sell'
+                    elif float(contracts_raw) > 0:
+                        side = 'buy'  # Fallback: contracts positivi = LONG
+                    elif float(contracts_raw) < 0:
+                        side = 'sell'  # Fallback: contracts negativi = SHORT
+                    else:
+                        logging.error(f"🚨 CANNOT DETERMINE SIDE for {symbol}, skipping")
+                        continue
+
+                    logging.error(f"🔧 FINAL SIDE {symbol}: raw_side='{raw_side}' → final_side='{side}'")
 
                     bybit_symbols.add(symbol)
                     bybit_position_data[symbol] = {
                         'contracts': contracts,
-                        'side': side,  # ✅ già coerente
+                        'side': side,
                         'entry_price': entry_price,
                         'unrealized_pnl': unrealized_pnl
                     }

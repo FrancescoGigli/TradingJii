@@ -50,20 +50,12 @@ exchange_config = {
     },
 }
 
-# ----------------------------------------------------------------------
-# Parametri di trading
-# ----------------------------------------------------------------------
-# DYNAMIC MARGIN: 20-50 USDT based on confidence and risk
+# Trading parameters
 MARGIN_BASE_USDT = 20.0    # Minimum margin per trade
 MARGIN_MAX_USDT = 50.0     # Maximum margin per trade  
 LEVERAGE = 10
 
-# Legacy compatibility (will be calculated dynamically)
-MARGIN_USDT = 25.0  # Average for fallback calculations
-
-# ----------------------------------------------------------------------
-# NUOVA LOGICA - Stop Loss e Trailing Management
-# ----------------------------------------------------------------------
+# Stop Loss e Trailing Management
 # Stop Loss iniziale: 60% perdita sul margine (6% sul prezzo con leva 10x)
 INITIAL_SL_MARGIN_LOSS_PCT = 0.6      # 60% perdita sul margine
 INITIAL_SL_PRICE_PCT = 0.06           # 6% dal prezzo (equivalente con leva 10x)
@@ -82,23 +74,17 @@ TRAILING_DISTANCE_HIGH_VOL = 0.04     # 4% per alta volatilità (ATR > 4%)
 VOLATILITY_LOW_THRESHOLD = 0.02       # 2% ATR
 VOLATILITY_HIGH_THRESHOLD = 0.04      # 4% ATR
 
-# ----------------------------------------------------------------------
-# HIGH-FREQUENCY TRAILING MONITOR CONFIGURATION
-# ----------------------------------------------------------------------
-# Monitor dedicato per trailing stops ad alta frequenza
-TRAILING_MONITOR_INTERVAL = 30        # 30 secondi (vs 300s ciclo principale)
-TRAILING_MONITOR_ENABLED = True       # Enable/disable high-freq monitoring
-TRAILING_PRICE_CACHE_TTL = 60        # Cache prezzi per 60 secondi
-TRAILING_MAX_API_CALLS_PER_MIN = 120 # Limite API calls per non superare rate limits
+# High-frequency trailing monitor configuration
+TRAILING_MONITOR_INTERVAL = 30        
+TRAILING_MONITOR_ENABLED = True       
+TRAILING_PRICE_CACHE_TTL = 60        
+TRAILING_MAX_API_CALLS_PER_MIN = 120 
 
-# Performance e sicurezza
-TRAILING_ERROR_RECOVERY_DELAY = 10    # Delay dopo errore (secondi)
-TRAILING_MAX_CONSECUTIVE_ERRORS = 5   # Max errori consecutivi prima di fermare
-TRAILING_ENABLE_LOGGING = True        # Enable detailed trailing logs
+TRAILING_ERROR_RECOVERY_DELAY = 10    
+TRAILING_MAX_CONSECUTIVE_ERRORS = 5   
+TRAILING_ENABLE_LOGGING = True        
 
-# ----------------------------------------------------------------------
-# REAL-TIME POSITION DISPLAY CONFIGURATION
-# ----------------------------------------------------------------------
+# Real-time position display configuration
 # Display real-time delle posizioni con aggiornamento ogni secondo  
 REALTIME_DISPLAY_ENABLED = True      # RIABILITATO con fix
 REALTIME_DISPLAY_INTERVAL = 1.0      # 1 secondo aggiornamento
@@ -112,11 +98,8 @@ REALTIME_COLOR_CODING = True         # Color coding avanzato per PNL
 
 ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]
 TIMEFRAME_DEFAULT: str | None = "15m"
-TIME_STEPS = 7  # DEPRECATED: Use get_timesteps_for_timeframe() instead
 
-# ----------------------------------------------------------------------
-# FIXED: Uniform Time Window for Multi-Timeframe Ensemble
-# ----------------------------------------------------------------------
+# Uniform Time Window for Multi-Timeframe Ensemble
 LOOKBACK_HOURS = 6  # Finestra temporale uniforme per tutti i timeframes
 
 # Calcolo dinamico timesteps per ogni timeframe (stessa finestra temporale)

@@ -4,17 +4,15 @@ import time
 from datetime import datetime, timedelta
 import logging
 from termcolor import colored
-import os
 import asyncio
-import uuid
 import json
 
 from config import (
-    MARGIN_USDT, LEVERAGE, EXCLUDED_SYMBOLS,
-    TOP_ANALYSIS_CRYPTO, DEMO_BALANCE, MAX_CONCURRENT_POSITIONS
+    LEVERAGE, EXCLUDED_SYMBOLS,
+    TOP_ANALYSIS_CRYPTO, DEMO_BALANCE, MAX_CONCURRENT_POSITIONS,
+    MARGIN_BASE_USDT
 )
 import config
-from fetcher import get_top_symbols, get_data_async
 
 # CRITICAL FIX: Safe formatting utility to prevent TypeError on None values
 def safe_format_price(price, decimals=6, default="N/A"):
@@ -60,13 +58,9 @@ def safe_format_float(value, decimals=2, default="N/A", prefix=""):
 RISK_MANAGER_AVAILABLE = False  # Replaced by risk_calculator.py
 UNIFIED_TRADING_ENGINE_AVAILABLE = False  # Replaced by order_manager.py
 
-# Import enhanced terminal display
-try:
-    from core.terminal_display import display_enhanced_signal, display_portfolio_status
-    ENHANCED_DISPLAY_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"⚠️ Enhanced Terminal Display not available: {e}")
-    ENHANCED_DISPLAY_AVAILABLE = False
+# Enhanced terminal display removed (eliminated duplicate display systems)
+# Only realtime_display.py is now used for position display
+ENHANCED_DISPLAY_AVAILABLE = False
 
 # CONSOLIDATED: Use SmartPositionManager (position duplicates eliminated)
 try:
@@ -453,55 +447,8 @@ async def sync_positions_at_startup(exchange):
         logging.error(colored(f"❌ Error during position sync: {e}", "red"))
         return 0
 
-async def calculate_position_size(exchange, symbol, usdt_balance, min_amount=0, risk_factor=1.0):
-    """DEPRECATED: Legacy function - use RobustRiskManager instead"""
-    try:
-        # CRITICAL FIX: Use unified risk manager for position sizing
-        if RISK_MANAGER_AVAILABLE and global_risk_manager:
-            ticker = await exchange.fetch_ticker(symbol)
-            current_price = ticker.get('last')
-            if current_price is None:
-                return None
-                
-            # Extract or estimate ATR (simplified)
-            atr = current_price * 0.02  # 2% fallback ATR
-            
-            position_size, stop_loss = global_risk_manager.calculate_position_size(
-                symbol=symbol,
-                signal_strength=risk_factor,
-                current_price=current_price,
-                atr=atr,
-                account_balance=usdt_balance
-            )
-            
-            return max(position_size, min_amount)
-        else:
-            # Legacy fallback (deprecated)
-            logging.warning("Using deprecated position sizing - risk manager not available")
-            ticker = await exchange.fetch_ticker(symbol)
-            current_price = ticker.get('last')
-            if current_price is None:
-                return None
-                
-            # Use configured margin and leverage (respect user settings)
-            margin_to_use = MARGIN_USDT
-            
-            # Safety check: don't use more than 20% of total balance
-            max_safe_margin = usdt_balance * 0.2  # 20% safety limit
-            if margin_to_use > max_safe_margin:
-                margin_to_use = max_safe_margin
-                logging.warning(colored(f"💡 Legacy: Margin reduced from ${MARGIN_USDT} to ${margin_to_use:.2f} (20% safety)", "yellow"))
-            
-            notional_value = margin_to_use * LEVERAGE
-            position_size = notional_value / current_price
-            
-            logging.info(colored(f"📏 Legacy sizing: ${margin_to_use:.2f} margin × {LEVERAGE}x leverage = ${notional_value:.2f} notional", "cyan"))
-            
-            return max(position_size, min_amount)
-            
-    except Exception as e:
-        logging.error(f"❌ Position size calculation failed for {symbol}: {e}")
-        return min_amount
+# REMOVED: calculate_position_size() - DEPRECATED function
+# Use core/risk_calculator.py -> calculate_position_levels() instead
 
 async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
                           lstm_model, lstm_scaler, rf_model, rf_scaler, df, predictions=None):
@@ -696,20 +643,9 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
                     atr=atr
                 )
                 
-                # Enhanced display
+                # Enhanced display removed (duplicate display system eliminated)
                 risk_pct = (3.0 / LEVERAGE) if LEVERAGE > 0 else 3.0  # Base risk divided by leverage
-                
-                if ENHANCED_DISPLAY_AVAILABLE:
-                    display_enhanced_signal(
-                        symbol=symbol,
-                        signal=side.upper(),
-                        confidence=confidence,
-                        price=current_price,
-                        stop_loss=stop_loss_price,
-                        position_size=calculated_position_size,
-                        risk_pct=risk_pct,
-                        atr=atr
-                    )
+                logging.info(colored(f"📊 Position Details: Risk {risk_pct:.2f}% | ATR: {atr:.6f}", "cyan"))
                 
                 logging.info(colored(f"🎮 DEMO POSITION OPENED | {symbol}: {side} | Balance: {current_wallet:.2f} USDT | Size: {calculated_position_size:.2f} USDT", "magenta"))
                 
@@ -756,17 +692,17 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
 
 async def calculate_fallback_position_size(symbol, current_price, usdt_balance):
     """
-    Fallback position sizing respecting MARGIN_USDT configuration
+    Fallback position sizing using base margin configuration
     """
     try:
         # Use configured margin directly (respect user setting)
-        margin_to_use = MARGIN_USDT
+        margin_to_use = MARGIN_BASE_USDT
         
         # Safety check: don't use more than 20% of total balance
         max_safe_margin = usdt_balance * 0.2  # 20% safety limit
         if margin_to_use > max_safe_margin:
             margin_to_use = max_safe_margin
-            logging.warning(colored(f"💡 Margin reduced from ${MARGIN_USDT} to ${margin_to_use:.2f} (20% of balance limit)", "yellow"))
+            logging.warning(colored(f"💡 Margin reduced from ${MARGIN_BASE_USDT} to ${margin_to_use:.2f} (20% of balance limit)", "yellow"))
         
         # Use full configured leverage
         notional_value = margin_to_use * LEVERAGE

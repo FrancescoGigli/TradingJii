@@ -35,10 +35,7 @@ class TrailingMonitor:
         self.is_running = False
         self.monitor_task = None
         
-        # Cache trailing data per ogni posizione
-        self.trailing_cache: Dict[str, any] = {}
-        
-        logging.info("⚡ TRAILING MONITOR: Initialized for high-frequency stop monitoring")
+        logging.info("⚡ TRAILING MONITOR: Initialized for high-frequency stop monitoring (cache-free)")
     
     async def start_monitoring(self, exchange):
         """
@@ -126,11 +123,10 @@ class TrailingMonitor:
     
     async def _monitor_single_position(self, exchange, position):
         """
-        Monitora una singola posizione per trailing stops
+        🔧 FIXED: Monitora una singola posizione senza cache separata
         
-        Args:
-            exchange: Bybit exchange instance
-            position: Position object to monitor
+        USA DIRETTAMENTE: position.trailing_data invece di trailing_cache
+        ELIMINA: Conflitti di sincronizzazione
         """
         try:
             symbol = position.symbol
@@ -140,12 +136,20 @@ class TrailingMonitor:
             if current_price is None:
                 return
             
-            # 2. Ottieni/inizializza trailing data
-            trailing_data = await self._get_or_create_trailing_data(position, current_price)
-            if trailing_data is None:
-                return
+            # 2. Aggiorna prezzo sulla posizione (sync con TradingOrchestrator)
+            position.current_price = current_price
             
-            # 3. Controlla se trigger è raggiunto (attivazione trailing)
+            # 3. Assicurati che trailing_data esista (init se necessario)
+            if not hasattr(position, 'trailing_data') or position.trailing_data is None:
+                atr = await self._estimate_atr(exchange, symbol)
+                position.trailing_data = self.trailing_manager.initialize_trailing_data(
+                    position.symbol, position.side, position.entry_price, atr
+                )
+                logging.debug(f"⚡ TrailingMonitor: Initialized trailing_data for {symbol}")
+            
+            trailing_data = position.trailing_data
+            
+            # 4. Controlla se trigger è raggiunto (attivazione trailing)
             if not trailing_data.trailing_attivo:
                 if self.trailing_manager.check_activation_conditions(trailing_data, current_price):
                     # Attiva trailing stop
@@ -153,9 +157,14 @@ class TrailingMonitor:
                     self.trailing_manager.activate_trailing(
                         trailing_data, current_price, position.side, atr
                     )
+                    
+                    # Sync con position object (eliminare duplicazione)
+                    position.trailing_attivo = True
+                    position.best_price = current_price
+                    
                     logging.info(colored(f"⚡ TRAILING ACTIVATED: {symbol} at ${current_price:.6f}", "green"))
             
-            # 4. Se trailing è attivo, aggiorna e controlla hit
+            # 5. Se trailing è attivo, aggiorna e controlla hit
             if trailing_data.trailing_attivo:
                 atr = await self._estimate_atr(exchange, symbol)
                 
@@ -164,19 +173,21 @@ class TrailingMonitor:
                     trailing_data, current_price, position.side, atr
                 )
                 
+                # Sync best_price e sl_corrente con position object
+                position.best_price = trailing_data.best_price
+                position.sl_corrente = trailing_data.sl_corrente
+                
                 # Controlla se trailing stop è colpito
                 if self.trailing_manager.is_trailing_hit(trailing_data, current_price, position.side):
                     # ESEGUI USCITA IMMEDIATA
                     success = await self._execute_trailing_exit(exchange, position, current_price)
                     if success:
-                        # Rimuovi dalla cache
-                        if position.position_id in self.trailing_cache:
-                            del self.trailing_cache[position.position_id]
-                        
                         logging.info(colored(f"⚡ TRAILING EXIT EXECUTED: {symbol} at ${current_price:.6f}", "yellow"))
+                        # Position viene chiusa nel _execute_trailing_exit
+                        return
             
-            # 5. Aggiorna cache
-            self.trailing_cache[position.position_id] = trailing_data
+            # 6. Salva posizioni (no cache separata)
+            self.position_manager.save_positions()
             
         except Exception as e:
             logging.error(f"⚡ Error monitoring position {position.symbol}: {e}")
@@ -199,35 +210,6 @@ class TrailingMonitor:
             logging.warning(f"⚡ Could not fetch price for {symbol}: {e}")
             return None
     
-    async def _get_or_create_trailing_data(self, position, current_price):
-        """
-        Ottieni o crea trailing data per la posizione
-        
-        Args:
-            position: Position object
-            current_price: Current market price
-            
-        Returns:
-            TrailingData or None
-        """
-        try:
-            position_id = position.position_id
-            
-            # Se già in cache, usa quello
-            if position_id in self.trailing_cache:
-                return self.trailing_cache[position_id]
-            
-            # Altrimenti crea nuovo trailing data
-            atr = await self._estimate_atr(None, position.symbol)  # Stima ATR
-            trailing_data = self.trailing_manager.initialize_trailing_data(
-                position.symbol, position.side, position.entry_price, atr
-            )
-            
-            return trailing_data
-            
-        except Exception as e:
-            logging.error(f"⚡ Error getting trailing data for {position.symbol}: {e}")
-            return None
     
     async def _estimate_atr(self, exchange, symbol: str) -> float:
         """
@@ -296,7 +278,7 @@ class TrailingMonitor:
         return {
             'is_running': self.is_running,
             'monitor_interval': self.monitor_interval,
-            'cached_positions': len(self.trailing_cache),
+            'active_positions': len(self.position_manager.get_active_positions()),
             'last_check': datetime.now().isoformat() if self.is_running else None
         }
 
