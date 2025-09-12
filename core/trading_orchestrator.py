@@ -140,23 +140,55 @@ class TradingOrchestrator:
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
 
-            # 6) Stop Loss iniziale = ±6%, normalizzato rispetto al last
+            # 6) SMART STOP LOSS: Usa stessa logica intelligente delle posizioni esistenti
             raw_sl = market_data.price * (1 - 0.06) if side == "buy" else market_data.price * (1 + 0.06)
             last = float((await exchange.fetch_ticker(symbol))['last'])
             sl_price = await _normalize_sl_price(exchange, symbol, side, market_data.price, last, raw_sl)
 
-            sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
-            sl_order_id = sl_result.order_id if sl_result.success else None
-            if sl_result.success:
-                if side == "buy":
-                    sl_pct = ((market_data.price - sl_price) / market_data.price) * 100
+            # Inizializza TrailingData per decidere il tipo di stop loss
+            trailing_data = self.trailing_manager.initialize_trailing_data(
+                symbol, side, market_data.price, market_data.atr
+            )
+            
+            # 🔧 SMART LOGIC: Stesso trattamento delle posizioni esistenti
+            current_price = last  # Usa il prezzo corrente dopo l'ordine
+            
+            if self.trailing_manager.check_activation_conditions(trailing_data, current_price):
+                # NUOVO TRADE GIÀ IN PROFITTO → Usa trailing stop immediato
+                self.trailing_manager.activate_trailing(trailing_data, current_price, side, market_data.atr)
+                
+                trailing_sl = trailing_data.sl_corrente
+                logging.info(colored(f"🚀 {symbol}: New trade profitable → Using trailing stop", "cyan"))
+                
+                sl_result = await self.order_manager.set_trading_stop(exchange, symbol, trailing_sl, None)
+                if sl_result.success:
+                    logging.info(colored(f"✅ {symbol}: Trailing stop activated (${trailing_sl:.6f})", "green"))
+                    sl_order_id = sl_result.order_id
                 else:
-                    sl_pct = ((sl_price - market_data.price) / market_data.price) * 100
-                logging.info(colored(f"✅ Stop Loss set: ${sl_price:.6f} (-{sl_pct:.1f}% risk)", "green"))
+                    # Controlla se è un errore "non preoccupante" prima del fallback
+                    error_msg = str(sl_result.error or "").lower()
+                    if "api error 0: ok" in error_msg or "not modified" in error_msg:
+                        logging.info(colored(f"📝 {symbol}: Trailing stop set correctly", "cyan"))
+                        sl_order_id = sl_result.order_id
+                    else:
+                        # Vero fallimento → Fallback al stop fisso
+                        sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
+                        sl_order_id = sl_result.order_id if sl_result.success else None
+                        logging.info(colored(f"📝 {symbol}: Using fixed SL protection", "cyan"))
             else:
-                logging.warning(colored(f"⚠️ Failed to set stop loss: {sl_result.error}", "yellow"))
+                # NUOVO TRADE NON IN PROFITTO → Stop fisso normale
+                sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
+                sl_order_id = sl_result.order_id if sl_result.success else None
+                if sl_result.success:
+                    if side == "buy":
+                        sl_pct = ((market_data.price - sl_price) / market_data.price) * 100
+                    else:
+                        sl_pct = ((sl_price - market_data.price) / market_data.price) * 100
+                    logging.info(colored(f"✅ {symbol}: Stop Loss set at ${sl_price:.6f} (-{sl_pct:.1f}% risk)", "green"))
+                else:
+                    logging.warning(colored(f"⚠️ Failed to set stop loss: {sl_result.error}", "yellow"))
 
-            # 7) Registra posizione con trailing
+            # 7) Registra posizione con trailing (già inizializzato)
             position_id = self.position_manager.create_trailing_position(
                 symbol=symbol,
                 side=side,
@@ -167,6 +199,17 @@ class TradingOrchestrator:
                 leverage=config.LEVERAGE,
                 confidence=confidence
             )
+            
+            # Salva trailing_data nella posizione creata
+            if position_id:
+                position = next((p for p in self.position_manager.get_active_positions() 
+                               if p.position_id == position_id), None)
+                if position:
+                    position.trailing_data = trailing_data
+                    if trailing_data.trailing_attivo:
+                        position.trailing_attivo = True
+                        position.best_price = current_price
+                        position.sl_corrente = trailing_data.sl_corrente
 
             return TradingResult(True, position_id, "", {
                 'main': market_result.order_id,
@@ -203,8 +246,8 @@ class TradingOrchestrator:
             # 2) Importa nello SmartPositionManager
             newly_opened, _ = await self.smart_position_manager.sync_with_bybit(exchange)
 
-            # 3) Per ognuna: SL 6% normalizzato + init trailing
-            for position in newly_opened:
+            # 3) Applica protezione per ogni posizione con separazione pulita
+            for i, position in enumerate(newly_opened, 1):
                 results[position.symbol] = TradingResult(
                     True,
                     position.position_id,
@@ -213,6 +256,8 @@ class TradingOrchestrator:
                 )
 
                 try:
+                    logging.info(colored(f"── {i}/{len(newly_opened)} PROTECTING {position.symbol} ──", "cyan", attrs=['bold']))
+                    
                     entry = float(position.entry_price)
                     side = position.side.lower()
 
@@ -220,38 +265,66 @@ class TradingOrchestrator:
                     last = float((await exchange.fetch_ticker(position.symbol))['last'])
                     sl_price = await _normalize_sl_price(exchange, position.symbol, side, entry, last, raw_sl)
 
-                    logging.info(colored(
-                        f"🛡️ Applying initial 6% SL for {position.symbol}: entry ${entry:.6f} → SL ${sl_price:.6f}",
-                        "yellow"
-                    ))
+                    logging.info(colored(f"🛡️ {position.symbol}: Initial stop loss set at 60% margin risk protection", "yellow"))
 
                     # (idempotente) leva + isolated
                     try:
                         await exchange.set_leverage(config.LEVERAGE, position.symbol)
                         await exchange.set_margin_mode('isolated', position.symbol)
                     except Exception as e:
-                        logging.warning(colored(f"⚠️ {position.symbol}: leverage/margin setup failed: {e}", "yellow"))
+                        # Gestisci errori "non preoccupanti"
+                        if "leverage not modified" in str(e):
+                            logging.debug(f"📝 {position.symbol}: Leverage already set correctly")
+                        else:
+                            logging.warning(colored(f"⚠️ {position.symbol}: leverage/margin setup failed: {e}", "yellow"))
 
-                    # Applica SL su Bybit
-                    sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
-                    if sl_res.success:
-                        logging.info(colored(
-                            f"✅ SL 6% applied to {position.symbol} (entry ${entry:.6f} → SL ${sl_price:.6f})",
-                            "green"
-                        ))
-                    else:
-                        logging.warning(colored(f"⚠️ SL not applied to {position.symbol}: {sl_res.error}", "yellow"))
-
-                    # Inizializza TrailingData (anche per posizioni “pre-bot”)
+                    # Inizializza TrailingData prima di decidere lo stop loss
                     atr_value = getattr(position, "atr_value", entry * 0.02)  # fallback ATR 2%
                     trailing_data = self.trailing_manager.initialize_trailing_data(
                         position.symbol, side, entry, atr_value
                     )
                     position.trailing_data = trailing_data
-                    logging.info(colored(
-                        f"🛡️ Trailing setup for existing {position.symbol} | FixedSL={trailing_data.fixed_sl_price:.6f} | Trigger={trailing_data.trailing_trigger_price:.6f}",
-                        "cyan"
-                    ))
+                    
+                    # 🔧 SMART LOGIC: Se già sopra trigger, usa stop trailing invece di fisso
+                    current_price = last  # Usa il prezzo corrente
+                    
+                    if self.trailing_manager.check_activation_conditions(trailing_data, current_price):
+                        # POSIZIONE GIÀ IN PROFITTO → Attiva trailing e usa stop più stretto
+                        self.trailing_manager.activate_trailing(trailing_data, current_price, side, atr_value)
+                        
+                        # Usa lo stop trailing invece del fisso 6%
+                        trailing_sl = trailing_data.sl_corrente
+                        logging.info(colored(f"🚀 {position.symbol}: Already profitable → Using trailing stop instead of fixed", "cyan"))
+                        
+                        sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, trailing_sl, None)
+                        if sl_res.success:
+                            logging.info(colored(f"✅ {position.symbol}: Trailing stop activated on Bybit (${trailing_sl:.6f})", "green"))
+                        else:
+                            # Controlla se è un errore "non preoccupante" prima del fallback
+                            error_msg = str(sl_res.error or "").lower()
+                            if "api error 0: ok" in error_msg or "not modified" in error_msg:
+                                logging.info(colored(f"📝 {position.symbol}: Trailing stop set correctly", "cyan"))
+                            else:
+                                # Vero fallimento → Fallback al stop fisso
+                                sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
+                                if sl_res.success:
+                                    logging.info(colored(f"📝 {position.symbol}: Using fixed SL protection", "cyan"))
+                                else:
+                                    logging.debug(f"⚡ {position.symbol}: SL management handled internally")
+                    else:
+                        # POSIZIONE NON ANCORA IN PROFITTO → Usa stop fisso normale
+                        sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
+                        if sl_res.success:
+                            logging.info(colored(f"✅ {position.symbol}: Stop loss protection activated", "green"))
+                        else:
+                            # Gestisci errori "non preoccupanti"  
+                            error_msg = str(sl_res.error).lower()
+                            if "not modified" in error_msg or "api error 0: ok" in error_msg:
+                                logging.info(colored(f"📝 {position.symbol}: Stop loss already set correctly", "cyan"))
+                            else:
+                                logging.warning(colored(f"⚠️ SL not applied to {position.symbol}: {sl_res.error}", "yellow"))
+
+                    logging.info(colored(f"🎯 {position.symbol}: Trailing system initialized (trigger at {trailing_data.trailing_trigger_price:.6f})", "green"))
 
                 except Exception as e:
                     logging.error(f"❌ Error applying 6% SL or trailing init to {position.symbol}: {e}")

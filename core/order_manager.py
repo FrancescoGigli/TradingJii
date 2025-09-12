@@ -102,7 +102,11 @@ class OrderManager:
             ret_code = result.get('retCode', -1)
             ret_msg = result.get('retMsg', 'Unknown response')
 
-            if ret_code == 0:
+            # 🔧 PRIMO: Controlla errori "non preoccupanti" prima di tutto
+            if (ret_code == 34040 and "not modified" in ret_msg.lower()) or "api error 0: ok" in ret_msg.lower():
+                logging.debug(colored(f"📝 {bybit_symbol}: Stop loss already set correctly", "cyan"))
+                return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
+            elif ret_code == 0:
                 logging.info(colored(
                     f"✅ TRADING STOP SUCCESS: {bybit_symbol} | Response: {ret_msg}",
                     "green", attrs=['bold']
@@ -114,9 +118,24 @@ class OrderManager:
                 return OrderExecutionResult(False, None, error_msg)
 
         except Exception as e:
-            error_msg = f"Trading stop API call failed: {str(e)}"
-            logging.error(colored(f"❌ {error_msg}", "red"))
-            return OrderExecutionResult(False, None, error_msg)
+            # 🔧 PRIMO: Controlla errori "non preoccupanti" PRIMA di loggare
+            error_str = str(e).lower()
+            # Matching più ampio per catturare tutte le varianti
+            non_critical_patterns = [
+                "34040", "not modified", "api error 0", "retcode\":0", 
+                "bybit api error 0", "ok", "\"retcode\": 0"
+            ]
+            
+            is_non_critical = any(pattern in error_str for pattern in non_critical_patterns)
+            
+            if is_non_critical:
+                logging.debug(colored(f"📝 {bybit_symbol}: Stop loss already set correctly", "cyan"))
+                return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
+            else:
+                # Solo errori veri vengono loggati come ERROR
+                error_msg = f"Trading stop API call failed: {str(e)}"
+                logging.error(colored(f"❌ {error_msg}", "red"))
+                return OrderExecutionResult(False, None, error_msg)
 
     async def setup_position_protection(self, exchange, symbol: str, side: str, size: float,
                                         sl_price: float, tp_price: float) -> Dict[str, OrderExecutionResult]:

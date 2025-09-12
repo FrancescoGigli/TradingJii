@@ -93,7 +93,6 @@ class TradingEngine:
                     successful = sum(1 for r in protection_results.values() if r.success)
                     total = len(protection_results)
                     logging.info(colored(f"🛡️ Protected {successful}/{total} existing positions", "cyan"))
-                    logging.warning(colored("🚨 EMERGENCY: Updating stop losses on Bybit to 6%", "red"))
                     await self.position_manager.emergency_update_bybit_stop_losses(exchange, self.global_order_manager)
                 else:
                     logging.info(colored("🆕 No existing positions - starting fresh", "green"))
@@ -205,16 +204,26 @@ class TradingEngine:
         await self._setup_trading_parameters(exchange, signals_to_execute)
 
         executed_trades = 0
-        for signal in signals_to_execute:
+        for i, signal in enumerate(signals_to_execute, 1):
             try:
                 if not self.clean_modules_available:
                     logging.warning("⚠️ Clean modules not available, skipping")
                     break
 
                 symbol = signal['symbol']
+                
+                # 🔧 SKIP ELEGANTE: Controlla posizioni esistenti prima di tutto
+                if self.position_manager.has_position_for_symbol(symbol):
+                    logging.info(colored(f"📝 {i}/{len(signals_to_execute)} {symbol}: Position exists, skipping", "cyan"))
+                    available_balance = self.position_manager.get_available_balance()
+                    logging.info(colored(f"💰 Available balance: ${available_balance:.2f}", "white"))
+                    continue
+                
                 can_open, reason = self.global_trading_orchestrator.can_open_new_position(symbol, usdt_balance)
                 if not can_open:
                     logging.warning(f"⚠️ {symbol}: {reason}")
+                    available_balance = self.position_manager.get_available_balance()
+                    logging.info(colored(f"💰 Available balance: ${available_balance:.2f}", "white"))
                     continue
 
                 df = signal['dataframes'][self.config_manager.get_default_timeframe()]
@@ -241,13 +250,21 @@ class TradingEngine:
                 if result.success:
                     executed_trades += 1
                     usdt_balance -= levels.margin
-                    logging.info(colored(f"✅ {symbol}: Trade executed", "green"))
+                    logging.info(colored(f"✅ {i}/{len(signals_to_execute)} {symbol}: Trade executed", "green"))
+                    # Mostra wallet aggiornato dopo successo
+                    available_balance = self.position_manager.get_available_balance()
+                    logging.info(colored(f"💰 Available balance: ${available_balance:.2f} (Used: ${levels.margin:.2f})", "white"))
                 else:
-                    logging.warning(f"❌ {symbol}: {result.error}")
+                    logging.warning(f"❌ {i}/{len(signals_to_execute)} {symbol}: {result.error}")
+                    # Mostra wallet anche dopo fallimento
+                    available_balance = self.position_manager.get_available_balance()
+                    logging.info(colored(f"💰 Available balance: ${available_balance:.2f}", "white"))
                     if "insufficient balance" in result.error.lower():
                         break
             except Exception as e:
                 logging.error(f"❌ Error executing {signal['symbol']}: {e}")
+                available_balance = self.position_manager.get_available_balance()
+                logging.info(colored(f"💰 Available balance: ${available_balance:.2f}", "white"))
                 continue
 
         if executed_trades > 0:

@@ -61,6 +61,10 @@ class Position:
     close_reason: Optional[str] = None
     final_pnl_pct: Optional[float] = None
     final_pnl_usd: Optional[float] = None
+    
+    # Migration flags (persistenti nel JSON)
+    _migrated: bool = False                        # Flag migrazione completata
+    _needs_sl_update_on_bybit: bool = False        # Flag update SL necessario
 
 class SmartPositionManager:
     """
@@ -159,15 +163,30 @@ class SmartPositionManager:
                 if symbol:
                     raw_side = pos.get('side', '')
                     contracts_raw = pos.get('contracts', 0)
-                    contracts = abs(float(contracts_raw))
-                    entry_price = float(pos.get('entryPrice', 0))
-                    unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+                    entry_price_raw = pos.get('entryPrice', 0)
+                    unrealized_pnl_raw = pos.get('unrealizedPnl', 0)
+                    
+                    # 🔧 VALIDAZIONE ROBUSTA: Evita errori NoneType
+                    try:
+                        if contracts_raw is None or contracts_raw == '':
+                            continue  # Skip posizioni malformate
+                        contracts = abs(float(contracts_raw))
+                        
+                        if entry_price_raw is None or entry_price_raw == '':
+                            logging.warning(f"⚠️ {symbol}: Entry price None, skipping")
+                            continue
+                        entry_price = float(entry_price_raw)
+                        
+                        if unrealized_pnl_raw is None or unrealized_pnl_raw == '':
+                            unrealized_pnl = 0.0  # Default a zero se mancante
+                        else:
+                            unrealized_pnl = float(unrealized_pnl_raw)
+                            
+                    except (ValueError, TypeError) as e:
+                        logging.warning(f"⚠️ {symbol}: Invalid position data, skipping: {e}")
+                        continue
 
-                    # 🚨 EXTENDED DEBUG: Log tutto quello che restituisce Bybit
-                    logging.error(f"🔍 FULL BYBIT DATA {symbol}: {pos}")
-                    logging.error(f"🔍 BYBIT FIELDS {symbol}: raw_side='{raw_side}', contracts_raw={contracts_raw}, contracts={contracts}")
-
-                    # 🔧 CORREZIONE MIGLIORATA: Usa il side originale da Bybit (più sicuro)
+                    # 🔧 SIDE DETECTION: Usa il side da Bybit (corretto e sicuro)
                     if raw_side.lower() in ['buy', 'long']:
                         side = 'buy'
                     elif raw_side.lower() in ['sell', 'short']:  
@@ -177,10 +196,8 @@ class SmartPositionManager:
                     elif float(contracts_raw) < 0:
                         side = 'sell'  # Fallback: contracts negativi = SHORT
                     else:
-                        logging.error(f"🚨 CANNOT DETERMINE SIDE for {symbol}, skipping")
+                        logging.warning(f"⚠️ Cannot determine position side for {symbol}, skipping")
                         continue
-
-                    logging.error(f"🔧 FINAL SIDE {symbol}: raw_side='{raw_side}' → final_side='{side}'")
 
                     bybit_symbols.add(symbol)
                     bybit_position_data[symbol] = {
@@ -488,11 +505,11 @@ class SmartPositionManager:
                 self.session_start_balance = data.get('session_start_balance', 1000.0)
                 
             total_positions = len(self.open_positions) + len(self.closed_positions)
-            migrated = sum(1 for pos in self.open_positions.values() if hasattr(pos, '_migrated'))
+            migrated = sum(1 for pos in self.open_positions.values() if pos._migrated)
             
             logging.info(f"📁 Positions loaded: {len(self.open_positions)} open, {len(self.closed_positions)} closed")
             if migrated > 0:
-                logging.info(f"🔄 Migrated {migrated} existing positions to new 6% SL logic")
+                logging.debug(f"🔄 {migrated} positions already migrated to 6% SL logic")
             
         except FileNotFoundError:
             logging.debug("📂 No position file found, starting fresh session")
@@ -501,15 +518,14 @@ class SmartPositionManager:
     
     def _migrate_position_to_new_logic(self, position: Position):
         """
-        🔄 MIGRATE existing positions to new 6% SL logic
-        ROBUSTO: Aggiorna SEMPRE al 6% SL indipendentemente dal valore precedente
+        🔄 MIGRATE existing positions to new 6% SL logic - SILENTE
         
         Args:
             position: Position to migrate
         """
         try:
-            # Skip if already migrated
-            if hasattr(position, '_migrated') and position._migrated:
+            # Skip if already migrated (ora è un campo della dataclass)
+            if position._migrated:
                 return
                 
             entry_price = position.entry_price
@@ -527,14 +543,21 @@ class SmartPositionManager:
             # IMPORTANTE: Non modificare la direzione della posizione!
             # position.side rimane invariata (era bug critico!)
             
-            # SEMPRE aggiorna alla nuova logica (più robusta)
-            position.stop_loss = new_sl_6pct
-            position.take_profit = None  # Remove TP sempre
-            position.trailing_trigger = new_trailing_trigger
-            position._migrated = True  # Mark as migrated
-            position._needs_sl_update_on_bybit = True  # FLAG per aggiornare SL su Bybit
-            
-            logging.warning(f"🚨 MIGRATED {position.symbol} {side.upper()}: SL {old_sl:.6f}→{new_sl_6pct:.6f} - NEEDS BYBIT UPDATE!")
+            # Solo se veramente cambia qualcosa
+            if abs(position.stop_loss - new_sl_6pct) > 0.000001:
+                # SEMPRE aggiorna alla nuova logica (più robusta)
+                position.stop_loss = new_sl_6pct
+                position.take_profit = None  # Remove TP sempre
+                position.trailing_trigger = new_trailing_trigger
+                position._migrated = True  # Mark as migrated
+                position._needs_sl_update_on_bybit = True  # FLAG per aggiornare SL su Bybit
+                
+                logging.debug(f"🔄 Position {position.symbol} migrated to 6% SL logic")
+            else:
+                # Già al 6%, marca solo come migrated
+                position._migrated = True
+                position._needs_sl_update_on_bybit = False
+                logging.debug(f"✅ Position {position.symbol} already at 6% SL, marking as migrated")
                 
         except Exception as e:
             logging.error(f"Error migrating position {position.position_id}: {e}")
@@ -634,7 +657,7 @@ class SmartPositionManager:
     
     async def emergency_update_bybit_stop_losses(self, exchange, order_manager):
         """
-        🚨 EMERGENZA: Aggiorna stop loss su Bybit per tutte le posizioni migrate
+        🔧 Verifica e aggiorna stop loss su Bybit se necessario
         
         Args:
             exchange: Bybit exchange instance
@@ -642,45 +665,50 @@ class SmartPositionManager:
         """
         try:
             updated_count = 0
+            positions_needing_update = [pos for pos in self.get_active_positions() if pos._needs_sl_update_on_bybit]
             
-            for position in self.get_active_positions():
-                # Check if position needs SL update on Bybit
-                if hasattr(position, '_needs_sl_update_on_bybit') and position._needs_sl_update_on_bybit:
+            if not positions_needing_update:
+                logging.debug("✅ All positions have correct stop losses")
+                return
+            
+            for position in positions_needing_update:
+                try:
+                    # Calculate correct 6% SL
+                    if position.side == 'buy':
+                        correct_sl = position.entry_price * 0.94  # 6% below
+                    else:
+                        correct_sl = position.entry_price * 1.06  # 6% above
                     
-                    try:
-                        # Calculate correct 6% SL
-                        if position.side == 'buy':
-                            correct_sl = position.entry_price * 0.94  # 6% below
-                        else:
-                            correct_sl = position.entry_price * 1.06  # 6% above
+                    # Update SL on Bybit
+                    result = await order_manager.set_trading_stop(
+                        exchange, position.symbol, correct_sl, None  # Solo SL, NO TP
+                    )
+                    
+                    if result.success:
+                        position._needs_sl_update_on_bybit = False
+                        position.sl_order_id = result.order_id
+                        updated_count += 1
                         
-                        # Update SL on Bybit
-                        result = await order_manager.set_trading_stop(
-                            exchange, position.symbol, correct_sl, None  # Solo SL, NO TP
-                        )
-                        
-                        if result.success:
-                            position._needs_sl_update_on_bybit = False
-                            position.sl_order_id = result.order_id
-                            updated_count += 1
-                            
-                            sl_pct = ((correct_sl - position.entry_price) / position.entry_price) * 100
-                            logging.warning(f"🚨 BYBIT SL UPDATED {position.symbol}: ${correct_sl:.6f} ({sl_pct:+.1f}%)")
+                        logging.info(f"🔧 {position.symbol}: Stop loss updated on Bybit")
+                    else:
+                        # Gestisci errori "non preoccupanti"
+                        error_msg = str(result.error).lower()
+                        if "not modified" in error_msg or "api error 0: ok" in error_msg:
+                            position._needs_sl_update_on_bybit = False  # Mark as done
+                            logging.debug(f"📝 {position.symbol}: Stop loss already correct on Bybit")
                         else:
-                            logging.error(f"❌ Failed to update SL for {position.symbol}: {result.error}")
-                            
-                    except Exception as e:
-                        logging.error(f"❌ Error updating SL for {position.symbol}: {e}")
-                        continue
+                            logging.warning(f"⚠️ Failed to update SL for {position.symbol}: {result.error}")
+                        
+                except Exception as e:
+                    logging.error(f"❌ Error updating SL for {position.symbol}: {e}")
+                    continue
             
             if updated_count > 0:
                 self.save_positions()
-                logging.warning(f"🚨 EMERGENCY UPDATE COMPLETE: {updated_count} stop losses updated on Bybit")
-            else:
-                logging.info("✅ No emergency SL updates needed")
+                logging.info(f"🔧 Stop loss updates completed: {updated_count} positions")
                 
         except Exception as e:
-            logging.error(f"Error in emergency SL update: {e}")
+            logging.error(f"Error in stop loss verification: {e}")
     
     def reset_session(self):
         """

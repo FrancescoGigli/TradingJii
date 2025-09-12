@@ -65,10 +65,10 @@ TRAILING_TRIGGER_BASE_PCT = 0.10      # 10% base per bassa volatilità
 TRAILING_TRIGGER_MIN_PCT = 0.05       # 5% minimo per alta volatilità  
 TRAILING_TRIGGER_MAX_PCT = 0.10       # 10% massimo per media volatilità
 
-# Distanza trailing dinamica basata su volatilità
-TRAILING_DISTANCE_LOW_VOL = 0.02      # 2% per bassa volatilità (ATR < 2%)
-TRAILING_DISTANCE_MED_VOL = 0.03      # 3% per media volatilità (ATR 2-4%)
-TRAILING_DISTANCE_HIGH_VOL = 0.04     # 4% per alta volatilità (ATR > 4%)
+# Distanza trailing dinamica basata su volatilità (OTTIMIZZATO PER LEVA 10X)
+TRAILING_DISTANCE_LOW_VOL = 0.010     # 1.0% per bassa volatilità = 10% PnL movement
+TRAILING_DISTANCE_MED_VOL = 0.008     # 0.8% per media volatilità = 8% PnL movement  
+TRAILING_DISTANCE_HIGH_VOL = 0.007    # 0.7% per alta volatilità = 7% PnL movement (minimo 7%)
 
 # Soglie volatilità per classificazione ATR
 VOLATILITY_LOW_THRESHOLD = 0.02       # 2% ATR

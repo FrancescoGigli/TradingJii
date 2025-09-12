@@ -127,7 +127,9 @@ class TrailingStopManager:
     
     def calculate_dynamic_trigger(self, entry_price: float, side: str, atr: float) -> float:
         """
-        NUOVA FUNZIONE: Calcola trigger dinamico per attivazione trailing (5-10%)
+        🔧 FIXED: Calcola trigger dinamico basato su BREAKEVEN + piccolo buffer
+        
+        Target: 5-10% profitto (0.5-1.0% movimento prezzo con leva 10x)
         
         Args:
             entry_price: Prezzo di entrata
@@ -138,29 +140,38 @@ class TrailingStopManager:
             float: Prezzo trigger per attivare trailing
         """
         try:
+            # Calcola breakeven (entry + commissioni)
+            breakeven = self.calculate_breakeven_price(entry_price, side)
+            
             # Classifica volatilità basata su ATR
             atr_pct = atr / entry_price
             
+            # 🔧 CORREZIONE: Buffer per garantire SEMPRE 1-2% profitto minimo
+            # Formula: Buffer = Trailing Distance + 0.2% (per profitto garantito)
             if atr_pct < VOLATILITY_LOW_THRESHOLD:      # Bassa volatilità
-                trigger_pct = TRAILING_TRIGGER_MAX_PCT  # 10% (più conservativo)
+                buffer_pct = 0.012  # 1.0% distance + 0.2% profitto = 12% attivazione
             elif atr_pct > VOLATILITY_HIGH_THRESHOLD:   # Alta volatilità  
-                trigger_pct = TRAILING_TRIGGER_MIN_PCT  # 5% (più aggressivo)
+                buffer_pct = 0.009  # 0.7% distance + 0.2% profitto = 9% attivazione
             else:                                       # Media volatilità
-                trigger_pct = (TRAILING_TRIGGER_MIN_PCT + TRAILING_TRIGGER_MAX_PCT) / 2  # 7.5%
+                buffer_pct = 0.010  # 0.8% distance + 0.2% profitto = 10% attivazione
             
             if side.lower() == 'buy':
-                trigger_price = entry_price * (1 + trigger_pct)
+                # LONG: trigger poco sopra breakeven
+                trigger_price = breakeven * (1 + buffer_pct)
             else:
-                trigger_price = entry_price * (1 - trigger_pct)
+                # SHORT: trigger poco sotto breakeven  
+                trigger_price = breakeven * (1 - buffer_pct)
             
-            logging.debug(f"🎯 Dynamic trigger: ATR={atr_pct*100:.1f}%, Trigger={trigger_pct*100:.1f}%, Price=${trigger_price:.6f}")
+            profit_target_pct = buffer_pct * LEVERAGE  # Profitto target con leva
+            logging.debug(f"🎯 Breakeven-based trigger: Breakeven=${breakeven:.6f}, Buffer={buffer_pct*100:.1f}%, Profit target={profit_target_pct*100:.1f}%, Price=${trigger_price:.6f}")
             return trigger_price
             
         except Exception as e:
             logging.error(f"Error calculating dynamic trigger: {e}")
-            # Fallback: usa trigger medio
-            fallback_pct = (TRAILING_TRIGGER_MIN_PCT + TRAILING_TRIGGER_MAX_PCT) / 2
-            return entry_price * (1 + fallback_pct if side.lower() == 'buy' else 1 - fallback_pct)
+            # Fallback: 0.8% sopra breakeven
+            breakeven = self.calculate_breakeven_price(entry_price, side)
+            fallback_pct = 0.008
+            return breakeven * (1 + fallback_pct if side.lower() == 'buy' else 1 - fallback_pct)
     
     def initialize_trailing_data(self, symbol: str, side: str, entry_price: float, 
                                 atr: float) -> TrailingData:
