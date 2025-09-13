@@ -121,7 +121,9 @@ def is_candle_closed(candle_timestamp, timeframe):
         
     except Exception as e:
         logging.error(f"Critical error in candle closure check: {e}")
-        # Safe fallback: assume can
+        # Safe fallback: assume candle is closed
+        return True
+
 async def fetch_markets(exchange):
     return await exchange.load_markets()
 
@@ -134,6 +136,16 @@ async def fetch_ticker_volume(exchange, symbol):
         return symbol, None
 
 async def get_top_symbols(exchange, symbols, top_n=TOP_ANALYSIS_CRYPTO):
+    # 🚫 FILTER EXCLUDED SYMBOLS FIRST
+    from core.symbol_exclusion_manager import global_symbol_exclusion_manager
+    
+    initial_count = len(symbols)
+    filtered_symbols = global_symbol_exclusion_manager.filter_symbols(symbols)
+    
+    if len(filtered_symbols) < initial_count:
+        excluded_count = initial_count - len(filtered_symbols)
+        logging.info(f"🚫 Pre-filtered {excluded_count} excluded symbols ({len(filtered_symbols)} candidates remaining)")
+    
     # Parallel ticker volume fetching with rate limiting
     semaphore = Semaphore(20)  # Max 20 concurrent requests
     
@@ -141,7 +153,7 @@ async def get_top_symbols(exchange, symbols, top_n=TOP_ANALYSIS_CRYPTO):
         async with semaphore:
             return await fetch_ticker_volume(exchange, symbol)
     
-    tasks = [fetch_with_semaphore(symbol) for symbol in symbols]
+    tasks = [fetch_with_semaphore(symbol) for symbol in filtered_symbols]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # Filter out exceptions and None values
@@ -152,7 +164,14 @@ async def get_top_symbols(exchange, symbols, top_n=TOP_ANALYSIS_CRYPTO):
     
     symbol_volumes.sort(key=lambda x: x[1], reverse=True)
     logging.info(f"🚀 Parallel ticker fetch: {len(symbol_volumes)} symbols processed concurrently")
-    return [x[0] for x in symbol_volumes[:top_n]]
+    
+    selected_symbols = [x[0] for x in symbol_volumes[:top_n]]
+    
+    # 🚫 Show exclusion summary if any symbols were excluded
+    if global_symbol_exclusion_manager.get_session_excluded_count() > 0:
+        global_symbol_exclusion_manager.print_exclusion_report()
+    
+    return selected_symbols
 
 async def fetch_min_amounts(exchange, top_symbols, markets):
     min_amounts = {}

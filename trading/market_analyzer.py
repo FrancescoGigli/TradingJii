@@ -24,6 +24,7 @@ class MarketAnalyzer:
         self.complete_symbols = []
         self.top_symbols_analysis = []
         self.min_amounts = {}
+        self.symbol_volumes = {}  # Store volume data for display
     
     async def collect_market_data(self, exchange, enabled_timeframes, top_analysis_crypto, excluded_symbols):
         """
@@ -64,6 +65,13 @@ class MarketAnalyzer:
         # Clean symbol-by-symbol download with organized output
         for index, symbol in enumerate(self.top_symbols_analysis, 1):
             symbol_short = symbol.replace('/USDT:USDT', '')
+            
+            # 🚫 EARLY CHECK: Salta simbolo se già escluso da cicli precedenti
+            from core.symbol_exclusion_manager import global_symbol_exclusion_manager
+            if global_symbol_exclusion_manager.is_excluded(symbol):
+                print(f"\n[{index}/{len(self.top_symbols_analysis)}] {colored(symbol_short, 'yellow')} - 🚫 SKIPPED (excluded)")
+                continue
+                
             symbol_start_time = time.time()
             
             # Clean symbol header
@@ -75,6 +83,12 @@ class MarketAnalyzer:
             
             # Download all timeframes for this symbol
             for tf in enabled_timeframes:
+                # 🚫 CHECK: Verifica se il simbolo è stato escluso nel frattempo
+                if global_symbol_exclusion_manager.is_excluded(symbol):
+                    print(colored(f"  🚫 STOP: {symbol_short} excluded during processing", 'yellow'))
+                    symbol_success = False
+                    break
+                
                 try:
                     tf_start = time.time()
                     df = await fetch_and_save_data(exchange, symbol, tf)
@@ -86,9 +100,29 @@ class MarketAnalyzer:
                     else:
                         timeframe_results.append(f"  ❌ {tf:>3}: No data")
                         symbol_success = False
+                        
+                        # 🔧 IMMEDIATE EXCLUSION: Se un timeframe fallisce subito, escludi il simbolo
+                        if len(dataframes) == 0:  # Nessun timeframe riuscito
+                            print(colored(f"  🚫 EXCLUDING: {symbol_short} - No data for first timeframe", 'yellow'))
+                            global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
+                                symbol, missing_timeframes=[tf]
+                            )
+                            symbol_success = False
+                            break  # Esce dal loop timeframes
+                        
                 except Exception as e:
+                    error_detail = str(e)
                     timeframe_results.append(f"  ❌ {tf:>3}: Error - {str(e)[:30]}...")
                     symbol_success = False
+                    
+                    # 🔧 IMMEDIATE EXCLUSION per dataset errors
+                    if "too small" in error_detail.lower() or "insufficient" in error_detail.lower():
+                        print(colored(f"  🚫 EXCLUDING: {symbol_short} - Insufficient data", 'yellow'))
+                        global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
+                            symbol, missing_timeframes=[tf]
+                        )
+                        symbol_success = False
+                        break  # Esce dal loop timeframes
             
             # Display results for this symbol
             for result in timeframe_results:
@@ -102,7 +136,15 @@ class MarketAnalyzer:
                 print(colored(f"  ✅ Complete: {len(enabled_timeframes)}/{len(enabled_timeframes)} timeframes ({symbol_time:.1f}s total)", 'green'))
             else:
                 missing_tf = len(enabled_timeframes) - len(dataframes)
+                missing_timeframes = [tf for tf in enabled_timeframes if tf not in dataframes]
                 print(colored(f"  ❌ Failed: Missing {missing_tf} timeframes", 'red'))
+                
+                # 🚫 AUTO-EXCLUDE simbolo con timeframes insufficienti
+                from core.symbol_exclusion_manager import global_symbol_exclusion_manager
+                global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
+                    symbol, 
+                    missing_timeframes=missing_timeframes
+                )
 
         data_fetch_time = time.time() - data_fetch_start
         
@@ -184,8 +226,10 @@ class MarketAnalyzer:
             else:
                 all_symbols_analysis = all_symbols
 
-            # Get top symbols for analysis
-            self.top_symbols_analysis = await get_top_symbols(exchange, all_symbols_analysis, top_n=top_analysis_crypto)
+            # Get top symbols with volumes for display
+            self.top_symbols_analysis, self.symbol_volumes = await self._get_top_symbols_with_volumes(
+                exchange, all_symbols_analysis, top_n=top_analysis_crypto
+            )
             
             # Get minimum amounts
             self.min_amounts = await fetch_min_amounts(exchange, self.top_symbols_analysis, markets)
@@ -227,6 +271,66 @@ class MarketAnalyzer:
             list: Top symbols selected for analysis
         """
         return self.top_symbols_analysis.copy()
+
+    def get_volumes_data(self):
+        """
+        Get volume data for display
+        
+        Returns:
+            dict: Symbol volumes for display formatting
+        """
+        return self.symbol_volumes.copy()
+    
+    async def _get_top_symbols_with_volumes(self, exchange, all_symbols, top_n):
+        """
+        Get top symbols sorted by volume and store volume data
+        
+        Args:
+            exchange: Exchange instance
+            all_symbols: List of all available symbols
+            top_n: Number of top symbols to return
+            
+        Returns:
+            tuple: (top_symbols_list, volumes_dict)
+        """
+        try:
+            # Use fetcher's get_top_symbols but collect volume data
+            from fetcher import fetch_ticker_volume
+            from asyncio import Semaphore
+            
+            # Parallel ticker volume fetching with rate limiting
+            semaphore = Semaphore(20)  # Max 20 concurrent requests
+            
+            async def fetch_with_semaphore(symbol):
+                async with semaphore:
+                    return await fetch_ticker_volume(exchange, symbol)
+            
+            tasks = [fetch_with_semaphore(symbol) for symbol in all_symbols]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out exceptions and None values, store volumes
+            symbol_volumes = []
+            volumes_dict = {}
+            
+            for result in results:
+                if isinstance(result, tuple) and result[1] is not None:
+                    symbol, volume = result
+                    symbol_volumes.append(result)
+                    volumes_dict[symbol] = volume
+            
+            # Sort by volume and get top symbols
+            symbol_volumes.sort(key=lambda x: x[1], reverse=True)
+            top_symbols = [x[0] for x in symbol_volumes[:top_n]]
+            
+            logging.info(f"🚀 Parallel ticker fetch: {len(symbol_volumes)} symbols processed concurrently")
+            
+            return top_symbols, volumes_dict
+            
+        except Exception as e:
+            logging.error(f"Error getting top symbols with volumes: {e}")
+            # Fallback to basic method
+            top_symbols = await get_top_symbols(exchange, all_symbols, top_n)
+            return top_symbols, {}
 
     def clear_data(self):
         """

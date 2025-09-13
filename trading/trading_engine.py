@@ -15,7 +15,7 @@ from trade_manager import get_real_balance
 import config
 
 # Import realtime_display snapshot
-from core.realtime_display import global_realtime_display
+from core.realtime_display import global_realtime_display, initialize_global_realtime_display
 
 
 class TradingEngine:
@@ -158,12 +158,29 @@ class TradingEngine:
                     self.display_database_stats()
 
             # ── NEW: snapshot realtime_display (open + closed) ──
-            if global_realtime_display:
+            # Inicializza il display se non esiste
+            if not hasattr(self, 'realtime_display') or self.realtime_display is None:
                 try:
-                    await global_realtime_display.update_snapshot(exchange)
-                    global_realtime_display.show_snapshot()
+                    trailing_monitor = getattr(self, 'trailing_monitor', None)
+                    self.realtime_display = initialize_global_realtime_display(
+                        self.position_manager if self.clean_modules_available else None,
+                        trailing_monitor
+                    )
+                    logging.info(colored("📊 Realtime display initialized for cycle", "cyan"))
+                except Exception as init_error:
+                    logging.error(f"❌ Failed to initialize realtime display: {init_error}")
+                    self.realtime_display = None
+            
+            if self.realtime_display:
+                try:
+                    logging.info(colored("📊 UPDATING POSITION DISPLAY...", "cyan"))
+                    await self.realtime_display.update_snapshot(exchange)
+                    self.realtime_display.show_snapshot()
+                    logging.info(colored("📊 Position display updated", "cyan"))
                 except Exception as e:
                     logging.error(f"❌ Snapshot display failed: {e}")
+            else:
+                logging.warning("⚠️ Realtime display not available")
 
             logging.info(colored("🔄 Cycle complete", "green"))
 
@@ -301,10 +318,41 @@ class TradingEngine:
         while True:
             try:
                 await self.run_trading_cycle(exchange, xgb_models, xgb_scalers)
-                await asyncio.sleep(config.TRADE_CYCLE_INTERVAL)
+                
+                # 🕐 COUNTDOWN DINAMICO: Mostra timer nel terminale durante l'attesa
+                await self._wait_with_countdown(config.TRADE_CYCLE_INTERVAL)
+                
             except KeyboardInterrupt:
                 logging.info("Shutting down…")
                 break
             except Exception as e:
                 logging.error(f"Error in trading cycle: {e}")
                 await asyncio.sleep(60)
+    
+    async def _wait_with_countdown(self, total_seconds: int):
+        """
+        🕐 Attesa con countdown mono-riga nel terminale
+        
+        Args:
+            total_seconds: Secondi totali da attendere (es. 300 per 5m)
+        """
+        logging.info(colored(f"⏸️ WAITING {total_seconds//60}m until next cycle...", "magenta", attrs=['bold']))
+        
+        remaining = total_seconds
+        
+        while remaining > 0:
+            # Calcola tempo rimanente
+            minutes = remaining // 60
+            seconds = remaining % 60
+            
+            # 🔧 MONO-RIGA: Usa print con \r per sovrascrivere
+            countdown_text = f"⏰ Next cycle in: {minutes}m{seconds:02d}s"
+            print(f"\r{colored(countdown_text, 'magenta')}", end='', flush=True)
+            
+            # Sleep per 1 secondo per aggiornamento fluido
+            await asyncio.sleep(1)
+            remaining -= 1
+        
+        # Nuova riga dopo il countdown
+        print()  # Fine riga
+        logging.info(colored("🚀 Starting next cycle...", "cyan", attrs=['bold']))

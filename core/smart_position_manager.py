@@ -109,11 +109,15 @@ class SmartPositionManager:
         if side == 'buy':
             sl_price = entry_price * 0.94  # 6% below for LONG (era 3%)
             tp_price = None                # NO TAKE PROFIT fisso (era 6% above)
-            trailing_trigger = entry_price * 1.05  # 5% above (minimo per alta volatilità)
+            # 🔧 NUOVO: Trigger corretto (breakeven + buffer per 10% profitto)
+            breakeven = entry_price * 1.0006  # entry + commissioni 0.06%
+            trailing_trigger = breakeven * 1.010  # +1% sopra breakeven = 10% profitto
         else:
             sl_price = entry_price * 1.06  # 6% above for SHORT (era 3%)
             tp_price = None                # NO TAKE PROFIT fisso (era 6% below)  
-            trailing_trigger = entry_price * 0.95  # 5% below (minimo per alta volatilità)
+            # 🔧 NUOVO: Trigger corretto (breakeven + buffer per 10% profitto)
+            breakeven = entry_price * 0.9994  # entry - commissioni 0.06%
+            trailing_trigger = breakeven * 0.990  # -1% sotto breakeven = 10% profitto
         
         position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         position_size = bybit_data['contracts'] * entry_price
@@ -330,11 +334,15 @@ class SmartPositionManager:
             if side.lower() == 'buy':
                 calculated_sl = entry_price * 0.94  # SEMPRE 6% below - NO OVERRIDE
                 calculated_tp = None  # NO TAKE PROFIT fisso
-                trailing_trigger = entry_price * 1.05  # 5% above (minimo trigger)
+                # 🔧 NUOVO: Trigger corretto (breakeven + buffer per 10% profitto)
+                breakeven = entry_price * 1.0006  # entry + commissioni 0.06%
+                trailing_trigger = breakeven * 1.010  # +1% sopra breakeven = 10% profitto
             else:
                 calculated_sl = entry_price * 1.06  # SEMPRE 6% above - NO OVERRIDE
                 calculated_tp = None  # NO TAKE PROFIT fisso
-                trailing_trigger = entry_price * 0.95  # 5% below (minimo trigger)
+                # 🔧 NUOVO: Trigger corretto (breakeven + buffer per 10% profitto)
+                breakeven = entry_price * 0.9994  # entry - commissioni 0.06%
+                trailing_trigger = breakeven * 0.990  # -1% sotto breakeven = 10% profitto
             
             position = Position(
                 position_id=position_id,
@@ -518,7 +526,7 @@ class SmartPositionManager:
     
     def _migrate_position_to_new_logic(self, position: Position):
         """
-        🔄 MIGRATE existing positions to new 6% SL logic - SILENTE
+        🔄 MIGRATE existing positions to new TRIGGER logic + 6% SL logic
         
         Args:
             position: Position to migrate
@@ -531,33 +539,32 @@ class SmartPositionManager:
             entry_price = position.entry_price
             side = position.side
             old_sl = position.stop_loss
+            old_trigger = position.trailing_trigger
             
             # CRITICO: Preserva la direzione originale! (era bug grave)
             if side == 'buy':
                 new_sl_6pct = entry_price * 0.94  # 6% below for LONG
-                new_trailing_trigger = entry_price * 1.05  # 5% above
+                # 🔧 NUOVO: Calcola trigger corretto (breakeven + buffer)
+                breakeven = entry_price * 1.0006  # entry + commissioni 0.06%
+                new_trigger = breakeven * 1.010  # +1% sopra breakeven = 10% profitto
             else:
                 new_sl_6pct = entry_price * 1.06  # 6% above for SHORT  
-                new_trailing_trigger = entry_price * 0.95  # 5% below
+                # 🔧 NUOVO: Calcola trigger corretto (breakeven + buffer)  
+                breakeven = entry_price * 0.9994  # entry - commissioni 0.06%
+                new_trigger = breakeven * 0.990  # -1% sotto breakeven = 10% profitto
             
-            # IMPORTANTE: Non modificare la direzione della posizione!
-            # position.side rimane invariata (era bug critico!)
+            # SEMPRE aggiorna alla nuova logica (SL + TRIGGER)
+            position.stop_loss = new_sl_6pct
+            position.take_profit = None  # Remove TP sempre
+            position.trailing_trigger = new_trigger  # 🔧 NUOVO TRIGGER CORRETTO
+            position._migrated = True  # Mark as migrated
+            position._needs_sl_update_on_bybit = True  # FLAG per aggiornare SL su Bybit
             
-            # Solo se veramente cambia qualcosa
-            if abs(position.stop_loss - new_sl_6pct) > 0.000001:
-                # SEMPRE aggiorna alla nuova logica (più robusta)
-                position.stop_loss = new_sl_6pct
-                position.take_profit = None  # Remove TP sempre
-                position.trailing_trigger = new_trailing_trigger
-                position._migrated = True  # Mark as migrated
-                position._needs_sl_update_on_bybit = True  # FLAG per aggiornare SL su Bybit
-                
-                logging.debug(f"🔄 Position {position.symbol} migrated to 6% SL logic")
+            # Log solo se il trigger è cambiato significativamente
+            if abs(old_trigger - new_trigger) > entry_price * 0.001:  # 0.1% differenza
+                logging.debug(f"🔧 {position.symbol}: Updated trigger ${old_trigger:.2f} → ${new_trigger:.2f} (new logic)")
             else:
-                # Già al 6%, marca solo come migrated
-                position._migrated = True
-                position._needs_sl_update_on_bybit = False
-                logging.debug(f"✅ Position {position.symbol} already at 6% SL, marking as migrated")
+                logging.debug(f"✅ Position {position.symbol} migrated with correct trigger")
                 
         except Exception as e:
             logging.error(f"Error migrating position {position.position_id}: {e}")

@@ -209,18 +209,31 @@ def display_top_signals(all_signals, limit=10):
     print(colored("-" * 120, "yellow"))
 
 
-def display_selected_symbols(symbols_list, title="SIMBOLI SELEZIONATI"):
+def display_selected_symbols(symbols_list, title="SIMBOLI SELEZIONATI", volumes_data=None):
     """
-    Display selected symbols in a formatted table
+    Display selected symbols in a formatted table with real volumes
     """
     logging.info(colored(f"\n📊 {title} ({len(symbols_list)} totali)", "cyan", attrs=['bold']))
     print(colored("=" * 100, "cyan"))
-    print(colored(f"{'RANK':<6} {'SYMBOL':<25} {'VOLUME':<20} {'NOTES':<35}", "white", attrs=['bold']))
+    print(colored(f"{'RANK':<6} {'SYMBOL':<25} {'VOLUME (24h)':<20} {'NOTES':<35}", "white", attrs=['bold']))
     print(colored("-" * 100, "cyan"))
     
     for i, symbol in enumerate(symbols_list, 1):
         symbol_short = symbol.replace('/USDT:USDT', '')
-        print(f"{i:<6} {colored(symbol_short, 'green'):<25} {'Trading Volume':<20} {'Selected for analysis':<35}")
+        
+        # Mostra volume reale se disponibile
+        if volumes_data and symbol in volumes_data:
+            volume = volumes_data[symbol]
+            if volume >= 1_000_000_000:  # Miliardi
+                volume_text = f"${volume/1_000_000_000:.1f}B"
+            elif volume >= 1_000_000:   # Milioni
+                volume_text = f"${volume/1_000_000:.0f}M"
+            else:
+                volume_text = f"${volume:,.0f}"
+        else:
+            volume_text = "Trading Volume"
+        
+        print(f"{i:<6} {colored(symbol_short, 'green'):<25} {volume_text:<20} {'Selected for analysis':<35}")
         
         # Add separator every 10 symbols for readability
         if i % 10 == 0 and i < len(symbols_list):

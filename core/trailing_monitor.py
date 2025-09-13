@@ -206,7 +206,7 @@ class TrailingMonitor:
                             else:
                                 exit_pnl_pct = ((position.entry_price - trailing_data.sl_corrente) / position.entry_price) * 100 * 10
                             
-                            logging.info(colored(f"📈 {symbol}: Stop updated → Exit at {exit_pnl_pct:+.1f}% PnL (${trailing_data.sl_corrente:.6f})", "cyan"))
+                            logging.debug(colored(f"📈 {symbol}: Stop updated → Exit at {exit_pnl_pct:+.1f}% PnL (${trailing_data.sl_corrente:.6f})", "cyan"))
                         else:
                             logging.debug(f"⚡ {symbol}: SL update on Bybit skipped (internal tracking continues)")
                     except Exception as e:

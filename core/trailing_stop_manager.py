@@ -209,7 +209,7 @@ class TrailingStopManager:
                 last_update=datetime.now()
             )
             
-            logging.info(f"🔧 TRAILING INIT: {symbol} {side.upper()} | Entry=${entry_price:.6f} | Fixed SL=${fixed_sl:.6f} | Trigger=${trigger_price:.6f}")
+            logging.debug(f"🔧 TRAILING INIT: {symbol} {side.upper()} | Entry=${entry_price:.6f} | Fixed SL=${fixed_sl:.6f} | Trigger=${trigger_price:.6f}")
             return trailing_data
             
         except Exception as e:

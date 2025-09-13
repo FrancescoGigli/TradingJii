@@ -80,7 +80,7 @@ class OrderManager:
             sl_text = f"${stop_loss:.6f}" if stop_loss else "None"
             tp_text = f"${take_profit:.6f}" if take_profit else "None"
 
-            logging.info(colored(
+            logging.debug(colored(
                 f"🛡️ SETTING TRADING STOP: {bybit_symbol} | SL: {sl_text} | TP: {tp_text}",
                 "yellow", attrs=['bold']
             ))
@@ -129,7 +129,7 @@ class OrderManager:
             is_non_critical = any(pattern in error_str for pattern in non_critical_patterns)
             
             if is_non_critical:
-                logging.debug(colored(f"📝 {bybit_symbol}: Stop loss already set correctly", "cyan"))
+                # SILENCED: Non loggare nemmeno come debug per pulire output
                 return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
             else:
                 # Solo errori veri vengono loggati come ERROR

@@ -140,9 +140,19 @@ async def main():
             async_exchange, TOP_ANALYSIS_CRYPTO, EXCLUDED_SYMBOLS
         )
         top_symbols_training = trading_engine.market_analyzer.get_top_symbols()[:TOP_TRAIN_CRYPTO]
+        # Ottieni simboli con volumi per display
+        top_symbols = trading_engine.market_analyzer.get_top_symbols()
+        
+        # Prova a ottenere dati di volume se disponibili
+        try:
+            volumes_data = trading_engine.market_analyzer.get_volumes_data() if hasattr(trading_engine.market_analyzer, 'get_volumes_data') else None
+        except:
+            volumes_data = None
+        
         display_selected_symbols(
-            trading_engine.market_analyzer.get_top_symbols(),
-            "SYMBOLS FOR LIVE ANALYSIS"
+            top_symbols,
+            "SYMBOLS FOR LIVE ANALYSIS",
+            volumes_data
         )
 
         # ML models

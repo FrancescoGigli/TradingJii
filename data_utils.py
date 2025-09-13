@@ -10,6 +10,7 @@ from ta.momentum import StochRSIIndicator
 from ta.volume import OnBalanceVolumeIndicator
 
 from config import EXPECTED_COLUMNS
+from core.symbol_exclusion_manager import global_symbol_exclusion_manager
 
 # Minimum dataset size requirements for reliable calculations
 MIN_DATASET_SIZE = 50  # Minimum candles needed for reliable technical indicators
@@ -18,6 +19,7 @@ MIN_ROLLING_PERIODS = {'ema20': 20, 'bollinger': 20, 'atr': 14, 'adx': 14, 'vwap
 def validate_dataset_size(df, symbol=None):
     """
     Validates that the dataset has enough data for reliable indicator calculations.
+    Auto-excludes symbols with insufficient data.
     
     Args:
         df (pd.DataFrame): Input DataFrame to validate
@@ -29,7 +31,16 @@ def validate_dataset_size(df, symbol=None):
     symbol_info = f" for {symbol}" if symbol else ""
     
     if len(df) < MIN_DATASET_SIZE:
-        logging.error(f"Dataset too small{symbol_info}: {len(df)} candles < {MIN_DATASET_SIZE} minimum required")
+        logging.error(f"❌ Dataset too small{symbol_info}: {len(df)} candles < {MIN_DATASET_SIZE} minimum required")
+        
+        # 🔧 AUTO-EXCLUDE: Aggiunge simbolo alla lista degli esclusi
+        if symbol and global_symbol_exclusion_manager:
+            global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
+                symbol, 
+                missing_timeframes=None, 
+                candle_count=len(df)
+            )
+        
         return False
         
     # Check if we have enough data for the most demanding indicators

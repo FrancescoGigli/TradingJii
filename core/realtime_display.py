@@ -98,14 +98,15 @@ class RealTimePositionDisplay:
 
     def show_snapshot(self):
         """
-        Pulisce il terminale e mostra:
+        Mostra snapshot delle posizioni:
         - tabella LIVE POSITIONS
         - tabella CLOSED POSITIONS (sessione)
         """
-        clear_terminal()
+        print("\n" + "="*100)
         self._render_live()
         print()
         self._render_closed()
+        print("="*100 + "\n")
 
     def _render_live(self):
         open_list = list(self._cur_open_map.values())
@@ -166,9 +167,8 @@ class RealTimePositionDisplay:
 
         print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────────┴───────────┘", "cyan"))
 
-        print(
-            colored(f"💰 LIVE: {len(open_list)} pos | P&L: {fmt_money(total_pnl_usd)} | Margin: ${total_im:.0f}", "white")
-        )
+        # 📊 Enhanced summary con wallet info
+        self._render_wallet_summary(len(open_list), total_pnl_usd, total_im)
 
     def _render_closed(self):
         print(colored("🔒 CLOSED POSITIONS (SESSION, Bybit)", "magenta", attrs=["bold"]))
@@ -317,6 +317,82 @@ class RealTimePositionDisplay:
 
             row["pnl_pct"] = pnl_pct
             row["pnl_usd"] = pnl_usd
+
+    def _render_wallet_summary(self, position_count: int, total_pnl_usd: float, wallet_allocated: float):
+        """
+        📊 Rendering wallet summary con timer 5m e wallet info
+        
+        Args:
+            position_count: Numero posizioni attive
+            total_pnl_usd: PnL totale delle posizioni
+            wallet_allocated: Margine totale allocato
+        """
+        try:
+            # 🕐 Calcola tempo rimanente al prossimo ciclo (5m = 300s)
+            from config import TRADE_CYCLE_INTERVAL
+            
+            current_time = datetime.now()
+            seconds_in_cycle = current_time.minute * 60 + current_time.second
+            seconds_to_next_cycle = TRADE_CYCLE_INTERVAL - (seconds_in_cycle % TRADE_CYCLE_INTERVAL)
+            
+            minutes_remaining = seconds_to_next_cycle // 60
+            seconds_remaining = seconds_to_next_cycle % 60
+            next_cycle_timer = f"{minutes_remaining}m{seconds_remaining:02d}s"
+            
+            # 💰 Calcola wallet info
+            # Assumendo un wallet totale di esempio - in un caso reale dovrebbe venire dal position_manager
+            total_wallet = self._get_total_wallet_balance()  # Da implementare
+            wallet_available = total_wallet - wallet_allocated
+            allocation_pct = (wallet_allocated / total_wallet * 100) if total_wallet > 0 else 0
+            
+            # 📊 Rendering summary con tutte le info richieste
+            summary_line = (
+                colored(f"💰 LIVE: {position_count} pos", "white") +
+                colored(" | ", "white") +
+                colored(f"P&L: {fmt_money(total_pnl_usd)}", pct_color(total_pnl_usd)) +
+                colored(" | ", "white") +
+                colored(f"Wallet Allocated: ${wallet_allocated:.0f}", "yellow") +
+                colored(" | ", "white") +
+                colored(f"Available: ${wallet_available:.0f}", "cyan") +
+                colored(" | ", "white") +
+                colored(f"Next Cycle: {next_cycle_timer}", "magenta")
+            )
+            
+            print(summary_line)
+            
+            # 📈 Riga aggiuntiva con allocation percentage
+            if total_wallet > 0:
+                allocation_line = (
+                    colored(f"🏦 Total Wallet: ${total_wallet:.0f}", "white") +
+                    colored(" | ", "white") +
+                    colored(f"Allocation: {allocation_pct:.1f}%", "yellow" if allocation_pct > 70 else "green")
+                )
+                print(allocation_line)
+            
+        except Exception as e:
+            # Fallback alla vecchia visualizzazione
+            logging.debug(f"Error in wallet summary: {e}")
+            print(colored(f"💰 LIVE: {position_count} pos | P&L: {fmt_money(total_pnl_usd)} | Allocated: ${wallet_allocated:.0f}", "white"))
+    
+    def _get_total_wallet_balance(self) -> float:
+        """
+        Ottiene il balance totale del wallet
+        
+        Returns:
+            float: Balance totale del wallet
+        """
+        try:
+            # Se abbiamo position_manager, usa quello per il balance
+            if self.position_manager and hasattr(self.position_manager, 'get_session_summary'):
+                session = self.position_manager.get_session_summary()
+                return session.get('balance', 200.0)  # Fallback 200
+            else:
+                # Fallback: Leggi da config o stima dal margine allocato
+                return 200.0  # Valore di default
+                
+        except Exception as e:
+            logging.debug(f"Error getting wallet balance: {e}")
+            return 200.0  # Safe fallback
 
 
 # Global instance

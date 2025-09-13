@@ -164,10 +164,13 @@ def get_xgb_model_file(tf: str)   -> str: return str(_TRAINED_DIR / f"xgb_model_
 def get_xgb_scaler_file(tf: str)  -> str: return str(_TRAINED_DIR / f"xgb_scaler_{tf}.pkl")
 
 
-EXCLUDED_SYMBOLS = []  # No symbols excluded - include all for analysis
+EXCLUDED_SYMBOLS = []  # Symbols to exclude from analysis
+AUTO_EXCLUDE_INSUFFICIENT_DATA = True  # Auto-exclude symbols with insufficient historical data
+MIN_REQUIRED_CANDLES = 50  # Minimum candles required per timeframe
+EXCLUDED_SYMBOLS_FILE = "excluded_symbols.txt"  # File to persist auto-excluded symbols
 
 # CONSOLIDATED: Single configuration for symbols count
-TOP_SYMBOLS_COUNT = 10  # Main configuration for symbol count
+TOP_SYMBOLS_COUNT = 50  # Main configuration for symbol count (increased from 10)
 
 # UNIFIED: Both training and analysis use same symbols to prevent overfitting
 TOP_TRAIN_CRYPTO = TOP_SYMBOLS_COUNT    # Training symbols (unified with analysis)
