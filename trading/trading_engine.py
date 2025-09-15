@@ -17,6 +17,29 @@ import config
 # Import realtime_display snapshot
 from core.realtime_display import global_realtime_display, initialize_global_realtime_display
 
+# Import enhanced decision systems
+try:
+    from core.decision_explainer import global_decision_explainer
+    DECISION_EXPLAINER_AVAILABLE = True
+except ImportError:
+    DECISION_EXPLAINER_AVAILABLE = False
+    global_decision_explainer = None
+
+try:
+    from core.rl_agent import global_online_learning_manager
+    ONLINE_LEARNING_AVAILABLE = bool(global_online_learning_manager)
+except ImportError:
+    ONLINE_LEARNING_AVAILABLE = False
+    global_online_learning_manager = None
+
+# Import Position Safety Manager
+try:
+    from core.position_safety_manager import global_position_safety_manager
+    POSITION_SAFETY_AVAILABLE = True
+except ImportError:
+    POSITION_SAFETY_AVAILABLE = False
+    global_position_safety_manager = None
+
 
 class TradingEngine:
     """
@@ -152,6 +175,28 @@ class TradingEngine:
                 self.database_system_loaded
             )
 
+            # Phase 8: Online Learning Dashboard
+            if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
+                try:
+                    # Show learning dashboard every 5 cycles or if we have new completed trades
+                    cycle_count = getattr(self, 'cycle_count', 0) + 1
+                    self.cycle_count = cycle_count
+                    
+                    summary = global_online_learning_manager.get_learning_performance_summary()
+                    if summary.get('total_trades', 0) > 0 and (cycle_count % 5 == 0 or summary.get('total_trades', 0) != getattr(self, 'last_trade_count', 0)):
+                        global_online_learning_manager.display_learning_dashboard()
+                        self.last_trade_count = summary.get('total_trades', 0)
+                    elif summary.get('total_trades', 0) == 0:
+                        logging.info(colored("🧠 Online Learning: No completed trades yet for analysis", "yellow"))
+                        
+                    # Show active trades info
+                    active_count = global_online_learning_manager.get_active_trades_count()
+                    if active_count > 0:
+                        logging.info(colored(f"📊 Currently tracking {active_count} active trades for learning", "cyan"))
+                        
+                except Exception as dashboard_error:
+                    logging.warning(f"Learning dashboard error: {dashboard_error}")
+
             if self.first_cycle:
                 self.first_cycle = False
                 if self.database_system_loaded:
@@ -267,6 +312,30 @@ class TradingEngine:
                 if result.success:
                     executed_trades += 1
                     usdt_balance -= levels.margin
+                    
+                    # 🧠 ONLINE LEARNING: Track trade opening
+                    if ONLINE_LEARNING_AVAILABLE:
+                        try:
+                            # Build context data for learning
+                            from core.rl_agent import build_market_context
+                            market_context = build_market_context(symbol, signal['dataframes'])
+                            portfolio_state = self.position_manager.get_session_summary()
+                            
+                            # Track the trade opening
+                            global_online_learning_manager.track_trade_opening(
+                                symbol, signal, market_context, portfolio_state
+                            )
+                            
+                            # Update entry details
+                            global_online_learning_manager.update_trade_entry(
+                                symbol, current_price, levels.margin
+                            )
+                            
+                            logging.debug(f"🧠 Trade tracking started for {symbol.replace('/USDT:USDT', '')}")
+                            
+                        except Exception as tracking_error:
+                            logging.warning(f"Trade tracking error: {tracking_error}")
+                    
                     logging.info(colored(f"✅ {i}/{len(signals_to_execute)} {symbol}: Trade executed", "green"))
                     # Mostra wallet aggiornato dopo successo
                     available_balance = self.position_manager.get_available_balance()
@@ -307,6 +376,26 @@ class TradingEngine:
                     logging.info(f"🔄 Position sync: +{len(newly_opened)} opened, +{len(newly_closed)} closed")
             except Exception as e:
                 logging.warning(f"Position sync error: {e}")
+        
+        # CRITICAL: Safety checks for all positions
+        if POSITION_SAFETY_AVAILABLE and not config.DEMO_MODE:
+            try:
+                # Check and close unsafe positions
+                closed_unsafe = await global_position_safety_manager.check_and_close_unsafe_positions(
+                    exchange, self.position_manager
+                )
+                
+                # Enforce stop loss for all positions
+                await global_position_safety_manager.enforce_stop_loss_for_all_positions(
+                    exchange, self.position_manager, self.global_order_manager
+                )
+                
+                if closed_unsafe > 0:
+                    logging.info(colored(f"🛡️ Safety Manager: {closed_unsafe} unsafe positions closed", "yellow"))
+                    
+            except Exception as safety_error:
+                logging.error(f"Position safety check error: {safety_error}")
+        
         try:
             closed_positions = await self.global_trading_orchestrator.update_trailing_positions(exchange)
             for pos in closed_positions:

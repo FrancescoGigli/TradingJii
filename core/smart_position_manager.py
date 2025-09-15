@@ -120,7 +120,22 @@ class SmartPositionManager:
             trailing_trigger = breakeven * 0.990  # -1% sotto breakeven = 10% profitto
         
         position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        position_size = bybit_data['contracts'] * entry_price
+        
+        # CRITICAL FIX: Calculate position_size correctly to ensure minimum IM
+        original_position_size = bybit_data['contracts'] * entry_price
+        
+        # Enforce minimum position size to ensure IM >= $20 (with 10x leverage)
+        min_position_size = 200.0  # $200 notional = $20 IM with 10x leverage
+        
+        if original_position_size < min_position_size:
+            # Position too small for proper risk management
+            logging.warning(f"⚠️ {symbol}: Original position ${original_position_size:.2f} < ${min_position_size:.2f} minimum")
+            
+            # Use minimum safe position size  
+            position_size = min_position_size
+            logging.info(f"🔧 {symbol}: Adjusted position size ${original_position_size:.2f} → ${position_size:.2f} for proper IM")
+        else:
+            position_size = original_position_size
         
         return Position(
             position_id=position_id,

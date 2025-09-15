@@ -102,40 +102,42 @@ class OrderManager:
             ret_code = result.get('retCode', -1)
             ret_msg = result.get('retMsg', 'Unknown response')
 
-            # 🔧 PRIMO: Controlla errori "non preoccupanti" prima di tutto
-            if (ret_code == 34040 and "not modified" in ret_msg.lower()) or "api error 0: ok" in ret_msg.lower():
-                logging.debug(colored(f"📝 {bybit_symbol}: Stop loss already set correctly", "cyan"))
-                return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
-            elif ret_code == 0:
-                logging.info(colored(
-                    f"✅ TRADING STOP SUCCESS: {bybit_symbol} | Response: {ret_msg}",
-                    "green", attrs=['bold']
-                ))
+            # FIXED: Proper handling of Bybit API responses
+            # retCode 0 = SUCCESS, retCode 34040 = already set correctly
+            if ret_code == 0 or (isinstance(ret_code, str) and ret_code == "0"):
+                # SUCCESS: Stop loss was set successfully
+                if "ok" in ret_msg.lower():
+                    logging.info(colored(
+                        f"✅ TRADING STOP SUCCESS: {bybit_symbol} | Bybit confirmed: {ret_msg}",
+                        "green", attrs=['bold']
+                    ))
+                else:
+                    logging.info(colored(
+                        f"✅ TRADING STOP SUCCESS: {bybit_symbol} | Response: {ret_msg}",
+                        "green", attrs=['bold']
+                    ))
                 return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}", None)
+            elif ret_code == 34040 and "not modified" in ret_msg.lower():
+                # ACCEPTABLE: Stop loss already exists and is correct
+                logging.debug(colored(f"📝 {bybit_symbol}: Stop loss already set correctly ({ret_msg})", "cyan"))
+                return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
             else:
-                error_msg = f"Bybit API error {ret_code}: {ret_msg}"
-                logging.error(colored(f"❌ {error_msg}", "red"))
-                return OrderExecutionResult(False, None, error_msg)
+                # ACTUAL ERROR: Only log as critical if it's a real error
+                if ret_code != 0:
+                    error_msg = f"Stop loss setting failed - Bybit error {ret_code}: {ret_msg}"
+                    logging.warning(colored(f"⚠️ {error_msg}", "yellow"))
+                    return OrderExecutionResult(False, None, error_msg)
+                else:
+                    # Fallback for edge cases
+                    logging.info(colored(f"✅ {bybit_symbol}: Stop loss handled by Bybit", "green"))
+                    return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_fallback", None)
 
         except Exception as e:
-            # 🔧 PRIMO: Controlla errori "non preoccupanti" PRIMA di loggare
-            error_str = str(e).lower()
-            # Matching più ampio per catturare tutte le varianti
-            non_critical_patterns = [
-                "34040", "not modified", "api error 0", "retcode\":0", 
-                "bybit api error 0", "ok", "\"retcode\": 0"
-            ]
-            
-            is_non_critical = any(pattern in error_str for pattern in non_critical_patterns)
-            
-            if is_non_critical:
-                # SILENCED: Non loggare nemmeno come debug per pulire output
-                return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
-            else:
-                # Solo errori veri vengono loggati come ERROR
-                error_msg = f"Trading stop API call failed: {str(e)}"
-                logging.error(colored(f"❌ {error_msg}", "red"))
-                return OrderExecutionResult(False, None, error_msg)
+            # CRITICAL FIX: NO EXCEPTIONS for stop loss failures
+            # Every position MUST have a stop loss - no compromises
+            error_msg = f"CRITICAL: Stop loss setting failed - {str(e)}"
+            logging.error(colored(f"❌ {error_msg}", "red"))
+            return OrderExecutionResult(False, None, error_msg)
 
     async def setup_position_protection(self, exchange, symbol: str, side: str, size: float,
                                         sl_price: float, tp_price: float) -> Dict[str, OrderExecutionResult]:

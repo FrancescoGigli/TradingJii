@@ -55,6 +55,9 @@ class PricePrecisionHandler:
                         'tick_size': market.get('limits', {}).get('price', {}).get('min', 0.01),
                         'min_price': market.get('limits', {}).get('price', {}).get('min', 0.01),
                         'max_price': market.get('limits', {}).get('price', {}).get('max', 1000000),
+                        'min_amount': market.get('limits', {}).get('amount', {}).get('min', 0.001),
+                        'max_amount': market.get('limits', {}).get('amount', {}).get('max', 1000000),
+                        'amount_step': market.get('limits', {}).get('amount', {}).get('min', 0.001),
                     }
                     self._symbol_precision_cache[symbol] = precision_info
                     logging.debug(f"💾 Cached precision for {symbol}: {precision_info}")
@@ -66,6 +69,9 @@ class PricePrecisionHandler:
                         'tick_size': 0.01,
                         'min_price': 0.01,
                         'max_price': 1000000,
+                        'min_amount': 1.0,  # CRITICAL: Conservative minimum amount
+                        'max_amount': 1000000,
+                        'amount_step': 1.0,
                     }
                     logging.warning(f"⚠️ Using fallback precision for {symbol}")
             
@@ -230,13 +236,40 @@ class PricePrecisionHandler:
         """
         try:
             precision_info = await self.get_symbol_precision(exchange, symbol)
-            amount_precision = precision_info['amount_precision']
+            amount_precision = precision_info.get('amount_precision', 6)
+            min_amount = precision_info.get('min_amount', 0.001)
+            max_amount = precision_info.get('max_amount', 1000000)
+            amount_step = precision_info.get('amount_step', 0.001)
             
-            # Arrotonda alla precisione dell'amount
+            # 1. Arrotonda alla precisione dell'amount
             normalized_size = round(size, amount_precision)
             
-            if normalized_size != size:
-                logging.debug(f"🎯 {symbol} size normalized: {size:.8f} → {normalized_size:.8f}")
+            # 2. CRITICAL FIX: Ensure size respects amount_step (like tick size for amounts)
+            if amount_step > 0:
+                # Round to nearest amount_step
+                step_multiplier = round(normalized_size / amount_step)
+                normalized_size = step_multiplier * amount_step
+                # Round again to avoid floating point errors
+                normalized_size = round(normalized_size, amount_precision)
+            
+            # 3. CRITICAL FIX: Enforce minimum amount
+            if normalized_size < min_amount:
+                logging.warning(f"⚠️ {symbol}: Size {normalized_size:.6f} < min {min_amount}, adjusting to minimum")
+                normalized_size = min_amount
+            
+            # 4. Enforce maximum amount  
+            if normalized_size > max_amount:
+                logging.warning(f"⚠️ {symbol}: Size {normalized_size:.6f} > max {max_amount}, adjusting to maximum")
+                normalized_size = max_amount
+            
+            # 5. Final validation
+            if normalized_size <= 0:
+                logging.error(f"❌ {symbol}: Invalid normalized size: {normalized_size}")
+                return size, False
+            
+            # 6. Log normalization if significant change
+            if abs(normalized_size - size) > amount_step:
+                logging.info(f"🎯 {symbol} size normalized: {size:.8f} → {normalized_size:.8f} (min: {min_amount}, step: {amount_step})")
             
             return normalized_size, True
             

@@ -43,10 +43,10 @@ class RiskCalculator:
     """
     
     def __init__(self):
-        # Risk parameters
-        self.min_margin = 20.0      # Minimum margin USD
-        self.max_margin = 50.0      # Maximum margin USD  
-        self.base_margin = 35.0     # Center point USD
+        # Risk parameters - CRITICAL FIX: Force higher minimums
+        self.min_margin = 25.0      # INCREASED: Minimum margin USD (was 20)
+        self.max_margin = 60.0      # INCREASED: Maximum margin USD (was 50)
+        self.base_margin = 40.0     # INCREASED: Center point USD (was 35)
         self.atr_multiplier = 2.0   # Stop loss = 2x ATR
         self.risk_reward_ratio = 2.0 # Take profit ratio
         
@@ -65,39 +65,39 @@ class RiskCalculator:
             float: Dynamic margin amount (20-50 USD range)
         """
         try:
-            # FIXED: Start with smaller base (25 USD instead of 35)
-            margin = 25.0
+            # CRITICAL FIX: Start with higher base to ensure proper IM
+            margin = self.base_margin  # Use the increased base_margin (40.0)
             
-            # 1. Volatility adjustment (reduced ranges)
+            # 1. Volatility adjustment (more conservative)
             if atr_pct < 1.0:          # Low volatility
-                margin += 8.0
+                margin += 5.0
             elif atr_pct < 2.0:        # Medium-low volatility  
-                margin += 3.0
+                margin += 2.0
             elif atr_pct < 3.0:        # Medium volatility
                 margin += 0.0
             elif atr_pct < 5.0:        # High volatility
-                margin -= 5.0  
+                margin -= 3.0  
             else:                      # Very high volatility
-                margin -= 10.0
+                margin -= 5.0
             
-            # 2. Confidence adjustment (reduced range)
-            confidence_adjustment = (confidence - 0.7) * 20
-            margin += max(-8.0, min(8.0, confidence_adjustment))
+            # 2. Confidence adjustment (more conservative)
+            confidence_adjustment = (confidence - 0.7) * 15  # Reduced from 20
+            margin += max(-5.0, min(5.0, confidence_adjustment))  # Reduced range
             
-            # 3. Market volatility adjustment (reduced)
+            # 3. Market volatility adjustment (more conservative)
             if volatility > 3.0:
-                margin -= 3.0
+                margin -= 2.0  # Reduced from 3.0
             elif volatility < 1.0:
-                margin += 2.0
+                margin += 1.0  # Reduced from 2.0
                 
-            # 4. Balance safety adjustment (reduced)
+            # 4. Balance safety adjustment (more conservative)
             if balance < 100:
-                margin -= 3.0
+                margin -= 2.0  # Reduced from 3.0
             elif balance > 500:
-                margin += 2.0
+                margin += 1.0  # Reduced from 2.0
             
-            # 5. STRICT ENFORCEMENT: Always 20-50 USD range
-            final_margin = max(20.0, min(50.0, margin))
+            # 5. CRITICAL FIX: Enforce higher minimum range (25-60 USD)
+            final_margin = max(self.min_margin, min(self.max_margin, margin))
             
             logging.debug(f"💰 Dynamic margin: ATR {atr_pct:.1f}% + Conf {confidence:.1%} = ${final_margin:.2f} (20-50 USD range)")
             
@@ -247,10 +247,13 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error calculating position levels: {e}")
-            # AGGIORNATO: Return safe fallback levels con 6% SL
+            # CRITICAL FIX: Return safe fallback levels with higher margin
+            fallback_margin = self.base_margin  # Use the new higher base (40.0)
+            fallback_notional = fallback_margin * LEVERAGE
+            
             return PositionLevels(
-                margin=35.0,
-                position_size=350.0 / market_data.price,
+                margin=fallback_margin,
+                position_size=fallback_notional / market_data.price,
                 stop_loss=market_data.price * (0.94 if side.lower() == 'buy' else 1.06),  # 6% SL
                 take_profit=market_data.price * (1.10 if side.lower() == 'buy' else 0.90),
                 risk_pct=6.0,  # Aggiornato da 5.0 a 6.0
@@ -281,9 +284,13 @@ class RiskCalculator:
             if new_total > max_allowed:
                 return False, f"Portfolio margin limit: ${new_total:.2f} > ${max_allowed:.2f}"
             
-            # Rule: Single position ≤ $50 margin
-            if new_margin > 50.0:
-                return False, f"Single position limit: ${new_margin:.2f} > $50.00"
+            # CRITICAL FIX: Update to match new max_margin
+            if new_margin > self.max_margin:
+                return False, f"Single position limit: ${new_margin:.2f} > ${self.max_margin:.2f}"
+            
+            # CRITICAL FIX: Enforce absolute minimum margin
+            if new_margin < self.min_margin:
+                return False, f"Position too small: ${new_margin:.2f} < ${self.min_margin:.2f} minimum required"
             
             return True, "Portfolio margin approved"
             

@@ -8,6 +8,15 @@ from termcolor import colored
 
 from utils.display_utils import calculate_ensemble_confidence, display_symbol_decision_analysis
 
+# Import Decision Explainer for detailed analysis
+try:
+    from core.decision_explainer import global_decision_explainer
+    DECISION_EXPLAINER_AVAILABLE = True
+except ImportError:
+    logging.warning("⚠️ Decision Explainer not available")
+    DECISION_EXPLAINER_AVAILABLE = False
+    global_decision_explainer = None
+
 
 class SignalProcessor:
     """
@@ -224,12 +233,22 @@ class SignalProcessor:
                     }
                 
                 # Show decision analysis for this symbol
-                display_symbol_decision_analysis(
-                    symbol, 
-                    signal_data,
-                    rl_available=self.rl_agent_available,
-                    risk_manager_available=True
-                )
+                if DECISION_EXPLAINER_AVAILABLE and signal_data['signal_name'] in ['BUY', 'SELL']:
+                    # Use the enhanced decision explainer for detailed analysis
+                    market_context = self.build_market_context(symbol, all_symbol_data[symbol]) if self.rl_agent_available else {}
+                    portfolio_state = self.position_manager.get_session_summary() if self.position_manager_available else {}
+                    
+                    global_decision_explainer.explain_complete_decision(
+                        signal_data, market_context, portfolio_state, detailed=True
+                    )
+                else:
+                    # Fallback to original display method
+                    display_symbol_decision_analysis(
+                        symbol, 
+                        signal_data,
+                        rl_available=self.rl_agent_available,
+                        risk_manager_available=True
+                    )
                 
             except Exception as e:
                 logging.error(f"Error in decision analysis for {symbol}: {e}")

@@ -132,8 +132,28 @@ class TradingOrchestrator:
             logging.info(colored(f"   Margin: ${levels.margin:.2f} | Size: {levels.position_size:.4f} | Notional: ${notional:.2f}", "white"))
             logging.info(colored(f"   SL(calc): ${levels.stop_loss:.6f} | TP(calc): ${levels.take_profit:.6f}", "white"))
 
-            # 5) Market order
-            market_result = await self.order_manager.place_market_order(exchange, symbol, side, levels.position_size)
+            # 5) 🔧 CRITICAL FIX: Normalize position size before placing order
+            normalized_size, size_success = await global_price_precision_handler.normalize_position_size(
+                exchange, symbol, levels.position_size
+            )
+            
+            if not size_success:
+                logging.warning(f"⚠️ {symbol}: Size normalization failed, using original")
+                normalized_size = levels.position_size
+            
+            # Check minimum amount requirements
+            precision_info = await global_price_precision_handler.get_symbol_precision(exchange, symbol)
+            min_amount = precision_info.get('min_amount', 0.001)
+            
+            if normalized_size < min_amount:
+                error_msg = f"Position size {normalized_size:.6f} < minimum {min_amount} for {symbol}"
+                logging.error(colored(f"❌ {error_msg}", "red"))
+                return TradingResult(False, "", error_msg)
+            
+            logging.info(colored(f"📏 Position size: {levels.position_size:.6f} → {normalized_size:.6f}", "cyan"))
+            
+            # 6) Market order with normalized size
+            market_result = await self.order_manager.place_market_order(exchange, symbol, side, normalized_size)
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
 
@@ -161,16 +181,34 @@ class TradingOrchestrator:
                     logging.info(colored(f"✅ {symbol}: Trailing stop activated (${trailing_sl:.6f})", "green"))
                     sl_order_id = sl_result.order_id
                 else:
-                    # Controlla se è un errore "non preoccupante" prima del fallback
-                    error_msg = str(sl_result.error or "").lower()
-                    if "api error 0: ok" in error_msg or "not modified" in error_msg:
-                        logging.info(colored(f"📝 {symbol}: Trailing stop set correctly", "cyan"))
-                        sl_order_id = sl_result.order_id
-                    else:
-                        # Vero fallimento → Fallback al stop fisso
-                        sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
-                        sl_order_id = sl_result.order_id if sl_result.success else None
-                        logging.info(colored(f"📝 {symbol}: Using fixed SL protection", "cyan"))
+                    # CRITICAL FIX: More rigorous SL enforcement
+                    logging.warning(colored(f"❌ {symbol}: Trailing SL failed: {sl_result.error}", "red"))
+                    
+                    # Mandatory fallback to fixed SL - retry with better validation
+                    for retry in range(3):  # 3 retry attempts
+                        try:
+                            # Validate SL price before setting
+                            current_price_check = await global_price_precision_handler.get_current_price(exchange, symbol)
+                            
+                            # Ensure SL respects Bybit rules
+                            if side == "buy" and sl_price >= current_price_check:
+                                sl_price = current_price_check * 0.94  # Force 6% below current
+                            elif side == "sell" and sl_price <= current_price_check:
+                                sl_price = current_price_check * 1.06  # Force 6% above current
+                            
+                            sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
+                            if sl_result.success:
+                                logging.info(colored(f"✅ {symbol}: Fixed SL set on retry {retry+1} (${sl_price:.6f})", "green"))
+                                sl_order_id = sl_result.order_id
+                                break
+                            else:
+                                logging.warning(f"Retry {retry+1} failed: {sl_result.error}")
+                                if retry == 2:  # Last attempt
+                                    logging.error(colored(f"❌ CRITICAL: {symbol} has NO STOP LOSS after 3 attempts!", "red"))
+                                    sl_order_id = None
+                        except Exception as retry_error:
+                            logging.error(f"SL retry {retry+1} error: {retry_error}")
+                            sl_order_id = None
             else:
                 # NUOVO TRADE NON IN PROFITTO → Stop fisso normale
                 sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
@@ -184,12 +222,15 @@ class TradingOrchestrator:
                 else:
                     logging.warning(colored(f"⚠️ Failed to set stop loss: {sl_result.error}", "yellow"))
 
-            # 7) Registra posizione con trailing (già inizializzato)
+            # 7) 🔧 CRITICAL FIX: Use margin (USD) not position_size * price
+            # levels.position_size is in contracts, we need USD value for position_manager
+            position_usd_value = levels.margin * config.LEVERAGE  # This is the notional value in USD
+            
             position_id = self.position_manager.create_trailing_position(
                 symbol=symbol,
                 side=side,
                 entry_price=market_data.price,
-                position_size=levels.position_size * market_data.price,  # USD
+                position_size=position_usd_value,  # USD value, not contracts
                 atr=market_data.atr,
                 catastrophic_sl_id=sl_order_id,
                 leverage=config.LEVERAGE,
@@ -320,18 +361,38 @@ class TradingOrchestrator:
                                     logging.debug(f"⚡ {position.symbol}: SL management handled internally")
                     else:
                         # POSIZIONE NON ANCORA IN PROFITTO → Usa stop fisso normale
+                        # CRITICAL FIX: More rigorous SL enforcement for existing positions
                         sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
                         if sl_res.success:
                             protected_count += 1
                             logging.debug(f"✅ {symbol_short}: Stop loss protected")
                         else:
-                            # Gestisci errori "non preoccupanti" in modo silenzioso
-                            error_msg = str(sl_res.error).lower()
-                            if "not modified" in error_msg or "api error 0: ok" in error_msg:
-                                protected_count += 1  # Conta come protetto
-                                logging.debug(f"📝 {symbol_short}: Stop loss already set correctly")
-                            else:
-                                logging.warning(colored(f"⚠️ SL not applied to {symbol_short}: {sl_res.error}", "yellow"))
+                            # CRITICAL FIX: Don't accept SL failures easily
+                            logging.warning(colored(f"❌ {symbol_short}: Initial SL failed: {sl_res.error}", "red"))
+                            
+                            # Mandatory retry with validation for existing positions
+                            for retry in range(3):
+                                try:
+                                    # Re-validate SL price
+                                    current_check = await global_price_precision_handler.get_current_price(exchange, position.symbol)
+                                    
+                                    # Ensure SL respects Bybit rules
+                                    if side == "buy" and sl_price >= current_check:
+                                        sl_price = current_check * 0.94  # Force 6% below current
+                                    elif side == "sell" and sl_price <= current_check:
+                                        sl_price = current_check * 1.06  # Force 6% above current
+                                    
+                                    retry_result = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
+                                    if retry_result.success:
+                                        protected_count += 1
+                                        logging.info(colored(f"✅ {symbol_short}: SL set on retry {retry+1} (${sl_price:.6f})", "green"))
+                                        break
+                                    else:
+                                        logging.warning(f"SL retry {retry+1} failed: {retry_result.error}")
+                                        if retry == 2:  # Last attempt
+                                            logging.error(colored(f"❌ CRITICAL: {symbol_short} has NO STOP LOSS after 3 attempts!", "red"))
+                                except Exception as retry_error:
+                                    logging.error(f"SL retry {retry+1} error: {retry_error}")
 
                     # Conta trailing se attivato
                     if trailing_data.trailing_attivo:
@@ -450,7 +511,7 @@ class TradingOrchestrator:
             current = self.position_manager.get_position_count()
             if current >= MAX_CONCURRENT_POSITIONS:
                 return False, f"Maximum {MAX_CONCURRENT_POSITIONS} positions reached (current: {current})"
-            if self.position_manager.get_available_balance() < 20.0:
+            if self.position_manager.get_available_balance() < 60.0:
                 return False, "Insufficient available balance"
             return True, f"Position can be opened ({current}/{MAX_CONCURRENT_POSITIONS} slots used)"
         except Exception as e:

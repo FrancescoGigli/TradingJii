@@ -492,8 +492,8 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
         volatility = 0.0
     
     # Check basic balance requirements
-    if usdt_balance < 50.0:  # Increased minimum balance
-        logging.warning(colored(f"{symbol}: Saldo USDT insufficiente ({usdt_balance:.2f} < 50.0).", "yellow"))
+    if usdt_balance < 60.0:  # Increased minimum balance for new position limits
+        logging.warning(colored(f"{symbol}: Saldo USDT insufficiente ({usdt_balance:.2f} < 60.0).", "yellow"))
         return "insufficient_balance"
     
     # Use advanced risk management V2 (Thread-safe) if available

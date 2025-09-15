@@ -51,8 +51,8 @@ exchange_config = {
 }
 
 # Trading parameters
-MARGIN_BASE_USDT = 20.0    # Minimum margin per trade
-MARGIN_MAX_USDT = 50.0     # Maximum margin per trade  
+MARGIN_BASE_USDT = 30.0    # Minimum margin per trade
+MARGIN_MAX_USDT = 60.0     # Maximum margin per trade  
 LEVERAGE = 10
 
 # Stop Loss e Trailing Management

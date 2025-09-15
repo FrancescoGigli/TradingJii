@@ -571,3 +571,12 @@ def build_market_context(symbol: str, dataframes: Dict) -> Dict:
 
 # Global RL agent instance
 global_rl_agent = RLTrainingManager()
+
+# Initialize online learning manager with RL agent
+try:
+    from core.online_learning_manager import initialize_online_learning_manager
+    global_online_learning_manager = initialize_online_learning_manager(global_rl_agent)
+    logging.info(colored("🔗 RL Agent connected to Online Learning Manager", "green"))
+except ImportError:
+    logging.warning("⚠️ Online Learning Manager not available")
+    global_online_learning_manager = None

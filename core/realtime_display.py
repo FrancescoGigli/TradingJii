@@ -134,7 +134,15 @@ class RealTimePositionDisplay:
             pnl_usd = row.get("pnl_usd", 0.0)
 
             total_pnl_usd += pnl_usd
-            initial_margin = (row["position_usd"] / row["leverage"]) if row["leverage"] else 0.0
+            # CRITICAL FIX: Calculate REAL initial margin from Bybit data
+            # Don't enforce artificial minimums - show the real situation
+            calculated_margin = (row["position_usd"] / row["leverage"]) if row["leverage"] else 0.0
+            initial_margin = calculated_margin
+            
+            # WARNING for positions with dangerously low IM
+            if calculated_margin < 20.0 and calculated_margin > 0.0:
+                logging.warning(f"⚠️ DANGEROUS: {sym} has only ${calculated_margin:.2f} IM - HIGH RISK!")
+                
             total_im += initial_margin
 
             sl_price = bybit_sl_map.get(row["symbol"])
@@ -200,6 +208,9 @@ class RealTimePositionDisplay:
             print(line)
 
         print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan"))
+        
+        # 📊 SESSION SUMMARY for closed positions
+        self._render_session_summary()
 
     # ── Helpers per dati ─────────────────────────────────────────────────────
 
@@ -393,6 +404,63 @@ class RealTimePositionDisplay:
         except Exception as e:
             logging.debug(f"Error getting wallet balance: {e}")
             return 200.0  # Safe fallback
+    
+    def _render_session_summary(self):
+        """
+        📊 Renders session summary for closed positions with total PnL
+        """
+        if not self._session_closed:
+            return
+        
+        try:
+            # Calculate session metrics
+            total_trades = len(self._session_closed)
+            total_pnl_usd = sum(r.get('pnl_usd', 0.0) for r in self._session_closed)
+            winning_trades = sum(1 for r in self._session_closed if r.get('pnl_usd', 0.0) > 0)
+            losing_trades = total_trades - winning_trades
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            
+            # Calculate best and worst trades
+            if self._session_closed:
+                best_trade = max(self._session_closed, key=lambda x: x.get('pnl_usd', 0.0))
+                worst_trade = min(self._session_closed, key=lambda x: x.get('pnl_usd', 0.0))
+                
+                best_pnl = best_trade.get('pnl_usd', 0.0)
+                worst_pnl = worst_trade.get('pnl_usd', 0.0)
+                avg_pnl = total_pnl_usd / total_trades if total_trades > 0 else 0.0
+            else:
+                best_pnl = worst_pnl = avg_pnl = 0.0
+            
+            # Render session summary
+            print()
+            print(colored("📊 SESSION SUMMARY (Closed Positions)", "cyan", attrs=['bold']))
+            print(colored("┌" + "─" * 78 + "┐", "cyan"))
+            
+            # Total PnL line
+            pnl_color = pct_color(total_pnl_usd)
+            pnl_line = f"│ 💰 TOTAL SESSION P&L: {fmt_money(total_pnl_usd):>8} │ TRADES: {total_trades:>2} │ WIN RATE: {win_rate:>5.1f}% │"
+            print(colored(pnl_line.ljust(79) + "│", pnl_color, attrs=['bold']))
+            
+            # Performance breakdown
+            if total_trades > 0:
+                performance_line = f"│ 📈 Winners: {winning_trades:>2} │ 📉 Losers: {losing_trades:>2} │ Avg P&L: {fmt_money(avg_pnl):>8} │"
+                print(colored(performance_line.ljust(79) + "│", "white"))
+                
+                # Best/Worst trades
+                best_symbol = best_trade['symbol'].replace('/USDT:USDT', '')[:8] if best_trade else 'N/A'
+                worst_symbol = worst_trade['symbol'].replace('/USDT:USDT', '')[:8] if worst_trade else 'N/A'
+                
+                highlights_line = f"│ 🥇 Best: {best_symbol} {fmt_money(best_pnl):>8} │ 🥉 Worst: {worst_symbol} {fmt_money(worst_pnl):>8} │"
+                print(colored(highlights_line.ljust(79) + "│", "white"))
+            
+            print(colored("└" + "─" * 78 + "┘", "cyan"))
+            
+        except Exception as e:
+            logging.error(f"Error rendering session summary: {e}")
+            # Fallback simple summary
+            total_pnl = sum(r.get('pnl_usd', 0.0) for r in self._session_closed)
+            print(colored(f"📊 SESSION TOTAL: {len(self._session_closed)} trades | P&L: {fmt_money(total_pnl)}", 
+                         pct_color(total_pnl), attrs=['bold']))
 
 
 # Global instance
