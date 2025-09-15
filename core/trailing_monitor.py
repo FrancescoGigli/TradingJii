@@ -17,6 +17,16 @@ from datetime import datetime
 from typing import Dict, Optional
 from termcolor import colored
 
+# CRITICAL FIX: Import unified managers for thread safety
+try:
+    from core.thread_safe_position_manager import global_thread_safe_position_manager
+    from core.smart_api_manager import global_smart_api_manager
+    UNIFIED_MANAGERS_AVAILABLE = True
+    logging.info("🔒 TrailingMonitor: Unified managers integration enabled")
+except ImportError as e:
+    UNIFIED_MANAGERS_AVAILABLE = False
+    logging.warning(f"⚠️ TrailingMonitor: Unified managers not available: {e}")
+
 class TrailingMonitor:
     """
     Monitor dedicato per trailing stops ad alta frequenza
@@ -123,28 +133,47 @@ class TrailingMonitor:
     
     async def _monitor_single_position(self, exchange, position):
         """
-        🔧 FIXED: Monitora una singola posizione senza cache separata
+        🔒 THREAD-SAFE: Monitora una singola posizione con atomic operations
         
-        USA DIRETTAMENTE: position.trailing_data invece di trailing_cache
-        ELIMINA: Conflitti di sincronizzazione
+        ELIMINA RACE CONDITIONS: Usa atomic updates invece di accesso diretto
+        USA API MANAGER: Cache intelligente per ridurre API calls
         """
         try:
             symbol = position.symbol
+            position_id = position.position_id
             
-            # 1. Ottieni prezzo corrente real-time
-            current_price = await self._get_current_price(exchange, symbol)
+            # 1. OTTIENI PREZZO con API Manager (cache intelligente)
+            if UNIFIED_MANAGERS_AVAILABLE:
+                current_price = await global_smart_api_manager.get_current_price_fast(exchange, symbol)
+            else:
+                current_price = await self._get_current_price(exchange, symbol)
+            
             if current_price is None:
                 return
             
-            # 2. Aggiorna prezzo sulla posizione (sync con TradingOrchestrator)
-            position.current_price = current_price
+            # 2. ATOMIC UPDATE: Aggiorna prezzo e PnL atomicamente (no race conditions)
+            if UNIFIED_MANAGERS_AVAILABLE and hasattr(self.position_manager, 'atomic_update_price_and_pnl'):
+                success = self.position_manager.atomic_update_price_and_pnl(position_id, current_price)
+                if not success:
+                    logging.warning(f"⚡ Atomic price update failed for {symbol}")
+                    return
+            else:
+                # Legacy: Direct access (with race condition risk)
+                position.current_price = current_price
             
             # 3. Assicurati che trailing_data esista (init se necessario)
             if not hasattr(position, 'trailing_data') or position.trailing_data is None:
                 atr = await self._estimate_atr(exchange, symbol)
-                position.trailing_data = self.trailing_manager.initialize_trailing_data(
+                trailing_data = self.trailing_manager.initialize_trailing_data(
                     position.symbol, position.side, position.entry_price, atr
                 )
+                
+                # ATOMIC UPDATE: Salva trailing_data atomicamente
+                if UNIFIED_MANAGERS_AVAILABLE and hasattr(self.position_manager, 'atomic_update_position'):
+                    self.position_manager.atomic_update_position(position_id, {'trailing_data': trailing_data})
+                else:
+                    position.trailing_data = trailing_data
+                
                 logging.debug(f"⚡ TrailingMonitor: Initialized trailing_data for {symbol}")
             
             trailing_data = position.trailing_data
@@ -158,9 +187,20 @@ class TrailingMonitor:
                         trailing_data, current_price, position.side, atr
                     )
                     
-                    # Sync con position object (eliminare duplicazione)
-                    position.trailing_attivo = True
-                    position.best_price = current_price
+                    # ATOMIC UPDATE: Sync trailing state atomicamente
+                    trailing_state = {
+                        'trailing_active': True,
+                        'best_price': current_price,
+                        'sl_corrente': trailing_data.sl_corrente
+                    }
+                    
+                    if UNIFIED_MANAGERS_AVAILABLE and hasattr(self.position_manager, 'atomic_update_trailing_state'):
+                        self.position_manager.atomic_update_trailing_state(position_id, trailing_state)
+                    else:
+                        # Legacy: Direct access (with race condition risk)
+                        position.trailing_attivo = True
+                        position.best_price = current_price
+                        position.sl_corrente = trailing_data.sl_corrente
                     
                     # 🔧 NUOVO: Aggiorna SL su Bybit con valore trailing iniziale
                     if trailing_data.sl_corrente is not None:
@@ -189,9 +229,19 @@ class TrailingMonitor:
                     trailing_data, current_price, position.side, atr
                 )
                 
-                # Sync best_price e sl_corrente con position object
-                position.best_price = trailing_data.best_price
-                position.sl_corrente = trailing_data.sl_corrente
+                # ATOMIC UPDATE: Sync trailing state se cambiato
+                if old_sl != trailing_data.sl_corrente:
+                    trailing_state = {
+                        'best_price': trailing_data.best_price,
+                        'sl_corrente': trailing_data.sl_corrente
+                    }
+                    
+                    if UNIFIED_MANAGERS_AVAILABLE and hasattr(self.position_manager, 'atomic_update_trailing_state'):
+                        self.position_manager.atomic_update_trailing_state(position_id, trailing_state)
+                    else:
+                        # Legacy: Direct access (with race condition risk)
+                        position.best_price = trailing_data.best_price
+                        position.sl_corrente = trailing_data.sl_corrente
                 
                 # 🔧 NUOVO: Aggiorna SL su Bybit se cambiato
                 if old_sl != trailing_data.sl_corrente and trailing_data.sl_corrente is not None:
@@ -221,8 +271,11 @@ class TrailingMonitor:
                         # Position viene chiusa nel _execute_trailing_exit
                         return
             
-            # 6. Salva posizioni (no cache separata)
-            self.position_manager.save_positions()
+            # 6. ATOMIC SAVE: Salva solo se necessario
+            if not UNIFIED_MANAGERS_AVAILABLE:
+                # Legacy save (con race condition risk)
+                self.position_manager.save_positions()
+            # Note: ThreadSafePositionManager auto-saves durante atomic operations
             
         except Exception as e:
             logging.error(f"⚡ Error monitoring position {position.symbol}: {e}")

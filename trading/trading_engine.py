@@ -40,6 +40,16 @@ except ImportError:
     POSITION_SAFETY_AVAILABLE = False
     global_position_safety_manager = None
 
+# CRITICAL FIX: Import ThreadSafePositionManager
+try:
+    from core.thread_safe_position_manager import global_thread_safe_position_manager
+    THREAD_SAFE_POSITIONS_AVAILABLE = True
+    logging.info("🔒 ThreadSafePositionManager integration enabled")
+except ImportError:
+    THREAD_SAFE_POSITIONS_AVAILABLE = False
+    global_thread_safe_position_manager = None
+    logging.warning("⚠️ ThreadSafePositionManager not available, using legacy system")
+
 
 class TradingEngine:
     """
