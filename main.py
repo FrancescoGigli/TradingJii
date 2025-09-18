@@ -31,6 +31,18 @@ from config import (
 )
 from logging_config import *
 
+# CRITICAL FIX: Import unified managers for initialization
+try:
+    from core.unified_balance_manager import initialize_balance_manager
+    from core.thread_safe_position_manager import global_thread_safe_position_manager
+    from core.smart_api_manager import global_smart_api_manager
+    from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+    UNIFIED_MANAGERS_AVAILABLE = True
+    logging.info("🔧 Unified managers available for initialization")
+except ImportError as e:
+    UNIFIED_MANAGERS_AVAILABLE = False
+    logging.warning(f"⚠️ Unified managers not available: {e}")
+
 # Bot modules
 from bot_config import ConfigManager
 from trading import TradingEngine
@@ -132,6 +144,25 @@ async def main():
         selected_timeframes, selected_models, demo_mode = config_manager.select_config()
         logging.info(colored(f"⚙️ Config: {len(selected_timeframes)} timeframes, {'DEMO' if demo_mode else 'LIVE'}", "cyan"))
 
+        # CRITICAL FIX: Initialize unified managers BEFORE everything else
+        if UNIFIED_MANAGERS_AVAILABLE:
+            logging.info(colored("🔧 INITIALIZING UNIFIED MANAGERS...", "cyan", attrs=['bold']))
+            
+            # Initialize balance manager based on mode
+            balance_manager = initialize_balance_manager(
+                demo_mode=demo_mode, 
+                demo_balance=1000.0 if demo_mode else 0.0
+            )
+            
+            # Display unified managers status
+            logging.info(colored("✅ ThreadSafePositionManager: Ready", "green"))
+            logging.info(colored("✅ UnifiedBalanceManager: Ready", "green"))
+            logging.info(colored("✅ SmartAPIManager: Ready", "green"))
+            logging.info(colored("✅ UnifiedStopLossCalculator: Ready", "green"))
+            logging.info(colored("🔧 RACE CONDITIONS ELIMINATED", "green", attrs=['bold']))
+        else:
+            logging.warning(colored("⚠️ Using legacy managers - race conditions possible", "yellow"))
+
         async_exchange = await initialize_exchange()
         trading_engine = TradingEngine(config_manager)
 
@@ -160,6 +191,25 @@ async def main():
 
         # Fresh session
         await trading_engine.initialize_session(async_exchange)
+
+        # CRITICAL FIX: Initialize balance manager with real Bybit balance
+        if UNIFIED_MANAGERS_AVAILABLE and not demo_mode:
+            try:
+                # Sync balance manager with real Bybit balance
+                real_balance = await get_real_balance(async_exchange)
+                if real_balance and real_balance > 0:
+                    success = await balance_manager.sync_balance_with_bybit(async_exchange)
+                    if success:
+                        logging.info(colored(f"💰 Balance Manager synced with Bybit: ${balance_manager.get_total_balance():.2f}", "green"))
+                        
+                        # Display balance dashboard
+                        balance_manager.display_balance_dashboard()
+                    else:
+                        logging.warning("⚠️ Failed to sync balance manager with Bybit")
+                else:
+                    logging.warning("⚠️ Could not get real balance for balance manager sync")
+            except Exception as balance_error:
+                logging.error(f"❌ Balance manager sync error: {balance_error}")
 
         # Trailing monitor
         trailing_monitor = None

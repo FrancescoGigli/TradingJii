@@ -25,6 +25,18 @@ from core.smart_position_manager import global_smart_position_manager, Position
 from core.trailing_stop_manager import TrailingStopManager
 from core.price_precision_handler import global_price_precision_handler
 
+# CRITICAL FIX: Import new unified managers
+try:
+    from core.thread_safe_position_manager import global_thread_safe_position_manager
+    from core.unified_balance_manager import get_global_balance_manager
+    from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+    from core.smart_api_manager import global_smart_api_manager
+    UNIFIED_MANAGERS_AVAILABLE = True
+    logging.info("🔧 Unified managers integration enabled in TradingOrchestrator")
+except ImportError as e:
+    UNIFIED_MANAGERS_AVAILABLE = False
+    logging.warning(f"⚠️ Unified managers not available: {e}")
+
 
 class TradingResult:
     """Simple result for trading operations"""
@@ -70,9 +82,25 @@ class TradingOrchestrator:
     def __init__(self):
         self.order_manager = global_order_manager
         self.risk_calculator = global_risk_calculator
-        self.position_manager = global_smart_position_manager
-        self.smart_position_manager = global_smart_position_manager  # alias
+        
+        # CRITICAL FIX: Use ThreadSafePositionManager when available
+        if UNIFIED_MANAGERS_AVAILABLE and global_thread_safe_position_manager:
+            self.position_manager = global_thread_safe_position_manager
+            self.smart_position_manager = global_thread_safe_position_manager
+            logging.info("🔒 TradingOrchestrator using ThreadSafePositionManager")
+        else:
+            self.position_manager = global_smart_position_manager
+            self.smart_position_manager = global_smart_position_manager  # alias
+            logging.warning("⚠️ TradingOrchestrator using legacy SmartPositionManager")
+        
         self.trailing_manager = TrailingStopManager(self.order_manager, self.position_manager)
+        
+        # Initialize unified managers
+        if UNIFIED_MANAGERS_AVAILABLE:
+            self.balance_manager = get_global_balance_manager()
+            self.sl_calculator = global_unified_stop_loss_calculator
+            self.api_manager = global_smart_api_manager
+            logging.info("🔧 TradingOrchestrator: All unified managers initialized")
 
     # --------------------------------------------------------------------- #
     #                      NEW TRADE (open + SL 6%)                         #

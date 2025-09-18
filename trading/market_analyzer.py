@@ -9,7 +9,13 @@ import asyncio
 from termcolor import colored
 
 from fetcher import fetch_markets, get_top_symbols, fetch_min_amounts, fetch_and_save_data
-from predictor import predict_signal_ensemble
+# CRITICAL FIX: Use robust ML predictor instead of fragile one
+try:
+    from core.ml_predictor import predict_signal_ensemble
+    logging.info("✅ Using robust ML predictor - crash protection enabled")
+except ImportError:
+    from predictor import predict_signal_ensemble
+    logging.warning("⚠️ Using legacy fragile predictor - crash risk exists")
 import config
 from utils.display_utils import display_data_download_summary
 
