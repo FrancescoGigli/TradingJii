@@ -286,6 +286,7 @@ class TradingOrchestrator:
 
             # 3) Applica protezione per ogni posizione con log ridotto
             protected_count = 0
+            already_protected_count = 0
             trailing_count = 0
             
             for i, position in enumerate(newly_opened, 1):
@@ -367,32 +368,45 @@ class TradingOrchestrator:
                             protected_count += 1
                             logging.debug(f"✅ {symbol_short}: Stop loss protected")
                         else:
-                            # CRITICAL FIX: Don't accept SL failures easily
-                            logging.warning(colored(f"❌ {symbol_short}: Initial SL failed: {sl_res.error}", "red"))
+                            # 🔧 SMART ERROR HANDLING: Distinguish between real errors and "already protected"
+                            error_msg = str(sl_res.error or "").lower()
                             
-                            # Mandatory retry with validation for existing positions
-                            for retry in range(3):
-                                try:
-                                    # Re-validate SL price
-                                    current_check = await global_price_precision_handler.get_current_price(exchange, position.symbol)
-                                    
-                                    # Ensure SL respects Bybit rules
-                                    if side == "buy" and sl_price >= current_check:
-                                        sl_price = current_check * 0.94  # Force 6% below current
-                                    elif side == "sell" and sl_price <= current_check:
-                                        sl_price = current_check * 1.06  # Force 6% above current
-                                    
-                                    retry_result = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
-                                    if retry_result.success:
-                                        protected_count += 1
-                                        logging.info(colored(f"✅ {symbol_short}: SL set on retry {retry+1} (${sl_price:.6f})", "green"))
-                                        break
-                                    else:
-                                        logging.warning(f"SL retry {retry+1} failed: {retry_result.error}")
-                                        if retry == 2:  # Last attempt
-                                            logging.error(colored(f"❌ CRITICAL: {symbol_short} has NO STOP LOSS after 3 attempts!", "red"))
-                                except Exception as retry_error:
-                                    logging.error(f"SL retry {retry+1} error: {retry_error}")
+                            # Check if it's error 34040 "not modified" = already protected
+                            if "34040" in error_msg and "not modified" in error_msg:
+                                already_protected_count += 1  # Count as already protected!
+                                logging.info(colored(f"✅ {symbol_short}: Already protected (stop loss exists)", "cyan"))
+                            else:
+                                # Real error - attempt retry with validation
+                                logging.warning(colored(f"⚠️ {symbol_short}: SL failed: {sl_res.error}", "yellow"))
+                                
+                                # Retry with validation for real errors only
+                                for retry in range(3):
+                                    try:
+                                        # Re-validate SL price
+                                        current_check = await global_price_precision_handler.get_current_price(exchange, position.symbol)
+                                        
+                                        # Ensure SL respects Bybit rules
+                                        if side == "buy" and sl_price >= current_check:
+                                            sl_price = current_check * 0.94  # Force 6% below current
+                                        elif side == "sell" and sl_price <= current_check:
+                                            sl_price = current_check * 1.06  # Force 6% above current
+                                        
+                                        retry_result = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
+                                        if retry_result.success:
+                                            protected_count += 1
+                                            logging.info(colored(f"✅ {symbol_short}: SL set on retry {retry+1} (${sl_price:.6f})", "green"))
+                                            break
+                                        elif "34040" in str(retry_result.error or "").lower() and "not modified" in str(retry_result.error or "").lower():
+                                            # Even retry found existing protection
+                                            already_protected_count += 1
+                                            logging.info(colored(f"✅ {symbol_short}: Already protected (found on retry {retry+1})", "cyan"))
+                                            break
+                                        else:
+                                            logging.warning(f"SL retry {retry+1} failed: {retry_result.error}")
+                                            if retry == 2:  # Last attempt
+                                                logging.error(colored(f"❌ {symbol_short}: Could not set stop loss after 3 attempts", "red"))
+                                    except Exception as retry_error:
+                                        logging.error(f"SL retry {retry+1} error: {retry_error}")
 
                     # Conta trailing se attivato
                     if trailing_data.trailing_attivo:
@@ -401,8 +415,13 @@ class TradingOrchestrator:
                 except Exception as e:
                     logging.error(f"❌ Error protecting {position.symbol}: {e}")
 
-            # 🔧 CLEANED: Summary finale pulito
-            logging.info(colored(f"✅ PROTECTION COMPLETE: {protected_count}/{len(newly_opened)} positions protected", "green"))
+            # 🔧 CLEANED: Summary finale pulito con dettagli
+            total_secure = protected_count + already_protected_count
+            logging.info(colored(f"✅ PROTECTION COMPLETE: {total_secure}/{len(newly_opened)} positions secured", "green"))
+            if protected_count > 0:
+                logging.info(colored(f"🆕 New Protection: {protected_count} positions", "green"))
+            if already_protected_count > 0:
+                logging.info(colored(f"🔒 Already Protected: {already_protected_count} positions", "cyan"))
             if trailing_count > 0:
                 logging.info(colored(f"🚀 TRAILING ACTIVE: {trailing_count} positions with trailing stops", "cyan"))
             

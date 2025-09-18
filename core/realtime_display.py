@@ -49,13 +49,10 @@ def fmt_money(v: float) -> str:
 
 
 def pct_color(p: float) -> str:
-    if p >= 10:
-        return "green"
     if p > 0:
-        return "green"
-    if p > -20:
-        return "yellow"
-    return "red"
+        return "green"  # Tutti i positivi in verde
+    else:
+        return "red"    # Tutti i negativi in rosso (niente giallo)
 
 
 def safe_float(x: Any, default: float = 0.0) -> float:

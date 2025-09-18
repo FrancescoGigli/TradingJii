@@ -6,6 +6,9 @@ Handles interactive/headless configuration and settings management
 import os
 import sys
 import logging
+import time
+import threading
+import select
 from termcolor import colored
 import config
 
@@ -47,35 +50,21 @@ class ConfigManager:
         print("\n🎮 Scegli modalità:")
         print("1. DEMO - Solo segnali (nessun trade reale)")
         print("2. LIVE - Trading reale su Bybit")
-        print("Quale modalità vuoi utilizzare? [default: 1]:")
+        print("Quale modalità vuoi utilizzare? [default: 2]:")
         
-        try:
-            mode_input = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print("Input interrupted, using default values")
-            mode_input = "1"
-        
-        if not mode_input:
-            mode_input = "1"
+        mode_input = self._input_with_timeout(5, "2")
         
         # Timeframes selection
         print("\nInserisci i timeframe da utilizzare tra le seguenti opzioni: '1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d' (minimo 1, massimo 3, separati da virgola) [default: 15m,30m,1h]:")
         
-        try:
-            tf_input = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print("Input interrupted, using default timeframes")
-            tf_input = default_timeframes
-        
-        if not tf_input:
-            tf_input = default_timeframes
+        tf_input = self._input_with_timeout(5, default_timeframes)
             
         self._process_inputs(mode_input, tf_input, default_timeframes, interactive_mode=True)
     
     def _headless_config(self, default_timeframes):
         """Handle headless configuration using environment variables"""
         logging.info("Running in headless mode, using environment variables")
-        mode_input = os.getenv('BOT_MODE', '1')
+        mode_input = os.getenv('BOT_MODE', '2')
         tf_input = os.getenv('BOT_TIMEFRAMES', default_timeframes)
         
         self._process_inputs(mode_input, tf_input, default_timeframes, interactive_mode=False)
@@ -151,3 +140,45 @@ class ConfigManager:
     def is_demo_mode(self):
         """Check if running in demo mode"""
         return self.demo_mode
+    
+    def _input_with_timeout(self, timeout_seconds: int, default_value: str) -> str:
+        """
+        Input with countdown timer - auto-selects default after timeout
+        
+        Args:
+            timeout_seconds: Seconds to wait before using default
+            default_value: Default value to use if timeout
+            
+        Returns:
+            str: User input or default value
+        """
+        import threading
+        import time
+        
+        result = [None]
+        
+        def input_thread():
+            try:
+                result[0] = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                result[0] = ""
+        
+        # Start input thread
+        thread = threading.Thread(target=input_thread)
+        thread.daemon = True
+        thread.start()
+        
+        # Countdown
+        for remaining in range(timeout_seconds, 0, -1):
+            if result[0] is not None:
+                break
+            print(f"\r⏰ Auto-start in {remaining}s (default: {default_value})...", end='', flush=True)
+            time.sleep(1)
+        
+        # Check if input was provided
+        if result[0] is not None:
+            print()  # New line
+            return result[0] if result[0] else default_value
+        else:
+            print(f"\r✅ Auto-selected: {default_value}                    ")
+            return default_value

@@ -169,8 +169,9 @@ class SignalProcessor:
             prediction_results: ML prediction results
             all_symbol_data: Market data for symbols
         """
-        print(colored(f"\n🔍 COMPLETE ANALYSIS FOR ALL SYMBOLS ({len(prediction_results)}/10)", "cyan", attrs=['bold']))
-        print(colored("=" * 80, "cyan"))
+        from core.enhanced_logging_system import enhanced_logger
+        enhanced_logger.display_table(f"🔍 COMPLETE ANALYSIS FOR ALL SYMBOLS ({len(prediction_results)}/10)", "cyan", attrs=['bold'])
+        enhanced_logger.display_table("=" * 80, "cyan")
         
         # Process ALL prediction results and show decision analysis
         for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
@@ -254,7 +255,7 @@ class SignalProcessor:
                 logging.error(f"Error in decision analysis for {symbol}: {e}")
                 continue
         
-        print(colored("=" * 80, "cyan"))
+        enhanced_logger.display_table("=" * 80, "cyan")
 
     async def get_current_price(self, exchange, symbol):
         """

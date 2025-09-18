@@ -46,7 +46,8 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
     try:
         symbol_short = symbol.replace('/USDT:USDT', '')
         
-        print(colored(f"\n🔍 {symbol_short} Analysis:", "cyan", attrs=['bold']))
+        from core.enhanced_logging_system import enhanced_logger
+        enhanced_logger.display_table(f"🔍 {symbol_short} Analysis:", "cyan", attrs=['bold'])
         
         # 1. CONSENSUS TIMEFRAME ANALYSIS
         tf_predictions = signal_data.get('tf_predictions', {})
@@ -68,12 +69,12 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
             consensus_pct = (signal_counts[winning_signal] / len(tf_predictions)) * 100
             
             consensus_color = 'green' if consensus_pct >= 66 else 'yellow' if consensus_pct >= 50 else 'red'
-            print(f"  📊 Consensus: {', '.join(tf_details)} → {colored(f'{consensus_pct:.0f}% agreement', consensus_color)}")
+            enhanced_logger.display_table(f"  📊 Consensus: {', '.join(tf_details)} → {colored(f'{consensus_pct:.0f}% agreement', consensus_color)}")
         
         # 2. ML CONFIDENCE
         ml_confidence = signal_data.get('confidence', 0)
         confidence_color = 'green' if ml_confidence >= 0.7 else 'yellow' if ml_confidence >= 0.5 else 'red'
-        print(f"  🧠 ML Confidence: {colored(f'{ml_confidence:.1%}', confidence_color)}")
+        enhanced_logger.display_table(f"  🧠 ML Confidence: {colored(f'{ml_confidence:.1%}', confidence_color)}")
         
         # 3. RL APPROVAL WITH DETAILED REASONING
         if rl_available:
@@ -83,14 +84,14 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
             
             if rl_approved:
                 rl_color = 'green' if rl_confidence >= 0.6 else 'yellow'
-                print(f"  🤖 RL Approval: {colored('✅ APPROVED', 'green')} (RL confidence: {colored(f'{rl_confidence:.1%}', rl_color)})")
+                enhanced_logger.display_table(f"  🤖 RL Approval: {colored('✅ APPROVED', 'green')} (RL confidence: {colored(f'{rl_confidence:.1%}', rl_color)})")
                 
                 # Show approval reasons
                 if rl_details.get('approvals'):
                     for approval in rl_details['approvals'][:2]:  # Show top 2 reasons
-                        print(colored(f"      ✅ {approval}", 'green'))
+                        enhanced_logger.display_table(f"      ✅ {approval}", 'green')
             else:
-                print(f"  🤖 RL Approval: {colored('❌ REJECTED', 'red')}")
+                enhanced_logger.display_table(f"  🤖 RL Approval: {colored('❌ REJECTED', 'red')}")
                 
                 # Show detailed rejection reasons
                 factors = rl_details.get('factors', {})
@@ -101,19 +102,19 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
                     if factor_info.get('status') in ['TOO_HIGH', 'TOO_LOW', 'WEAK', 'LOW']:
                         status_color = 'red' if factor_info['status'] in ['TOO_HIGH', 'TOO_LOW'] else 'yellow'
                         factor_display = factor_name.replace('_', ' ').title()
-                        print(colored(f"      ❌ {factor_display}: {factor_info['value']} (limit: {factor_info['threshold']})", status_color))
+                        enhanced_logger.display_table(f"      ❌ {factor_display}: {factor_info['value']} (limit: {factor_info['threshold']})", status_color)
                 
                 # Primary reason
                 primary_reason = rl_details.get('primary_reason', 'Unknown reason')
-                print(colored(f"      🔒 Primary: {primary_reason}", 'red'))
+                enhanced_logger.display_table(f"      🔒 Primary: {primary_reason}", 'red')
         else:
-            print(f"  🤖 RL Approval: {colored('⚪ N/A', 'white')} (RL system not available)")
+            enhanced_logger.display_table(f"  🤖 RL Approval: {colored('⚪ N/A', 'white')} (RL system not available)")
         
         # 4. RISK MANAGER VALIDATION
         if risk_manager_available:
-            print(f"  🛡️ Risk Manager: {colored('✅ APPROVED', 'green')} (position size validated)")
+            enhanced_logger.display_table(f"  🛡️ Risk Manager: {colored('✅ APPROVED', 'green')} (position size validated)")
         else:
-            print(f"  🛡️ Risk Manager: {colored('⚪ FALLBACK', 'yellow')} (using conservative sizing)")
+            enhanced_logger.display_table(f"  🛡️ Risk Manager: {colored('⚪ FALLBACK', 'yellow')} (using conservative sizing)")
         
         # 5. FINAL DECISION
         final_action = signal_data.get('signal_name', 'SKIP')
@@ -125,11 +126,11 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
             action_symbol = '⏭️'
             final_action = 'SKIP'
         
-        print(f"  {action_symbol} {colored('DECISION:', 'white', attrs=['bold'])} {colored(f'{final_action}', action_color, attrs=['bold'])}")
+        enhanced_logger.display_table(f"  {action_symbol} {colored('DECISION:', 'white', attrs=['bold'])} {colored(f'{final_action}', action_color, attrs=['bold'])}")
         
     except Exception as e:
         logging.error(f"Error displaying decision analysis for {symbol}: {e}")
-        print(colored(f"  ❌ Analysis Error: {str(e)[:50]}...", "red"))
+        enhanced_logger.display_table(f"  ❌ Analysis Error: {str(e)[:50]}...", "red")
 
 
 def show_performance_summary(cycle_total_time, data_fetch_time=None, ml_time=None, top_symbols_count=0, 
@@ -173,17 +174,18 @@ def display_data_download_summary(successful_downloads, total_symbols, data_fetc
     """
     Display data download summary with clean formatting
     """
-    print(colored("=" * 120, "yellow"))
-    print(colored(f"📊 DATA DOWNLOAD SUMMARY", "cyan", attrs=['bold']))
+    from core.enhanced_logging_system import enhanced_logger
+    enhanced_logger.display_table("=" * 120, "yellow")
+    enhanced_logger.display_table("📊 DATA DOWNLOAD SUMMARY", "cyan", attrs=['bold'])
     if total_symbols > 0:
         success_rate = (successful_downloads / total_symbols) * 100
-        print(colored(f"✅ Successful downloads: {successful_downloads}/{total_symbols} ({success_rate:.1f}%)", "green"))
-        print(colored(f"⏱️ Total download time: {data_fetch_time:.1f}s", "green"))
-        print(colored(f"⚡ Average time per symbol: {data_fetch_time/total_symbols:.1f}s", "green"))
+        enhanced_logger.display_table(f"✅ Successful downloads: {successful_downloads}/{total_symbols} ({success_rate:.1f}%)", "green")
+        enhanced_logger.display_table(f"⏱️ Total download time: {data_fetch_time:.1f}s", "green")
+        enhanced_logger.display_table(f"⚡ Average time per symbol: {data_fetch_time/total_symbols:.1f}s", "green")
     else:
-        print(colored(f"❌ No symbols found for analysis!", "red"))
-        print(colored(f"⏱️ Total time: {data_fetch_time:.1f}s", "yellow"))
-    print(colored("=" * 120, "yellow"))
+        enhanced_logger.display_table(f"❌ No symbols found for analysis!", "red")
+        enhanced_logger.display_table(f"⏱️ Total time: {data_fetch_time:.1f}s", "yellow")
+    enhanced_logger.display_table("=" * 120, "yellow")
 
 
 def display_top_signals(all_signals, limit=10):
@@ -194,19 +196,20 @@ def display_top_signals(all_signals, limit=10):
         logging.warning(colored("⚠️ No signals found this cycle", "yellow"))
         return
         
-    logging.info(colored("🏆 TOP SIGNALS BY CONFIDENCE:", "yellow", attrs=['bold']))
-    print(colored("-" * 120, "yellow"))
-    print(colored(f"{'RANK':<4} {'SYMBOL':<20} {'SIGNAL':<6} {'CONFIDENCE':<12} {'EXPLANATION':<60} {'PRICE':<12}", "white", attrs=['bold']))
-    print(colored("-" * 120, "yellow"))
+    from core.enhanced_logging_system import enhanced_logger
+    enhanced_logger.display_table("🏆 TOP SIGNALS BY CONFIDENCE:", "yellow", attrs=['bold'])
+    enhanced_logger.display_table("-" * 120, "yellow")
+    enhanced_logger.display_table(f"{'RANK':<4} {'SYMBOL':<20} {'SIGNAL':<6} {'CONFIDENCE':<12} {'EXPLANATION':<60} {'PRICE':<12}", "white", attrs=['bold'])
+    enhanced_logger.display_table("-" * 120, "yellow")
     
     for i, signal in enumerate(all_signals[:limit], 1):
         symbol_short = signal['symbol'].replace('/USDT:USDT', '')
         signal_color = 'green' if signal['signal_name'] == 'BUY' else 'red'
         
         confidence_pct = f"{signal['confidence']:.1%}"
-        print(f"{i:<4} {symbol_short:<20} {colored(signal['signal_name'], signal_color, attrs=['bold']):<6} {confidence_pct:<12} {signal['confidence_explanation']:<60} ${signal['price']:.6f}")
+        enhanced_logger.display_table(f"{i:<4} {symbol_short:<20} {colored(signal['signal_name'], signal_color, attrs=['bold']):<6} {confidence_pct:<12} {signal['confidence_explanation']:<60} ${signal['price']:.6f}")
     
-    print(colored("-" * 120, "yellow"))
+    enhanced_logger.display_table("-" * 120, "yellow")
 
 
 def display_selected_symbols(symbols_list, title="SIMBOLI SELEZIONATI", volumes_data=None):

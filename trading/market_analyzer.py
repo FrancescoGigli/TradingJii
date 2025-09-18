@@ -56,7 +56,8 @@ class MarketAnalyzer:
         logging.info(f"{colored('📊 Analyzing symbols:', 'cyan')} {len(self.top_symbols_analysis)} total")
 
         # Optimized data fetching with clean output
-        print(colored("\n📥 DATA DOWNLOAD - Optimized Display", "yellow", attrs=['bold']))
+        from core.enhanced_logging_system import enhanced_logger
+        enhanced_logger.display_table("📥 DATA DOWNLOAD - Optimized Display", "yellow", attrs=['bold'])
         
         data_fetch_start = time.time()
         self.all_symbol_data = {}
@@ -69,13 +70,13 @@ class MarketAnalyzer:
             # 🚫 EARLY CHECK: Salta simbolo se già escluso da cicli precedenti
             from core.symbol_exclusion_manager import global_symbol_exclusion_manager
             if global_symbol_exclusion_manager.is_excluded(symbol):
-                print(f"\n[{index}/{len(self.top_symbols_analysis)}] {colored(symbol_short, 'yellow')} - 🚫 SKIPPED (excluded)")
+                enhanced_logger.display_table(f"[{index}/{len(self.top_symbols_analysis)}] {symbol_short} - 🚫 SKIPPED (excluded)", "yellow")
                 continue
                 
             symbol_start_time = time.time()
             
             # Clean symbol header
-            print(f"\n[{index}/{len(self.top_symbols_analysis)}] {colored(symbol_short, 'cyan', attrs=['bold'])}")
+            enhanced_logger.display_table(f"[{index}/{len(self.top_symbols_analysis)}] {symbol_short}", "cyan", attrs=['bold'])
             
             dataframes = {}
             symbol_success = True
@@ -85,7 +86,7 @@ class MarketAnalyzer:
             for tf in enabled_timeframes:
                 # 🚫 CHECK: Verifica se il simbolo è stato escluso nel frattempo
                 if global_symbol_exclusion_manager.is_excluded(symbol):
-                    print(colored(f"  🚫 STOP: {symbol_short} excluded during processing", 'yellow'))
+                    enhanced_logger.display_table(f"  🚫 STOP: {symbol_short} excluded during processing", 'yellow')
                     symbol_success = False
                     break
                 
@@ -103,7 +104,7 @@ class MarketAnalyzer:
                         
                         # 🔧 IMMEDIATE EXCLUSION: Se un timeframe fallisce subito, escludi il simbolo
                         if len(dataframes) == 0:  # Nessun timeframe riuscito
-                            print(colored(f"  🚫 EXCLUDING: {symbol_short} - No data for first timeframe", 'yellow'))
+                            enhanced_logger.display_table(f"  🚫 EXCLUDING: {symbol_short} - No data for first timeframe", 'yellow')
                             global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
                                 symbol, missing_timeframes=[tf]
                             )
@@ -117,7 +118,7 @@ class MarketAnalyzer:
                     
                     # 🔧 IMMEDIATE EXCLUSION per dataset errors
                     if "too small" in error_detail.lower() or "insufficient" in error_detail.lower():
-                        print(colored(f"  🚫 EXCLUDING: {symbol_short} - Insufficient data", 'yellow'))
+                        enhanced_logger.display_table(f"  🚫 EXCLUDING: {symbol_short} - Insufficient data", 'yellow')
                         global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
                             symbol, missing_timeframes=[tf]
                         )
@@ -126,18 +127,18 @@ class MarketAnalyzer:
             
             # Display results for this symbol
             for result in timeframe_results:
-                print(colored(result, 'green' if '✅' in result else 'red'))
+                enhanced_logger.display_table(result, 'green' if '✅' in result else 'red')
             
             # Symbol summary
             symbol_time = time.time() - symbol_start_time
             if symbol_success and len(dataframes) == len(enabled_timeframes):
                 self.all_symbol_data[symbol] = dataframes
                 successful_downloads += 1
-                print(colored(f"  ✅ Complete: {len(enabled_timeframes)}/{len(enabled_timeframes)} timeframes ({symbol_time:.1f}s total)", 'green'))
+                enhanced_logger.display_table(f"  ✅ Complete: {len(enabled_timeframes)}/{len(enabled_timeframes)} timeframes ({symbol_time:.1f}s total)", 'green')
             else:
                 missing_tf = len(enabled_timeframes) - len(dataframes)
                 missing_timeframes = [tf for tf in enabled_timeframes if tf not in dataframes]
-                print(colored(f"  ❌ Failed: Missing {missing_tf} timeframes", 'red'))
+                enhanced_logger.display_table(f"  ❌ Failed: Missing {missing_tf} timeframes", 'red')
                 
                 # 🚫 AUTO-EXCLUDE simbolo con timeframes insufficienti
                 from core.symbol_exclusion_manager import global_symbol_exclusion_manager

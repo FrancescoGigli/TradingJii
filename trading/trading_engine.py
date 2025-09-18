@@ -43,7 +43,7 @@ except ImportError:
 
 class TradingEngine:
     """
-    Main trading engine che orchestra l’intero processo di trading
+    Main trading engine che orchestra l'intero processo di trading
     """
 
     def __init__(self, config_manager):
@@ -126,44 +126,102 @@ class TradingEngine:
 
     async def run_trading_cycle(self, exchange, xgb_models, xgb_scalers):
         """
-        Execute one complete trading cycle
+        Execute one complete trading cycle with enhanced phase visualization
         """
+        from core.enhanced_logging_system import enhanced_logger, cycle_logger, log_separator
+        
         cycle_start_time = time.time()
 
         try:
-            # Phase 1: Data collection
+            # ══════════════════════════════════════════════════════════════════════════════════════
+            # 🚀 TRADING CYCLE START
+            # ══════════════════════════════════════════════════════════════════════════════════════
+            enhanced_logger.display_table("")
+            log_separator("═", 100, "cyan")
+            enhanced_logger.display_table("🚀 TRADING CYCLE STARTED", "cyan", attrs=['bold'])
+            log_separator("═", 100, "cyan")
+
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 📊 PHASE 1: DATA COLLECTION
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            enhanced_logger.display_table("📈 PHASE 1: DATA COLLECTION & MARKET ANALYSIS", "blue", attrs=['bold'])
+            log_separator("─", 80, "blue")
+            enhanced_logger.display_table(f"🔍 Analyzing {config.TOP_ANALYSIS_CRYPTO} symbols across {len(self.config_manager.get_timeframes())} timeframes", "blue")
+            
             all_symbol_data, complete_symbols, data_fetch_time = await self.market_analyzer.collect_market_data(
                 exchange,
                 self.config_manager.get_timeframes(),
                 config.TOP_ANALYSIS_CRYPTO,
                 config.EXCLUDED_SYMBOLS
             )
+            
             if not complete_symbols:
-                logging.warning("⚠️ No symbols with complete data this cycle")
+                enhanced_logger.display_table("⚠️ No symbols with complete data this cycle", "yellow")
                 return
 
-            # Phase 2: ML predictions
+            enhanced_logger.display_table(f"✅ Data collection complete: {len(complete_symbols)}/{config.TOP_ANALYSIS_CRYPTO} symbols ready", "green")
+
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 🧠 PHASE 2: ML PREDICTIONS
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(2, "ML PREDICTIONS & AI ANALYSIS", "magenta")
+            log_separator("─", 80, "magenta")
+            enhanced_logger.display_table(f"🧠 Running XGBoost models on {len(complete_symbols)} symbols", "magenta")
+            
             prediction_results, ml_time = await self.market_analyzer.generate_ml_predictions(
                 xgb_models, xgb_scalers, config.get_timesteps_for_timeframe(self.config_manager.get_default_timeframe())
             )
 
-            # Phase 3: Signal processing
+            enhanced_logger.display_table(f"✅ ML predictions complete: {len(prediction_results)} results generated", "green")
+
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 🔄 PHASE 3: SIGNAL PROCESSING
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(3, "SIGNAL PROCESSING & FILTERING", "yellow")
+            log_separator("─", 80, "yellow")
+            enhanced_logger.display_table("🔄 Processing ML predictions into trading signals", "yellow")
+            
             self.signal_processor.display_complete_analysis(prediction_results, all_symbol_data)
             all_signals = await self.signal_processor.process_prediction_results(
                 prediction_results, all_symbol_data
             )
 
-            # Phase 4: Ranking
-            logging.info(colored("📈 PHASE 2: RANKING AND SELECTING TOP SIGNALS", "green", attrs=['bold']))
+            enhanced_logger.display_table(f"✅ Signal processing complete: {len(all_signals)} signals generated", "green")
+
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 📈 PHASE 4: RANKING & SELECTION
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(4, "RANKING & TOP SIGNAL SELECTION", "green")
+            log_separator("─", 80, "green")
+            enhanced_logger.display_table("📈 Ranking signals by confidence and selecting top candidates", "green")
+            
             display_top_signals(all_signals, limit=10)
 
-            # Phase 5: Execution
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 🚀 PHASE 5: TRADE EXECUTION
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(5, "TRADE EXECUTION", "red")
+            log_separator("─", 80, "red")
+            enhanced_logger.display_table("🚀 Executing selected trading signals", "red")
+            
             await self._execute_signals(exchange, all_signals)
 
-            # Phase 6: Manage positions
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 🛡️ PHASE 6: POSITION MANAGEMENT
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(6, "POSITION MANAGEMENT & RISK CONTROL", "cyan")
+            log_separator("─", 80, "cyan")
+            enhanced_logger.display_table("🛡️ Managing existing positions and risk controls", "cyan")
+            
             await self._manage_positions(exchange)
 
-            # Phase 7: Performance summary
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 📊 PHASE 7: PERFORMANCE ANALYSIS
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(7, "PERFORMANCE ANALYSIS & REPORTING", "white")
+            log_separator("─", 80, "white")
+            enhanced_logger.display_table("📊 Analyzing cycle performance and generating reports", "white")
+            
             cycle_total_time = time.time() - cycle_start_time
             show_performance_summary(
                 cycle_total_time,
@@ -175,8 +233,14 @@ class TradingEngine:
                 self.database_system_loaded
             )
 
-            # Phase 8: Online Learning Dashboard
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 🧠 PHASE 8: ONLINE LEARNING & ADAPTATION
+            # ──────────────────────────────────────────────────────────────────────────────────────
             if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
+                cycle_logger.log_phase(8, "ONLINE LEARNING & AI ADAPTATION", "magenta")
+                log_separator("─", 80, "magenta")
+                enhanced_logger.display_table("🧠 Analyzing trade performance for AI learning", "magenta")
+                
                 try:
                     # Show learning dashboard every 5 cycles or if we have new completed trades
                     cycle_count = getattr(self, 'cycle_count', 0) + 1
@@ -187,23 +251,29 @@ class TradingEngine:
                         global_online_learning_manager.display_learning_dashboard()
                         self.last_trade_count = summary.get('total_trades', 0)
                     elif summary.get('total_trades', 0) == 0:
-                        logging.info(colored("🧠 Online Learning: No completed trades yet for analysis", "yellow"))
+                        enhanced_logger.display_table("🧠 No completed trades yet for learning analysis", "yellow")
                         
                     # Show active trades info
                     active_count = global_online_learning_manager.get_active_trades_count()
                     if active_count > 0:
-                        logging.info(colored(f"📊 Currently tracking {active_count} active trades for learning", "cyan"))
+                        enhanced_logger.display_table(f"📊 Currently tracking {active_count} active trades for learning", "cyan")
                         
                 except Exception as dashboard_error:
                     logging.warning(f"Learning dashboard error: {dashboard_error}")
+
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            # 📊 PHASE 9: REALTIME POSITION DISPLAY
+            # ──────────────────────────────────────────────────────────────────────────────────────
+            cycle_logger.log_phase(9, "POSITION DISPLAY & PORTFOLIO OVERVIEW", "green")
+            log_separator("─", 80, "green")
+            enhanced_logger.display_table("📊 Updating live position display and portfolio status", "green")
 
             if self.first_cycle:
                 self.first_cycle = False
                 if self.database_system_loaded:
                     self.display_database_stats()
 
-            # ── NEW: snapshot realtime_display (open + closed) ──
-            # Inicializza il display se non esiste
+            # Initialize realtime display if needed
             if not hasattr(self, 'realtime_display') or self.realtime_display is None:
                 try:
                     trailing_monitor = getattr(self, 'trailing_monitor', None)
@@ -211,23 +281,29 @@ class TradingEngine:
                         self.position_manager if self.clean_modules_available else None,
                         trailing_monitor
                     )
-                    logging.info(colored("📊 Realtime display initialized for cycle", "cyan"))
+                    enhanced_logger.display_table("📊 Realtime display initialized for cycle", "cyan")
                 except Exception as init_error:
                     logging.error(f"❌ Failed to initialize realtime display: {init_error}")
                     self.realtime_display = None
             
             if self.realtime_display:
                 try:
-                    logging.info(colored("📊 UPDATING POSITION DISPLAY...", "cyan"))
                     await self.realtime_display.update_snapshot(exchange)
                     self.realtime_display.show_snapshot()
-                    logging.info(colored("📊 Position display updated", "cyan"))
+                    enhanced_logger.display_table("✅ Position display updated successfully", "green")
                 except Exception as e:
                     logging.error(f"❌ Snapshot display failed: {e}")
             else:
-                logging.warning("⚠️ Realtime display not available")
+                enhanced_logger.display_table("⚠️ Realtime display not available", "yellow")
 
-            logging.info(colored("🔄 Cycle complete", "green"))
+            # ══════════════════════════════════════════════════════════════════════════════════════
+            # ✅ CYCLE COMPLETE
+            # ══════════════════════════════════════════════════════════════════════════════════════
+            log_separator("═", 100, "green")
+            enhanced_logger.display_table("✅ TRADING CYCLE COMPLETED SUCCESSFULLY", "green", attrs=['bold'])
+            enhanced_logger.display_table(f"⏱️ Total cycle time: {cycle_total_time:.1f}s", "green")
+            log_separator("═", 100, "green")
+            enhanced_logger.display_table("")
 
         except Exception as e:
             logging.error(f"Error in trading cycle: {e}")
@@ -235,15 +311,17 @@ class TradingEngine:
 
     async def _execute_signals(self, exchange, all_signals):
         """
-        Execute trading signals
+        Execute trading signals with enhanced logging
         """
+        from core.enhanced_logging_system import enhanced_logger
+        
         if not all_signals:
-            logging.info(colored("😐 No signals to execute this cycle", "yellow"))
+            enhanced_logger.display_table("😐 No signals to execute this cycle", "yellow")
             return
 
         usdt_balance = await get_real_balance(exchange)
         if usdt_balance is None:
-            logging.warning("⚠️ Failed to get USDT balance")
+            enhanced_logger.display_table("⚠️ Failed to get USDT balance", "yellow")
             return
 
         # Open positions count
@@ -259,10 +337,10 @@ class TradingEngine:
         max_positions = config.MAX_CONCURRENT_POSITIONS - open_positions_count
         signals_to_execute = all_signals[:min(max_positions, len(all_signals))]
         if not signals_to_execute:
-            logging.info("⚠️ Maximum positions reached, no new signals")
+            enhanced_logger.display_table("⚠️ Maximum positions reached, no new signals", "yellow")
             return
 
-        logging.info(colored(f"🚀 PHASE 3: EXECUTING {len(signals_to_execute)} SIGNALS", "blue", attrs=['bold']))
+        enhanced_logger.display_table(f"🎯 Executing {len(signals_to_execute)} signals (max {max_positions} available)", "red")
         await self._setup_trading_parameters(exchange, signals_to_execute)
 
         executed_trades = 0
@@ -354,10 +432,13 @@ class TradingEngine:
                 continue
 
         if executed_trades > 0:
-            logging.info(colored(f"📊 EXECUTION SUMMARY: {executed_trades} signals executed", "green"))
+            enhanced_logger.display_table(f"✅ Execution complete: {executed_trades}/{len(signals_to_execute)} signals executed", "green")
+        else:
+            enhanced_logger.display_table("⚠️ No signals were executed this cycle", "yellow")
 
     async def _setup_trading_parameters(self, exchange, signals_to_execute):
-        logging.info("⚖️ Setting leverage + isolated margin")
+        from core.enhanced_logging_system import enhanced_logger
+        enhanced_logger.display_table("⚖️ Setting leverage + isolated margin for selected symbols", "yellow")
         for signal in signals_to_execute:
             symbol = signal['symbol']
             try:
@@ -367,18 +448,24 @@ class TradingEngine:
                 logging.warning(f"⚠️ {symbol}: Param setup failed: {e}")
 
     async def _manage_positions(self, exchange):
+        from core.enhanced_logging_system import enhanced_logger
+        
         if not self.clean_modules_available:
             return
+            
+        enhanced_logger.display_table("🔄 Synchronizing positions with Bybit", "cyan")
+        
         if not config.DEMO_MODE:
             try:
                 newly_opened, newly_closed = await self.position_manager.sync_with_bybit(exchange)
                 if newly_opened or newly_closed:
-                    logging.info(f"🔄 Position sync: +{len(newly_opened)} opened, +{len(newly_closed)} closed")
+                    enhanced_logger.display_table(f"🔄 Position sync: +{len(newly_opened)} opened, +{len(newly_closed)} closed", "cyan")
             except Exception as e:
                 logging.warning(f"Position sync error: {e}")
         
         # CRITICAL: Safety checks for all positions
         if POSITION_SAFETY_AVAILABLE and not config.DEMO_MODE:
+            enhanced_logger.display_table("🛡️ Running safety checks on all positions", "cyan")
             try:
                 # Check and close unsafe positions
                 closed_unsafe = await global_position_safety_manager.check_and_close_unsafe_positions(
@@ -391,15 +478,18 @@ class TradingEngine:
                 )
                 
                 if closed_unsafe > 0:
-                    logging.info(colored(f"🛡️ Safety Manager: {closed_unsafe} unsafe positions closed", "yellow"))
+                    enhanced_logger.display_table(f"🛡️ Safety Manager: {closed_unsafe} unsafe positions closed", "yellow")
+                else:
+                    enhanced_logger.display_table("✅ All positions passed safety checks", "green")
                     
             except Exception as safety_error:
                 logging.error(f"Position safety check error: {safety_error}")
         
+        enhanced_logger.display_table("📈 Updating trailing stop systems", "cyan")
         try:
             closed_positions = await self.global_trading_orchestrator.update_trailing_positions(exchange)
             for pos in closed_positions:
-                logging.info(colored(f"🎯 Trailing Exit: {pos.symbol} {pos.side.upper()} {pos.unrealized_pnl_pct:+.2f}%", "green"))
+                enhanced_logger.display_table(f"🎯 Trailing Exit: {pos.symbol} {pos.side.upper()} {pos.unrealized_pnl_pct:+.2f}%", "green")
         except Exception as e:
             logging.warning(f"Trailing system error: {e}")
 

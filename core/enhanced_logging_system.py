@@ -31,7 +31,7 @@ class TripleOutputLogger:
     """
     
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger()  # Use root logger instead of module logger
         self._lock = threading.Lock()
         
     def display_table(self, content: str, color: str = "white", attrs: Optional[list] = None):
@@ -46,10 +46,7 @@ class TripleOutputLogger:
         attrs = attrs or []
         
         with self._lock:
-            # 1. Terminal output (colored)
-            print(colored(content, color, attrs=attrs))
-            
-            # 2. Log to all handlers (will go to all files)
+            # Log to all handlers (will go to console + all files automatically)
             self.logger.info(colored(content, color, attrs=attrs))
     
     def display_table_line(self, content: str, color: str = "white", attrs: Optional[list] = None, end: str = "\n"):
@@ -59,10 +56,7 @@ class TripleOutputLogger:
         attrs = attrs or []
         
         with self._lock:
-            # 1. Terminal output
-            print(colored(content, color, attrs=attrs), end=end)
-            
-            # 2. Log output
+            # Log output (will go to console + files automatically)
             self.logger.info(colored(content, color, attrs=attrs))
     
     def display_separator(self, char: str = "=", length: int = 100, color: str = "cyan"):
