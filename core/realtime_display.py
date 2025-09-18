@@ -9,6 +9,11 @@ Only-Bybit data • Clean screen • Open + Closed (session)
 
 ⚠️ Non gira più in loop continuo: ora si aggiorna e stampa SOLO quando viene
 richiamato da TradingEngine al termine di un ciclo.
+
+🚀 ENHANCED: Now uses triple output logging system:
+- Terminal: Colored display (unchanged UX)
+- ANSI File: Identical colored output in trading_bot_colored.log  
+- HTML File: Professional export in trading_session.html
 """
 
 import os
@@ -17,6 +22,14 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from termcolor import colored
+
+# Import enhanced logging system
+from core.enhanced_logging_system import (
+    enhanced_logger, 
+    position_logger,
+    log_table,
+    log_separator
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,26 +114,36 @@ class RealTimePositionDisplay:
         Mostra snapshot delle posizioni:
         - tabella LIVE POSITIONS
         - tabella CLOSED POSITIONS (sessione)
+        
+        🚀 ENHANCED: Uses triple output logging system
         """
-        print("\n" + "="*100)
+        # Empty line + separator
+        enhanced_logger.display_table("")
+        log_separator("=", 100, "cyan")
+        
         self._render_live()
-        print()
+        enhanced_logger.display_table("")  # Empty line
         self._render_closed()
-        print("="*100 + "\n")
+        
+        log_separator("=", 100, "cyan")
+        enhanced_logger.display_table("")
 
     def _render_live(self):
         open_list = list(self._cur_open_map.values())
         bybit_side_map = getattr(self, "_last_side_map", {})
         bybit_sl_map = getattr(self, "_last_sl_map", {})
 
-        print(colored("📊 LIVE POSITIONS (Bybit) — snapshot", "green", attrs=["bold"]))
+        # Table title
+        enhanced_logger.display_table("📊 LIVE POSITIONS (Bybit) — snapshot", "green", attrs=["bold"])
+        
         if not open_list:
-            print(colored("— nessuna posizione aperta —", "yellow"))
+            enhanced_logger.display_table("— nessuna posizione aperta —", "yellow")
             return
 
-        print(colored("┌─────┬────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────────┬───────────┐", "cyan"))
-        print(colored("│  #  │ SYMBOL │ SIDE │ LEV  │    ENTRY    │   CURRENT   │  PNL %   │   PNL $   │   SL % (±$)  │   IM $    │", "white", attrs=["bold"]))
-        print(colored("├─────┼────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────────┼───────────┤", "cyan"))
+        # Table structure
+        enhanced_logger.display_table("┌─────┬────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────────┬───────────┐", "cyan")
+        enhanced_logger.display_table("│  #  │ SYMBOL │ SIDE │ LEV  │    ENTRY    │   CURRENT   │  PNL %   │   PNL $   │   SL % (±$)  │   IM $    │", "white", attrs=["bold"])
+        enhanced_logger.display_table("├─────┼────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────────┼───────────┤", "cyan")
 
         total_pnl_usd = 0.0
         total_im = 0.0
@@ -171,22 +194,26 @@ class RealTimePositionDisplay:
                 colored(f"{sl_txt}".center(14), sl_col) + colored("│", "white") +
                 colored(f"${initial_margin:.0f}".center(11), "white") + colored("│", "white")
             )
-            print(line)
+            # Use enhanced logging instead of print
+            logging.info(line)  # This will go through all handlers including ANSI and HTML
 
-        print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────────┴───────────┘", "cyan"))
+        # Table bottom border
+        enhanced_logger.display_table("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────────┴───────────┘", "cyan")
 
         # 📊 Enhanced summary con wallet info
         self._render_wallet_summary(len(open_list), total_pnl_usd, total_im)
 
     def _render_closed(self):
-        print(colored("🔒 CLOSED POSITIONS (SESSION, Bybit)", "magenta", attrs=["bold"]))
+        enhanced_logger.display_table("🔒 CLOSED POSITIONS (SESSION, Bybit)", "magenta", attrs=["bold"])
+        
         if not self._session_closed:
-            print(colored("— nessuna posizione chiusa nella sessione corrente —", "yellow"))
+            enhanced_logger.display_table("— nessuna posizione chiusa nella sessione corrente —", "yellow")
             return
 
-        print(colored("┌─────┬────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan"))
-        print(colored("│  #  │ SYMBOL │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │", "white", attrs=["bold"]))
-        print(colored("├─────┼────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan"))
+        # Closed positions table structure
+        enhanced_logger.display_table("┌─────┬────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan")
+        enhanced_logger.display_table("│  #  │ SYMBOL │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │", "white", attrs=["bold"])
+        enhanced_logger.display_table("├─────┼────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan")
 
         for i, r in enumerate(self._session_closed, 1):
             sym = r["symbol"].replace("/USDT:USDT", "")[:8]
@@ -205,9 +232,11 @@ class RealTimePositionDisplay:
                 colored(f"{pnl_pct:+.1f}%".center(10), pct_color(pnl_pct)) + colored("│", "white") +
                 colored(f"{fmt_money(pnl_usd):>11}", pct_color(pnl_pct)) + colored("│", "white")
             )
-            print(line)
+            # Use enhanced logging
+            logging.info(line)
 
-        print(colored("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan"))
+        # Closed positions table bottom
+        enhanced_logger.display_table("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan")
         
         # 📊 SESSION SUMMARY for closed positions
         self._render_session_summary()
@@ -369,7 +398,8 @@ class RealTimePositionDisplay:
                 colored(f"Next Cycle: {next_cycle_timer}", "magenta")
             )
             
-            print(summary_line)
+            # Use enhanced logging for summary
+            logging.info(summary_line)
             
             # 📈 Riga aggiuntiva con allocation percentage
             if total_wallet > 0:
@@ -378,12 +408,12 @@ class RealTimePositionDisplay:
                     colored(" | ", "white") +
                     colored(f"Allocation: {allocation_pct:.1f}%", "yellow" if allocation_pct > 70 else "green")
                 )
-                print(allocation_line)
+                logging.info(allocation_line)
             
         except Exception as e:
-            # Fallback alla vecchia visualizzazione
+            # Fallback usando enhanced logging
             logging.debug(f"Error in wallet summary: {e}")
-            print(colored(f"💰 LIVE: {position_count} pos | P&L: {fmt_money(total_pnl_usd)} | Allocated: ${wallet_allocated:.0f}", "white"))
+            enhanced_logger.display_table(f"💰 LIVE: {position_count} pos | P&L: {fmt_money(total_pnl_usd)} | Allocated: ${wallet_allocated:.0f}", "white")
     
     def _get_total_wallet_balance(self) -> float:
         """
@@ -431,36 +461,36 @@ class RealTimePositionDisplay:
             else:
                 best_pnl = worst_pnl = avg_pnl = 0.0
             
-            # Render session summary
-            print()
-            print(colored("📊 SESSION SUMMARY (Closed Positions)", "cyan", attrs=['bold']))
-            print(colored("┌" + "─" * 78 + "┐", "cyan"))
+            # Render session summary using enhanced logging
+            enhanced_logger.display_table("")  # Empty line
+            enhanced_logger.display_table("📊 SESSION SUMMARY (Closed Positions)", "cyan", attrs=['bold'])
+            enhanced_logger.display_table("┌" + "─" * 78 + "┐", "cyan")
             
             # Total PnL line
             pnl_color = pct_color(total_pnl_usd)
             pnl_line = f"│ 💰 TOTAL SESSION P&L: {fmt_money(total_pnl_usd):>8} │ TRADES: {total_trades:>2} │ WIN RATE: {win_rate:>5.1f}% │"
-            print(colored(pnl_line.ljust(79) + "│", pnl_color, attrs=['bold']))
+            enhanced_logger.display_table(pnl_line.ljust(79) + "│", pnl_color, attrs=['bold'])
             
             # Performance breakdown
             if total_trades > 0:
                 performance_line = f"│ 📈 Winners: {winning_trades:>2} │ 📉 Losers: {losing_trades:>2} │ Avg P&L: {fmt_money(avg_pnl):>8} │"
-                print(colored(performance_line.ljust(79) + "│", "white"))
+                enhanced_logger.display_table(performance_line.ljust(79) + "│", "white")
                 
                 # Best/Worst trades
                 best_symbol = best_trade['symbol'].replace('/USDT:USDT', '')[:8] if best_trade else 'N/A'
                 worst_symbol = worst_trade['symbol'].replace('/USDT:USDT', '')[:8] if worst_trade else 'N/A'
                 
                 highlights_line = f"│ 🥇 Best: {best_symbol} {fmt_money(best_pnl):>8} │ 🥉 Worst: {worst_symbol} {fmt_money(worst_pnl):>8} │"
-                print(colored(highlights_line.ljust(79) + "│", "white"))
+                enhanced_logger.display_table(highlights_line.ljust(79) + "│", "white")
             
-            print(colored("└" + "─" * 78 + "┘", "cyan"))
+            enhanced_logger.display_table("└" + "─" * 78 + "┘", "cyan")
             
         except Exception as e:
             logging.error(f"Error rendering session summary: {e}")
-            # Fallback simple summary
+            # Fallback simple summary using enhanced logging
             total_pnl = sum(r.get('pnl_usd', 0.0) for r in self._session_closed)
-            print(colored(f"📊 SESSION TOTAL: {len(self._session_closed)} trades | P&L: {fmt_money(total_pnl)}", 
-                         pct_color(total_pnl), attrs=['bold']))
+            enhanced_logger.display_table(f"📊 SESSION TOTAL: {len(self._session_closed)} trades | P&L: {fmt_money(total_pnl)}", 
+                         pct_color(total_pnl), attrs=['bold'])
 
 
 # Global instance

@@ -424,8 +424,14 @@ class TradingEngine:
         
         Args:
             total_seconds: Secondi totali da attendere (es. 300 per 5m)
+            
+        🚀 ENHANCED: Uses triple output logging system
         """
-        logging.info(colored(f"⏸️ WAITING {total_seconds//60}m until next cycle...", "magenta", attrs=['bold']))
+        # Import enhanced logging
+        from core.enhanced_logging_system import enhanced_logger, countdown_logger
+        
+        # Log countdown start
+        countdown_logger.log_countdown_start(total_seconds // 60)
         
         remaining = total_seconds
         
@@ -434,14 +440,18 @@ class TradingEngine:
             minutes = remaining // 60
             seconds = remaining % 60
             
-            # 🔧 MONO-RIGA: Usa print con \r per sovrascrivere
+            # 🔧 TERMINAL: Usa print con \r per sovrascrivere (mantiene UX originale)
             countdown_text = f"⏰ Next cycle in: {minutes}m{seconds:02d}s"
             print(f"\r{colored(countdown_text, 'magenta')}", end='', flush=True)
+            
+            # 📝 FILE LOGGING: Log ogni tick significativo (ogni 30 secondi)
+            if remaining % 30 == 0 or remaining <= 10:
+                countdown_logger.log_countdown_tick(minutes, seconds)
             
             # Sleep per 1 secondo per aggiornamento fluido
             await asyncio.sleep(1)
             remaining -= 1
         
-        # Nuova riga dopo il countdown
-        print()  # Fine riga
-        logging.info(colored("🚀 Starting next cycle...", "cyan", attrs=['bold']))
+        # Fine countdown
+        print()  # Nuova riga dopo il countdown
+        enhanced_logger.display_table("🚀 Starting next cycle...", "cyan", attrs=['bold'])
