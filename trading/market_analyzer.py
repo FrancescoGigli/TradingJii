@@ -69,89 +69,28 @@ class MarketAnalyzer:
         self.all_symbol_data = {}
         successful_downloads = 0
         
-        # Clean symbol-by-symbol download with organized output
-        for index, symbol in enumerate(self.top_symbols_analysis, 1):
-            symbol_short = symbol.replace('/USDT:USDT', '')
-            
-            # 🚫 EARLY CHECK: Salta simbolo se già escluso da cicli precedenti
-            from core.symbol_exclusion_manager import global_symbol_exclusion_manager
+        # 🚀 ORGANIZED THREAD DOWNLOAD - 5 Threads with Symbol Lists
+        from core.symbol_exclusion_manager import global_symbol_exclusion_manager
+        
+        # Filter excluded symbols first
+        valid_symbols = []
+        excluded_count = 0
+        
+        for symbol in self.top_symbols_analysis:
             if global_symbol_exclusion_manager.is_excluded(symbol):
-                enhanced_logger.display_table(f"[{index}/{len(self.top_symbols_analysis)}] {symbol_short} - 🚫 SKIPPED (excluded)", "yellow")
-                continue
-                
-            symbol_start_time = time.time()
-            
-            # Clean symbol header
-            enhanced_logger.display_table(f"[{index}/{len(self.top_symbols_analysis)}] {symbol_short}", "cyan", attrs=['bold'])
-            
-            dataframes = {}
-            symbol_success = True
-            timeframe_results = []
-            
-            # Download all timeframes for this symbol
-            for tf in enabled_timeframes:
-                # 🚫 CHECK: Verifica se il simbolo è stato escluso nel frattempo
-                if global_symbol_exclusion_manager.is_excluded(symbol):
-                    enhanced_logger.display_table(f"  🚫 STOP: {symbol_short} excluded during processing", 'yellow')
-                    symbol_success = False
-                    break
-                
-                try:
-                    tf_start = time.time()
-                    df = await fetch_and_save_data(exchange, symbol, tf)
-                    tf_time = time.time() - tf_start
-                    
-                    if df is not None and len(df) > 100:
-                        dataframes[tf] = df
-                        timeframe_results.append(f"  📥 {tf:>3}: {len(df):,} candles ✅ ({tf_time:.1f}s)")
-                    else:
-                        timeframe_results.append(f"  ❌ {tf:>3}: No data")
-                        symbol_success = False
-                        
-                        # 🔧 IMMEDIATE EXCLUSION: Se un timeframe fallisce subito, escludi il simbolo
-                        if len(dataframes) == 0:  # Nessun timeframe riuscito
-                            enhanced_logger.display_table(f"  🚫 EXCLUDING: {symbol_short} - No data for first timeframe", 'yellow')
-                            global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
-                                symbol, missing_timeframes=[tf]
-                            )
-                            symbol_success = False
-                            break  # Esce dal loop timeframes
-                        
-                except Exception as e:
-                    error_detail = str(e)
-                    timeframe_results.append(f"  ❌ {tf:>3}: Error - {str(e)[:30]}...")
-                    symbol_success = False
-                    
-                    # 🔧 IMMEDIATE EXCLUSION per dataset errors
-                    if "too small" in error_detail.lower() or "insufficient" in error_detail.lower():
-                        enhanced_logger.display_table(f"  🚫 EXCLUDING: {symbol_short} - Insufficient data", 'yellow')
-                        global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
-                            symbol, missing_timeframes=[tf]
-                        )
-                        symbol_success = False
-                        break  # Esce dal loop timeframes
-            
-            # Display results for this symbol
-            for result in timeframe_results:
-                enhanced_logger.display_table(result, 'green' if '✅' in result else 'red')
-            
-            # Symbol summary
-            symbol_time = time.time() - symbol_start_time
-            if symbol_success and len(dataframes) == len(enabled_timeframes):
-                self.all_symbol_data[symbol] = dataframes
-                successful_downloads += 1
-                enhanced_logger.display_table(f"  ✅ Complete: {len(enabled_timeframes)}/{len(enabled_timeframes)} timeframes ({symbol_time:.1f}s total)", 'green')
+                excluded_count += 1
             else:
-                missing_tf = len(enabled_timeframes) - len(dataframes)
-                missing_timeframes = [tf for tf in enabled_timeframes if tf not in dataframes]
-                enhanced_logger.display_table(f"  ❌ Failed: Missing {missing_tf} timeframes", 'red')
-                
-                # 🚫 AUTO-EXCLUDE simbolo con timeframes insufficienti
-                from core.symbol_exclusion_manager import global_symbol_exclusion_manager
-                global_symbol_exclusion_manager.exclude_symbol_insufficient_data(
-                    symbol, 
-                    missing_timeframes=missing_timeframes
-                )
+                valid_symbols.append(symbol)
+        
+        if excluded_count > 0:
+            enhanced_logger.display_table(f"🚫 Pre-filtered {excluded_count} excluded symbols", "yellow")
+        
+        # Use threaded download with organized display
+        self.all_symbol_data = await self._fetch_with_thread_lists(
+            exchange, valid_symbols, enabled_timeframes
+        )
+        
+        successful_downloads = len(self.all_symbol_data)
 
         data_fetch_time = time.time() - data_fetch_start
         
@@ -168,14 +107,6 @@ class MarketAnalyzer:
     async def generate_ml_predictions(self, xgb_models, xgb_scalers, time_steps):
         """
         Generate ML predictions for all symbols with complete data
-        
-        Args:
-            xgb_models: Dictionary of XGBoost models by timeframe
-            xgb_scalers: Dictionary of scalers by timeframe
-            time_steps: Time steps for prediction
-            
-        Returns:
-            tuple: (prediction_results, ml_time)
         """
         if not self.complete_symbols:
             logging.warning(colored("⚠️ No symbols with complete data this cycle", "yellow"))
@@ -214,14 +145,6 @@ class MarketAnalyzer:
     async def initialize_markets(self, exchange, top_analysis_crypto, excluded_symbols):
         """
         Initialize market data and get top symbols for analysis
-        
-        Args:
-            exchange: Exchange instance
-            top_analysis_crypto: Number of top symbols to get
-            excluded_symbols: Symbols to exclude from analysis
-            
-        Returns:
-            dict: Min amounts for symbols
         """
         try:
             markets = await fetch_markets(exchange)
@@ -250,56 +173,23 @@ class MarketAnalyzer:
             raise
 
     def get_symbol_data(self, symbol):
-        """
-        Get dataframes for a specific symbol
-        
-        Args:
-            symbol: Symbol to get data for
-            
-        Returns:
-            dict: Dataframes by timeframe for the symbol
-        """
+        """Get dataframes for a specific symbol"""
         return self.all_symbol_data.get(symbol, {})
 
     def get_complete_symbols(self):
-        """
-        Get list of symbols with complete data
-        
-        Returns:
-            list: Symbols with complete timeframe data
-        """
+        """Get list of symbols with complete data"""
         return self.complete_symbols.copy()
 
     def get_top_symbols(self):
-        """
-        Get list of top symbols for analysis
-        
-        Returns:
-            list: Top symbols selected for analysis
-        """
+        """Get list of top symbols for analysis"""
         return self.top_symbols_analysis.copy()
 
     def get_volumes_data(self):
-        """
-        Get volume data for display
-        
-        Returns:
-            dict: Symbol volumes for display formatting
-        """
+        """Get volume data for display"""
         return self.symbol_volumes.copy()
     
     async def _get_top_symbols_with_volumes(self, exchange, all_symbols, top_n):
-        """
-        Get top symbols sorted by volume and store volume data
-        
-        Args:
-            exchange: Exchange instance
-            all_symbols: List of all available symbols
-            top_n: Number of top symbols to return
-            
-        Returns:
-            tuple: (top_symbols_list, volumes_dict)
-        """
+        """Get top symbols sorted by volume and store volume data"""
         try:
             # Use fetcher's get_top_symbols but collect volume data
             from fetcher import fetch_ticker_volume
@@ -339,10 +229,184 @@ class MarketAnalyzer:
             top_symbols = await get_top_symbols(exchange, all_symbols, top_n)
             return top_symbols, {}
 
+    async def _fetch_with_thread_lists(self, exchange, symbols, timeframes):
+        """
+        🚀 Organized download with thread bars
+        Shows each thread's progress bar and symbol list
+        """
+        from core.enhanced_logging_system import enhanced_logger
+        
+        # Divide symbols into 5 thread groups
+        thread_size = len(symbols) // 5
+        remainder = len(symbols) % 5
+        
+        thread_groups = []
+        start_idx = 0
+        
+        for i in range(5):
+            current_size = thread_size + (1 if i < remainder else 0)
+            end_idx = start_idx + current_size
+            thread_symbols = symbols[start_idx:end_idx]
+            
+            thread_groups.append({
+                'id': i + 1,
+                'symbols': thread_symbols,
+                'completed': 0,
+                'current_symbol': None,
+                'status': 'ready'
+            })
+            start_idx = end_idx
+        
+        # Display initial thread assignments
+        enhanced_logger.display_table("📊 THREAD ASSIGNMENTS:", "cyan", attrs=['bold'])
+        for group in thread_groups:
+            symbol_names = [s.replace('/USDT:USDT', '') for s in group['symbols']]
+            enhanced_logger.display_table(f"Thread {group['id']}: {', '.join(symbol_names)}", "white")
+        enhanced_logger.display_table("")
+        
+        # Track progress
+        all_data = {}
+        total_completed = 0
+        start_time = time.time()
+        
+        async def process_thread_group(group):
+            """Process one thread group"""
+            nonlocal total_completed
+            
+            thread_id = group['id']
+            
+            for symbol in group['symbols']:
+                symbol_short = symbol.replace('/USDT:USDT', '')
+                group['current_symbol'] = symbol_short
+                group['status'] = 'processing'
+                
+                # Show thread progress bars
+                self._display_thread_bars(thread_groups, total_completed, len(symbols))
+                
+                # Download timeframes
+                symbol_data = {}
+                success_count = 0
+                
+                for tf in timeframes:
+                    try:
+                        df = await fetch_and_save_data(exchange, symbol, tf)
+                        if df is not None and len(df) > 100:
+                            symbol_data[tf] = df
+                            success_count += 1
+                    except Exception as e:
+                        logging.debug(f"[T{thread_id}] Error fetching {symbol}[{tf}]: {e}")
+                
+                # Mark completion
+                if success_count == len(timeframes):
+                    all_data[symbol] = symbol_data
+                    group['completed'] += 1
+                    total_completed += 1
+                    
+                    # Show updated bars after each completion
+                    self._display_thread_bars(thread_groups, total_completed, len(symbols))
+            
+            group['status'] = 'done'
+            group['current_symbol'] = None
+            enhanced_logger.display_table(f"✅ Thread {thread_id} completed: {group['completed']}/{len(group['symbols'])} symbols", "green", attrs=['bold'])
+        
+        # Start with initial bars
+        self._display_thread_bars(thread_groups, 0, len(symbols))
+        
+        # Execute all threads
+        tasks = [process_thread_group(group) for group in thread_groups]
+        await asyncio.gather(*tasks)
+        
+        return all_data
+
+    def _display_thread_bars(self, thread_groups, total_completed, total_symbols):
+        """Display progress bars for each thread with in-place updates"""
+        from core.enhanced_logging_system import enhanced_logger
+        
+        # Rate limit (every 2 seconds or significant change)
+        current_time = time.time()
+        if not hasattr(self, '_last_bar_update'):
+            self._last_bar_update = 0
+            self._last_bar_completed = 0
+            self._bars_displayed = False
+        
+        time_since_last = current_time - self._last_bar_update
+        completion_change = total_completed - self._last_bar_completed
+        
+        # Show initial display or update every 2 seconds/2 completions
+        if not self._bars_displayed or time_since_last >= 2.0 or completion_change >= 2:
+            self._last_bar_update = current_time
+            self._last_bar_completed = total_completed
+            
+            # Build the complete table as colored strings
+            lines = []
+            lines.append(colored("┌────────────────────────────────────────────────────────────────────┐", "cyan"))
+            
+            for group in thread_groups:
+                thread_id = group['id']
+                completed = group['completed']
+                total_in_thread = len(group['symbols'])
+                current_symbol = group['current_symbol']
+                
+                # Progress bar (10 chars)
+                progress_pct = (completed / total_in_thread) if total_in_thread > 0 else 0
+                filled = int(progress_pct * 10)
+                bar = "█" * filled + "░" * (10 - filled)
+                
+                # Status display
+                if group['status'] == 'done':
+                    status_text = f"✅ Complete ({completed}/{total_in_thread})"
+                elif current_symbol:
+                    status_text = f"{current_symbol} 🔄"
+                else:
+                    status_text = "⏳ Waiting"
+                
+                # Thread line with fixed spacing and alignment
+                thread_header = f"[Thread {thread_id}]"
+                # Fixed width components for perfect alignment
+                thread_part = f"│ {thread_header:<10} "  # Fixed width for thread header
+                status_part = f"{status_text:<25} "        # Fixed width for status
+                bar_part = f"{bar} "                       # Progress bar (10 chars + space)
+                pct_part = f"{progress_pct*100:.0f}%"     # Percentage
+                
+                # Calculate remaining space to reach exactly 69 characters before final │
+                content_length = len(thread_part) + len(status_part) + len(bar_part) + len(pct_part)
+                padding = 69 - content_length
+                
+                thread_line = f"{thread_part}{status_part}{bar_part}{pct_part}{' ' * max(0, padding)}│"
+                color = "green" if group['status'] == 'done' else "white"
+                lines.append(colored(thread_line, color))
+            
+            lines.append(colored("└────────────────────────────────────────────────────────────────────┘", "cyan"))
+            
+            # Overall progress
+            overall_pct = (total_completed / total_symbols) if total_symbols > 0 else 0
+            overall_line = f"📊 Overall: {total_completed}/{total_symbols} ({overall_pct*100:.0f}%)"
+            lines.append(colored(overall_line, "cyan"))
+            
+            # Display: First time shows normally, subsequent updates overwrite
+            if not self._bars_displayed:
+                # First display: show normally and log milestone
+                for line in lines:
+                    print(line)
+                logging.info("📊 Thread progress monitoring started")
+                self._bars_displayed = True
+                self._table_lines = len(lines)
+            else:
+                # Overwrite previous table (move cursor up and rewrite)
+                print(f"\033[{self._table_lines}A", end='')  # Move cursor up
+                for line in lines:
+                    print(f"\033[K{line}")  # Clear line and print new content
+                
+                # Log milestone updates to file (not terminal)
+                milestones = [0, 25, 50, 75, 100]
+                current_milestone = int((overall_pct * 100) // 25) * 25
+                if not hasattr(self, '_logged_milestone') or current_milestone > self._logged_milestone:
+                    if current_milestone in milestones and current_milestone > 0:
+                        logging.info(f"📊 Download progress: {current_milestone}% ({total_completed}/{total_symbols})")
+                        self._logged_milestone = current_milestone
+
     def clear_data(self):
-        """
-        Clear stored market data to free memory
-        """
+        """Clear stored market data to free memory"""
         self.all_symbol_data.clear()
         self.complete_symbols.clear()
         logging.debug("Market data cleared from memory")

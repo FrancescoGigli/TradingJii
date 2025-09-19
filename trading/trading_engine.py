@@ -196,6 +196,7 @@ class TradingEngine:
                 prediction_results, all_symbol_data
             )
 
+
             enhanced_logger.display_table(f"✅ Signal processing complete: {len(all_signals)} signals generated", "green")
 
             # ──────────────────────────────────────────────────────────────────────────────────────
@@ -222,7 +223,7 @@ class TradingEngine:
             cycle_logger.log_phase(6, "POSITION MANAGEMENT & RISK CONTROL", "cyan")
             log_separator("─", 80, "cyan")
             enhanced_logger.display_table("🛡️ Managing existing positions and risk controls", "cyan")
-            
+
             await self._manage_positions(exchange)
 
             # ──────────────────────────────────────────────────────────────────────────────────────
@@ -351,7 +352,7 @@ class TradingEngine:
             return
 
         enhanced_logger.display_table(f"🎯 Executing {len(signals_to_execute)} signals (max {max_positions} available)", "red")
-        await self._setup_trading_parameters(exchange, signals_to_execute)
+        self._setup_trading_parameters(exchange, signals_to_execute)
 
         executed_trades = 0
         for i, signal in enumerate(signals_to_execute, 1):

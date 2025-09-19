@@ -231,7 +231,7 @@ async def main():
             trading_engine.position_manager if trading_engine.clean_modules_available else None,
             trailing_monitor
         )
-        logging.info(colored("📊 Realtime display (snapshot mode) initialized", "cyan"))
+        logging.info(colored("� Realtime display (snapshot mode) initialized", "cyan"))
 
         # Continuous trading
         logging.info(colored("🎯 All systems ready — starting trading loop", "green"))

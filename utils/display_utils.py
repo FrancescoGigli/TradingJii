@@ -39,7 +39,7 @@ def calculate_ensemble_confidence(tf_predictions, ensemble_value):
 
 def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, risk_manager_available=False):
     """
-    Display structured decision analysis for each symbol
+    Display structured decision analysis for each symbol with enhanced visual differentiation
     
     Shows the complete decision pipeline: Consensus -> ML -> RL -> Risk Manager -> Final Decision
     """
@@ -47,17 +47,25 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
         symbol_short = symbol.replace('/USDT:USDT', '')
         
         from core.enhanced_logging_system import enhanced_logger
-        enhanced_logger.display_table(f"🔍 {symbol_short} Analysis:", "cyan", attrs=['bold'])
         
-        # 1. CONSENSUS TIMEFRAME ANALYSIS
+        # Enhanced symbol header with visual separator
+        enhanced_logger.display_table("", "white")
+        enhanced_logger.display_table("┌" + "─" * 58 + "┐", "cyan")
+        enhanced_logger.display_table(f"│ 🔍 {symbol_short:<50} │", "cyan", attrs=['bold'])
+        enhanced_logger.display_table("└" + "─" * 58 + "┘", "cyan")
+        
+        # 1. CONSENSUS TIMEFRAME ANALYSIS with distinctive emojis
         tf_predictions = signal_data.get('tf_predictions', {})
         if tf_predictions:
             tf_details = []
             signal_names = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}
+            signal_emojis = {0: '🔴', 1: '🟢', 2: '🟡'}
+            
             for tf, pred in tf_predictions.items():
                 signal_name = signal_names.get(pred, 'UNKNOWN')
+                emoji = signal_emojis.get(pred, '⚪')
                 color = 'red' if signal_name == 'SELL' else 'green' if signal_name == 'BUY' else 'yellow'
-                tf_details.append(colored(f"{tf}={signal_name}", color))
+                tf_details.append(f"{emoji} {tf}={colored(signal_name, color, attrs=['bold'])}")
             
             # Calculate consensus percentage
             signal_counts = {}
@@ -69,12 +77,21 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
             consensus_pct = (signal_counts[winning_signal] / len(tf_predictions)) * 100
             
             consensus_color = 'green' if consensus_pct >= 66 else 'yellow' if consensus_pct >= 50 else 'red'
-            enhanced_logger.display_table(f"  📊 Consensus: {', '.join(tf_details)} → {colored(f'{consensus_pct:.0f}% agreement', consensus_color)}")
+            consensus_emoji = '🎯' if consensus_pct >= 66 else '⚠️' if consensus_pct >= 50 else '❌'
+            enhanced_logger.display_table(f"  📊 Consensus: {', '.join(tf_details)} → {consensus_emoji} {colored(f'{consensus_pct:.0f}% agreement', consensus_color, attrs=['bold'])}")
         
-        # 2. ML CONFIDENCE
+        # 2. ML CONFIDENCE with visual confidence bar
         ml_confidence = signal_data.get('confidence', 0)
         confidence_color = 'green' if ml_confidence >= 0.7 else 'yellow' if ml_confidence >= 0.5 else 'red'
-        enhanced_logger.display_table(f"  🧠 ML Confidence: {colored(f'{ml_confidence:.1%}', confidence_color)}")
+        confidence_emoji = '🚀' if ml_confidence >= 0.7 else '📈' if ml_confidence >= 0.5 else '📉'
+        
+        # Create visual confidence bar
+        bar_length = 20
+        filled = int(ml_confidence * bar_length)
+        empty = bar_length - filled
+        confidence_bar = colored('█' * filled, confidence_color) + colored('░' * empty, 'white')
+        
+        enhanced_logger.display_table(f"  🧠 ML Confidence: {confidence_emoji} {colored(f'{ml_confidence:.1%}', confidence_color, attrs=['bold'])} {confidence_bar}")
         
         # 3. RL APPROVAL WITH DETAILED REASONING
         if rl_available:
@@ -84,49 +101,46 @@ def display_symbol_decision_analysis(symbol, signal_data, rl_available=False, ri
             
             if rl_approved:
                 rl_color = 'green' if rl_confidence >= 0.6 else 'yellow'
-                enhanced_logger.display_table(f"  🤖 RL Approval: {colored('✅ APPROVED', 'green')} (RL confidence: {colored(f'{rl_confidence:.1%}', rl_color)})")
+                enhanced_logger.display_table(f"  🤖 RL Filter: {colored('✅ APPROVED', 'green', attrs=['bold'])} (Confidence: {colored(f'{rl_confidence:.1%}', rl_color, attrs=['bold'])})")
                 
-                # Show approval reasons
+                # Show key approval reasons with distinctive emojis
                 if rl_details.get('approvals'):
                     for approval in rl_details['approvals'][:2]:  # Show top 2 reasons
                         enhanced_logger.display_table(f"      ✅ {approval}", 'green')
             else:
-                enhanced_logger.display_table(f"  🤖 RL Approval: {colored('❌ REJECTED', 'red')}")
+                enhanced_logger.display_table(f"  🤖 RL Filter: {colored('❌ REJECTED', 'red', attrs=['bold'])}")
                 
-                # Show detailed rejection reasons
-                factors = rl_details.get('factors', {})
-                issues = rl_details.get('issues', [])
-                
-                # Show key factors that caused rejection
-                for factor_name, factor_info in factors.items():
-                    if factor_info.get('status') in ['TOO_HIGH', 'TOO_LOW', 'WEAK', 'LOW']:
-                        status_color = 'red' if factor_info['status'] in ['TOO_HIGH', 'TOO_LOW'] else 'yellow'
-                        factor_display = factor_name.replace('_', ' ').title()
-                        enhanced_logger.display_table(f"      ❌ {factor_display}: {factor_info['value']} (limit: {factor_info['threshold']})", status_color)
-                
-                # Primary reason
+                # Primary reason with enhanced formatting
                 primary_reason = rl_details.get('primary_reason', 'Unknown reason')
-                enhanced_logger.display_table(f"      🔒 Primary: {primary_reason}", 'red')
+                enhanced_logger.display_table(f"      🔒 Primary: {colored(primary_reason, 'red', attrs=['bold'])}", 'red')
         else:
-            enhanced_logger.display_table(f"  🤖 RL Approval: {colored('⚪ N/A', 'white')} (RL system not available)")
+            enhanced_logger.display_table(f"  🤖 RL Filter: {colored('⚪ N/A', 'white')} (RL system not available)")
         
         # 4. RISK MANAGER VALIDATION
         if risk_manager_available:
-            enhanced_logger.display_table(f"  🛡️ Risk Manager: {colored('✅ APPROVED', 'green')} (position size validated)")
+            enhanced_logger.display_table(f"  🛡️ Risk Manager: {colored('✅ APPROVED', 'green', attrs=['bold'])} (position size validated)")
         else:
             enhanced_logger.display_table(f"  🛡️ Risk Manager: {colored('⚪ FALLBACK', 'yellow')} (using conservative sizing)")
         
-        # 5. FINAL DECISION
+        # 5. FINAL DECISION with enhanced visual separation
         final_action = signal_data.get('signal_name', 'SKIP')
-        if final_action in ['BUY', 'SELL']:
+        if final_action == 'BUY':
             action_color = 'green'
-            action_symbol = '🎯'
+            action_symbol = '🚀'
+            action_bg = '🟢'
+        elif final_action == 'SELL':
+            action_color = 'red' 
+            action_symbol = '📉'
+            action_bg = '🔴'
         else:
-            action_color = 'red'
+            action_color = 'yellow'
             action_symbol = '⏭️'
+            action_bg = '🟡'
             final_action = 'SKIP'
         
-        enhanced_logger.display_table(f"  {action_symbol} {colored('DECISION:', 'white', attrs=['bold'])} {colored(f'{final_action}', action_color, attrs=['bold'])}")
+        enhanced_logger.display_table("  " + "─" * 56, "white")
+        enhanced_logger.display_table(f"  {action_symbol} {colored('FINAL DECISION:', 'white', attrs=['bold'])} {action_bg} {colored(f'{final_action}', action_color, attrs=['bold'])}")
+        enhanced_logger.display_table("", "white")
         
     except Exception as e:
         logging.error(f"Error displaying decision analysis for {symbol}: {e}")

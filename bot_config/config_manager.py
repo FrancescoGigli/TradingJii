@@ -19,7 +19,7 @@ class ConfigManager:
     def __init__(self):
         self.selected_timeframes = []
         self.selected_models = ['xgb']  # Only XGBoost for now
-        self.demo_mode = True
+        self.demo_mode = False  # Default to LIVE mode
         self.raw_weights = {}
         self.normalized_weights = {}
     

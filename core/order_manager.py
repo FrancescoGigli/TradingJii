@@ -133,11 +133,23 @@ class OrderManager:
                     return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_fallback", None)
 
         except Exception as e:
-            # CRITICAL FIX: NO EXCEPTIONS for stop loss failures
-            # Every position MUST have a stop loss - no compromises
-            error_msg = f"CRITICAL: Stop loss setting failed - {str(e)}"
-            logging.error(colored(f"❌ {error_msg}", "red"))
-            return OrderExecutionResult(False, None, error_msg)
+            # 🔧 SMART ERROR HANDLING: Check error types
+            error_str = str(e).lower()
+            
+            if "34040" in error_str and "not modified" in error_str:
+                # SUCCESS: Stop loss already exists and correct
+                logging.debug(colored(f"📝 {symbol}: Stop loss already set correctly", "cyan"))
+                return OrderExecutionResult(True, f"trading_stop_{symbol.replace('/USDT:USDT', '')}_existing", "already_set")
+            elif "10001" in error_str and ("greater" in error_str or "should" in error_str):
+                # WARNING: Stop loss validation error (price rules)
+                error_msg = f"Stop loss validation failed - {str(e)}"
+                logging.warning(colored(f"⚠️ {error_msg}", "yellow"))
+                return OrderExecutionResult(False, None, error_msg)
+            else:
+                # Real critical error
+                error_msg = f"CRITICAL: Stop loss setting failed - {str(e)}"
+                logging.error(colored(f"❌ {error_msg}", "red"))
+                return OrderExecutionResult(False, None, error_msg)
 
     async def setup_position_protection(self, exchange, symbol: str, side: str, size: float,
                                         sl_price: float, tp_price: float) -> Dict[str, OrderExecutionResult]:
