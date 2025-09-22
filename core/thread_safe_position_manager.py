@@ -26,7 +26,7 @@ try:
     from core.online_learning_manager import global_online_learning_manager
     ONLINE_LEARNING_AVAILABLE = bool(global_online_learning_manager)
     if ONLINE_LEARNING_AVAILABLE:
-        logging.info("🔒 ThreadSafePositionManager: Online Learning integration enabled")
+        logging.debug("🔒 ThreadSafePositionManager: Online Learning integration enabled")
 except ImportError:
     ONLINE_LEARNING_AVAILABLE = False
     global_online_learning_manager = None
@@ -111,7 +111,7 @@ class ThreadSafePositionManager:
         # Load existing data
         self.load_positions()
         
-        logging.info("🔒 ThreadSafePositionManager initialized - race conditions eliminated")
+
     
     # ========================================
     # ATOMIC WRITE OPERATIONS (Fully Protected)
@@ -742,8 +742,25 @@ class ThreadSafePositionManager:
     def _save_positions_unsafe(self):
         """UNSAFE: Save positions (use only when already in lock)"""
         try:
-            # Convert to serializable format
-            open_positions_dict = {pos_id: asdict(position) for pos_id, position in self._open_positions.items()}
+            # Convert to serializable format with trailing_data handling
+            open_positions_dict = {}
+            for pos_id, position in self._open_positions.items():
+                pos_dict = asdict(position)
+                
+                # Handle trailing_data serialization if it exists
+                if hasattr(position, 'trailing_data') and position.trailing_data is not None:
+                    try:
+                        if hasattr(position.trailing_data, 'to_dict'):
+                            pos_dict['trailing_data'] = position.trailing_data.to_dict()
+                        else:
+                            # Remove non-serializable trailing_data
+                            pos_dict['trailing_data'] = None
+                    except Exception as trailing_serial_error:
+                        logging.warning(f"🔒 Failed to serialize trailing_data for {pos_id}: {trailing_serial_error}")
+                        pos_dict['trailing_data'] = None
+                
+                open_positions_dict[pos_id] = pos_dict
+            
             closed_positions_dict = {pos_id: asdict(position) for pos_id, position in self._closed_positions.items()}
             
             data = {
@@ -837,7 +854,7 @@ class ThreadSafePositionManager:
                 self._operation_count = data.get('operation_count', 0)
                 
                 total_positions = len(self._open_positions) + len(self._closed_positions)
-                logging.info(f"🔒 Thread-safe positions loaded: {len(self._open_positions)} open, {len(self._closed_positions)} closed")
+                logging.debug(f"🔒 Thread-safe positions loaded: {len(self._open_positions)} open, {len(self._closed_positions)} closed")
                 
         except FileNotFoundError:
             logging.info("🔒 No position file found, starting fresh thread-safe session")

@@ -44,7 +44,7 @@ except ImportError:
 try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager
     THREAD_SAFE_POSITIONS_AVAILABLE = True
-    logging.info("🔒 ThreadSafePositionManager integration enabled")
+    logging.debug("🔒 ThreadSafePositionManager integration enabled")
 except ImportError:
     THREAD_SAFE_POSITIONS_AVAILABLE = False
     global_thread_safe_position_manager = None
@@ -97,7 +97,7 @@ class TradingEngine:
             self.position_manager = position_manager
             self.MarketData = MarketData
 
-            logging.info("🔒 Clean trading modules loaded with ThreadSafePositionManager")
+            logging.debug("🔒 Clean trading modules loaded with ThreadSafePositionManager")
             return True
         except ImportError as e:
             logging.error(f"❌ Clean modules not available: {e}")
@@ -178,7 +178,7 @@ class TradingEngine:
 
             # Phase 3: Signal Processing
             cycle_logger.log_phase(3, "SIGNAL PROCESSING & FILTERING", "yellow")
-            self.signal_processor.display_complete_analysis(prediction_results, all_symbol_data)
+            await self.signal_processor.display_complete_analysis(prediction_results, all_symbol_data)
             all_signals = await self.signal_processor.process_prediction_results(prediction_results, all_symbol_data)
 
             # Phase 4: Ranking
@@ -386,22 +386,33 @@ class TradingEngine:
                 await asyncio.sleep(60)
 
     async def _wait_with_countdown(self, total_seconds: int):
-        """Countdown con logging multiplo"""
-        from core.enhanced_logging_system import enhanced_logger, countdown_logger
+        """Clean countdown with minimal logging"""
+        from core.enhanced_logging_system import enhanced_logger
 
-        countdown_logger.log_countdown_start(total_seconds // 60)
+        # Log only the start
+        minutes_total = total_seconds // 60
+        logging.info(f"ℹ️ ⏸️ WAITING {minutes_total}m until next cycle...")
+        
         remaining = total_seconds
+        last_logged_minute = -1
 
         while remaining > 0:
             minutes, seconds = divmod(remaining, 60)
+            
+            # Terminal display (overwrites same line)
             countdown_text = f"⏰ Next cycle in: {minutes}m{seconds:02d}s"
             print(f"\r{colored(countdown_text, 'magenta')}", end="", flush=True)
 
-            if remaining % 30 == 0 or remaining <= 10:
-                countdown_logger.log_countdown_tick(minutes, seconds)
+            # Log only significant milestones to avoid spam
+            if minutes != last_logged_minute and minutes in [10, 5, 2, 1]:
+                logging.info(f"ℹ️ ⏰ Next cycle in: {minutes}m{seconds:02d}s")
+                last_logged_minute = minutes
+            elif remaining == 10:
+                logging.info("ℹ️ ⏰ Next cycle in: 0m10s")
 
             await asyncio.sleep(1)
             remaining -= 1
 
-        print()
-        enhanced_logger.display_table("🚀 Starting next cycle...", "cyan", attrs=["bold"])
+        # Clear the countdown line and log completion
+        print("\r" + " " * 50 + "\r", end="", flush=True)
+        logging.info("🚀 Starting next cycle...")

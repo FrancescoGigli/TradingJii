@@ -22,7 +22,7 @@ try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager
     from core.smart_api_manager import global_smart_api_manager
     UNIFIED_MANAGERS_AVAILABLE = True
-    logging.info("🔒 TrailingMonitor: Unified managers integration enabled")
+    logging.debug("🔒 TrailingMonitor: Unified managers integration enabled")
 except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ TrailingMonitor: Unified managers not available: {e}")
@@ -246,54 +246,18 @@ class TrailingMonitor:
                 if not success:
                     return  # Position may have been closed
             
-            # 3. CRITICAL FIX: Initialize trailing_data if missing (instead of skipping)
+            # CRITICAL FIX: Skip trailing_data initialization completely to avoid conflicts
             trailing_data = None
             if hasattr(position, 'trailing_data') and position.trailing_data is not None:
                 trailing_data = position.trailing_data
                 logging.debug(f"⚡ Using existing trailing_data for {symbol}")
             else:
-                # Initialize trailing_data directly in lightweight mode
-                logging.info(f"⚡ Initializing missing trailing_data for {symbol}")
-                atr_estimated = position.entry_price * 0.02  # Quick ATR estimate
-                
-                try:
-                    trailing_data = self.trailing_manager.initialize_trailing_data(
-                        position.symbol, position.side, position.entry_price, atr_estimated
-                    )
-                    
-                    # CRITICAL FIX: Set initial FIXED stop loss (6%) on Bybit immediately
-                    if trailing_data.fixed_sl_price is not None:
-                        try:
-                            sl_result = await self.order_manager.set_trading_stop(
-                                exchange, symbol, trailing_data.fixed_sl_price, None
-                            )
-                            if sl_result.success:
-                                logging.info(colored(f"🛡️ FIXED SL SET: {symbol} → ${trailing_data.fixed_sl_price:.6f} (6% protection)", "green"))
-                            else:
-                                logging.warning(f"⚠️ Failed to set initial SL for {symbol}: {sl_result.error}")
-                        except Exception as sl_error:
-                            logging.error(f"❌ Error setting initial SL for {symbol}: {sl_error}")
-                    
-                    # ATOMIC UPDATE: Save trailing_data atomically (use global manager)
-                    if UNIFIED_MANAGERS_AVAILABLE and hasattr(global_thread_safe_position_manager, 'atomic_update_position'):
-                        success = global_thread_safe_position_manager.atomic_update_position(position_id, {'trailing_data': trailing_data})
-                        if not success:
-                            logging.warning(f"⚡ Failed to save trailing_data for {symbol}, creating local copy")
-                            # Continue with local trailing_data even if atomic save failed
-                    else:
-                        # Fallback: set on position object directly
-                        position.trailing_data = trailing_data
-                        logging.debug(f"⚡ Set trailing_data directly on position for {symbol}")
-                    
-                    logging.info(colored(f"⚡ TRAILING INITIALIZED: {symbol} ready for monitoring with 6% fixed SL", "cyan"))
-                    
-                except Exception as init_error:
-                    logging.error(f"⚡ Failed to initialize trailing_data for {symbol}: {init_error}")
-                    return  # Skip this position if we can't initialize trailing
+                # SKIP INITIALIZATION: Let trading_orchestrator handle it
+                logging.debug(f"⚡ No trailing_data for {symbol} - skipping (will be handled by trading_orchestrator)")
+                return  # Skip position without trailing_data
             
             if trailing_data is None:
-                logging.warning(f"⚡ No trailing_data available for {symbol}, skipping")
-                return
+                return  # Skip if no trailing_data available
             
             # 4. LIGHTWEIGHT: Simple trailing activation check
             if not trailing_data.trailing_attivo:

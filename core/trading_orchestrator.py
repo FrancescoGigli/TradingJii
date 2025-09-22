@@ -13,6 +13,7 @@ GARANTISCE: Flusso trading semplice e affidabile
 """
 
 import logging
+import asyncio
 from typing import Dict, List, Tuple
 from termcolor import colored
 
@@ -33,7 +34,7 @@ try:
     from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
     from core.smart_api_manager import global_smart_api_manager
     UNIFIED_MANAGERS_AVAILABLE = True
-    logging.info("🔧 Unified managers integration enabled in TradingOrchestrator")
+    logging.debug("🔧 Unified managers integration enabled in TradingOrchestrator")
 except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
@@ -98,7 +99,7 @@ class TradingOrchestrator:
             self.balance_manager = get_global_balance_manager()
             self.sl_calculator = global_unified_stop_loss_calculator
             self.api_manager = global_smart_api_manager
-            logging.info("🔧 TradingOrchestrator: All unified managers initialized")
+            logging.debug("🔧 TradingOrchestrator: All unified managers initialized")
 
     # --------------------------------------------------------------------- #
     #                      NEW TRADE (open + SL 6%)                         #
@@ -262,16 +263,17 @@ class TradingOrchestrator:
             
             # STEP 1 FIX: Use atomic updates instead of direct position access
             if position_id:
-                # Store trailing data atomically
+                # Store trailing data atomically with explicit trailing state
                 trailing_updates = {
-                    'trailing_data': trailing_data
+                    'trailing_data': trailing_data,
+                    'trailing_active': trailing_data.trailing_attivo,
+                    'best_price': trailing_data.best_price,
+                    'sl_corrente': trailing_data.sl_corrente
                 }
-                if trailing_data.trailing_attivo:
-                    trailing_updates.update({
-                        'trailing_attivo': True,
-                        'best_price': current_price,
-                        'sl_corrente': trailing_data.sl_corrente
-                    })
+                
+                # Log state for debugging
+                symbol_short = symbol.replace('/USDT:USDT', '')
+                logging.info(f"🔧 SAVING TRAILING STATE: {symbol_short} trailing_active={trailing_data.trailing_attivo}, sl_corrente={trailing_data.sl_corrente}")
                 
                 self.position_manager.atomic_update_position(position_id, trailing_updates)
 

@@ -97,7 +97,13 @@ class OrderManager:
             if take_profit:
                 params['takeProfit'] = str(take_profit)
 
+            # Debug log parametri API prima della chiamata
+            logging.info(f"🔧 API params: {params}")
+            
             result = await exchange.private_post_v5_position_trading_stop(params)
+            
+            # Debug log risposta completa da Bybit
+            logging.info(f"🔧 Bybit response: {result}")
 
             ret_code = result.get('retCode', -1)
             ret_msg = result.get('retMsg', 'Unknown response')

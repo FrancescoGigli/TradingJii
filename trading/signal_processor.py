@@ -4,6 +4,7 @@ Handles signal processing, RL filtering, and decision analysis
 """
 
 import logging
+import asyncio
 from termcolor import colored
 
 from utils.display_utils import calculate_ensemble_confidence, display_symbol_decision_analysis
@@ -163,7 +164,7 @@ class SignalProcessor:
             }
             return True
 
-    def display_complete_analysis(self, prediction_results, all_symbol_data):
+    async def display_complete_analysis(self, prediction_results, all_symbol_data):
         """
         Display complete analysis for all symbols showing decision pipeline
         
@@ -176,7 +177,8 @@ class SignalProcessor:
         enhanced_logger.display_table("=" * 80, "cyan")
         
         # Process ALL prediction results and show decision analysis
-        for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
+        prediction_items = list(prediction_results.items())
+        for i, (symbol, (ensemble_value, final_signal, tf_predictions)) in enumerate(prediction_items, 1):
             try:
                 # Create signal data for analysis display
                 signal_name = 'BUY' if final_signal == 1 else 'SELL' if final_signal == 0 else 'NEUTRAL'
@@ -253,8 +255,19 @@ class SignalProcessor:
                         risk_manager_available=True
                     )
                 
+                # 🕐 COUNTDOWN: 3 secondi tra una moneta e l'altra (esclusa l'ultima)
+                if i < len(prediction_items):  # Non aspettare dopo l'ultima moneta
+                    symbol_short = symbol.replace('/USDT:USDT', '')
+                    logging.info(colored(f"⏳ Waiting 3 seconds before next analysis... ({i}/{len(prediction_items)})", "magenta"))
+                    await asyncio.sleep(3)
+                
             except Exception as e:
                 logging.error(f"Error in decision analysis for {symbol}: {e}")
+                
+                # 🕐 COUNTDOWN anche in caso di errore (esclusa l'ultima)
+                if i < len(prediction_items):
+                    logging.info(colored(f"⏳ Waiting 3 seconds before next analysis... ({i}/{len(prediction_items)})", "magenta"))
+                    await asyncio.sleep(3)
                 continue
         
         enhanced_logger.display_table("=" * 80, "cyan")

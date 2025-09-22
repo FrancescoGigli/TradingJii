@@ -69,7 +69,7 @@ class UnifiedBalanceManager:
         self._cache_timestamp = 0
         self._cache_ttl = 1.0  # 1 second cache for performance
         
-        logging.info(f"💰 UnifiedBalanceManager initialized - {'DEMO' if demo_mode else 'LIVE'} mode, balance: ${self._real_balance:.2f}")
+
     
     # ========================================
     # CORE BALANCE OPERATIONS (Atomic)
@@ -511,53 +511,7 @@ class UnifiedBalanceManager:
             logging.error(f"💰 Performance stats failed: {e}")
             return {'error': str(e)}
     
-    def display_balance_dashboard(self):
-        """
-        💰 DISPLAY: Mostra dashboard balance nel terminale
-        """
-        try:
-            summary = self.get_balance_summary()
-            stats = self.get_balance_performance_stats()
-            
-            print(colored("\n💰 UNIFIED BALANCE DASHBOARD", "cyan", attrs=['bold']))
-            print(colored("=" * 80, "cyan"))
-            
-            # Current Status
-            mode_color = 'magenta' if self._demo_mode else 'green'
-            print(f"🎮 Mode: {colored(summary['mode'], mode_color, attrs=['bold'])}")
-            total_balance_str = f"${summary['total_balance']:.2f}"
-            available_balance_str = f"${summary['available_balance']:.2f}"
-            allocated_margin_str = f"${summary['allocated_margin']:.2f}"
-            
-            print(f"💳 Total Balance: {colored(total_balance_str, 'cyan', attrs=['bold'])}")
-            print(f"📊 Available: {colored(available_balance_str, 'green')}")
-            print(f"🔒 Allocated: {colored(allocated_margin_str, 'yellow')} ({summary['allocation_percentage']:.1f}%)")
-            
-            if summary['reserved_margin'] > 0:
-                reserved_margin_str = f"${summary['reserved_margin']:.2f}"
-                print(f"⏳ Reserved: {colored(reserved_margin_str, 'yellow')}")
-            
-            # Session Performance
-            pnl_color = 'green' if summary['session_pnl'] >= 0 else 'red'
-            session_pnl_str = f"{summary['session_pnl']:+.2f} USDT ({summary['session_pnl_pct']:+.1f}%)"
-            print(f"📈 Session P&L: {colored(session_pnl_str, pnl_color, attrs=['bold'])}")
-            
-            # Operations Stats
-            print(f"🔄 Operations: {stats['total_operations']} total ({stats['allocation_operations']} alloc, {stats['release_operations']} release)")
-            
-            if stats['overexposure_prevented'] > 0:
-                print(f"🛡️ Overexposure prevented: {colored(str(stats['overexposure_prevented']), 'red', attrs=['bold'])} times")
-            
-            if summary['last_bybit_sync']:
-                sync_time = summary['last_bybit_sync'][:19]  # Remove microseconds
-                print(f"🔄 Last Bybit Sync: {colored(sync_time, 'cyan')}")
-            
-            print(colored("=" * 80, "cyan"))
-            
-        except Exception as e:
-            logging.error(f"💰 Balance dashboard failed: {e}")
-            print(colored(f"❌ Balance Dashboard Error: {e}", "red"))
-    
+
     # ========================================
     # EMERGENCY OPERATIONS
     # ========================================

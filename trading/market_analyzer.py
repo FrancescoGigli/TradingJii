@@ -12,7 +12,7 @@ from fetcher import fetch_markets, get_top_symbols, fetch_min_amounts, fetch_and
 # CRITICAL FIX: Use robust ML predictor instead of fragile one
 try:
     from core.ml_predictor import predict_signal_ensemble
-    logging.info("✅ Using robust ML predictor - crash protection enabled")
+    logging.debug("✅ Using robust ML predictor - crash protection enabled")
 except ImportError:
     from predictor import predict_signal_ensemble
     logging.warning("⚠️ Using legacy fragile predictor - crash risk exists")
@@ -131,11 +131,19 @@ class MarketAnalyzer:
                 self.all_symbol_data, xgb_models, xgb_scalers, time_steps
             )
         else:
-            # Fallback to sequential predictions
-            for symbol in self.complete_symbols:
+            # Fallback to sequential predictions with countdown
+            for i, symbol in enumerate(self.complete_symbols, 1):
+                symbol_short = symbol.replace('/USDT:USDT', '')
+                logging.info(colored(f"🧠 Analyzing {symbol_short} ({i}/{len(self.complete_symbols)})", "magenta"))
+                
                 dataframes = self.all_symbol_data[symbol]
                 result = predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_steps)
                 prediction_results[symbol] = result
+                
+                # 🕐 COUNTDOWN: 3 secondi tra una moneta e l'altra (esclusa l'ultima)
+                if i < len(self.complete_symbols):  # Non aspettare dopo l'ultima moneta
+                    logging.info(colored(f"⏳ Waiting 3 seconds before next analysis... ({i}/{len(self.complete_symbols)})", "magenta"))
+                    await asyncio.sleep(3)
 
         ml_time = time.time() - ml_start_time
         logging.info(colored(f"✅ ML predictions completed in {ml_time:.1f}s", "green"))

@@ -47,7 +47,7 @@ try:
     from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
 
     UNIFIED_MANAGERS_AVAILABLE = True
-    logging.info("🔧 Unified managers available for initialization")
+    logging.debug("🔧 Unified managers available for initialization")
 except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
@@ -134,7 +134,7 @@ async def initialize_models(config_manager, top_symbols_training):
 async def main():
     """Main entry point"""
     try:
-        logging.info(colored("🚀 Starting Restructured Trading Bot", "cyan"))
+        logging.info(colored("🚀 Starting Trading Bot", "cyan"))
 
         config_manager = ConfigManager()
         selected_timeframes, selected_models, demo_mode = config_manager.select_config()
@@ -144,16 +144,6 @@ async def main():
                 "cyan",
             )
         )
-
-        # Unified managers
-        if UNIFIED_MANAGERS_AVAILABLE:
-            logging.info(colored("🔧 INITIALIZING UNIFIED MANAGERS...", "cyan", attrs=["bold"]))
-            balance_manager = initialize_balance_manager(
-                demo_mode=demo_mode, demo_balance=DEMO_BALANCE if demo_mode else 0.0
-            )
-            logging.info(colored("✅ Managers initialized", "green"))
-        else:
-            logging.warning(colored("⚠️ Using legacy managers", "yellow"))
 
         async_exchange = await initialize_exchange()
         trading_engine = TradingEngine(config_manager)
@@ -203,31 +193,16 @@ async def main():
             except Exception as balance_error:
                 logging.error(f"❌ Balance manager sync error: {balance_error}")
 
-        # Trailing monitor
+        # Trailing monitor - TEMPORARILY DISABLED FOR TESTING
         trailing_monitor = None
-        if TRAILING_MONITOR_ENABLED and trading_engine.clean_modules_available:
-            try:
-                position_manager = trading_engine.position_manager
-                order_manager = trading_engine.global_order_manager
-                trailing_manager = TrailingStopManager(order_manager, position_manager)
-                trailing_monitor = TrailingMonitor(position_manager, trailing_manager, order_manager)
-                await trailing_monitor.start_monitoring(async_exchange)
-
-                trading_engine.trailing_monitor = trailing_monitor
-                logging.info(
-                    colored(f"⚡ Trailing monitor started ({TRAILING_MONITOR_INTERVAL}s)", "green")
-                )
-            except Exception as e:
-                logging.error(f"❌ Trailing monitor failed: {e}")
-        else:
-            logging.info("⚡ Trailing monitor disabled")
+        logging.info("⚡ Trailing monitor temporarily disabled for testing")
 
         # Static realtime display
         initialize_global_realtime_display(
             trading_engine.position_manager if trading_engine.clean_modules_available else None,
             trailing_monitor,
         )
-        logging.info(colored("📊 Realtime display initialized", "cyan"))
+        logging.debug(colored("📊 Realtime display initialized", "cyan"))
 
         # Trading loop
         logging.info(colored("🎯 All systems ready — starting trading loop", "green"))

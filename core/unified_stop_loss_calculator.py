@@ -64,7 +64,6 @@ class UnifiedStopLossCalculator:
         self.bybit_validations_failed = 0
         self.retries_performed = 0
         
-        logging.info("🛡️ UnifiedStopLossCalculator initialized - SL implementations unified")
     
     def calculate_unified_stop_loss(self, entry_price: float, side: str, symbol: str) -> float:
         """

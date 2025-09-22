@@ -49,7 +49,7 @@ class DatabaseCache:
         
         self.init_database()
         self.load_stats()
-        logging.info("🗄️ Thread-Safe Database Cache initialized - SQLite race conditions eliminated")
+
     
     def init_database(self):
         """Initialize database tables and indexes"""

@@ -71,7 +71,6 @@ class OnlineLearningManager:
         # Load existing learning data
         self.load_learning_data()
         
-        logging.info(colored("🧠 Online Learning Manager initialized", "cyan"))
     
     def track_trade_opening(self, symbol: str, signal_data: Dict, market_context: Dict, portfolio_state: Dict):
         """

@@ -85,7 +85,7 @@ class SmartAPIManager:
         self._batch_lock = threading.Lock()
         self._batch_task = None
         
-        logging.info("⚡ SmartAPIManager initialized - API calls optimization active")
+
     
     # ========================================
     # CORE CACHED API METHODS
