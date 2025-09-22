@@ -37,14 +37,16 @@ class SignalProcessor:
             logging.warning("⚠️ RL Agent not available")
             self.rl_agent_available = False
         
-        # Try to import position manager
+        # STEP 1 FIX: Import ThreadSafePositionManager instead of SmartPositionManager
         try:
-            from core.smart_position_manager import global_smart_position_manager
-            self.position_manager = global_smart_position_manager
+            from core.thread_safe_position_manager import global_thread_safe_position_manager
+            self.position_manager = global_thread_safe_position_manager
             self.position_manager_available = True
+            logging.info("🔒 Signal Processor using ThreadSafePositionManager")
         except ImportError:
-            logging.warning("⚠️ Position Manager not available")
+            logging.error("❌ ThreadSafePositionManager not available")
             self.position_manager_available = False
+            raise ImportError("CRITICAL: ThreadSafePositionManager required for signal processing")
 
     async def process_prediction_results(self, prediction_results, all_symbol_data):
         """

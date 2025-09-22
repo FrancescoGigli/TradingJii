@@ -157,9 +157,19 @@ class OnlineLearningManager:
                     'success': pnl_percentage > 0
                 })
                 
-                # Add to completed trades
+                # STEP 5 FIX: Enforced memory management for completed trades
                 self.completed_trades.append(trade_info)
+                
+                # STEP 5 FIX: Strict enforcement of memory limits
                 if len(self.completed_trades) > self.max_completed_history:
+                    # FIFO cleanup - remove oldest trades
+                    overflow = len(self.completed_trades) - self.max_completed_history
+                    self.completed_trades = self.completed_trades[overflow:]
+                    logging.debug(f"📝 Learning manager: cleaned {overflow} old completed trades")
+                
+                # Additional safety check
+                if len(self.completed_trades) > self.max_completed_history:
+                    logging.warning(f"⚠️ Completed trades still exceed limit: {len(self.completed_trades)} > {self.max_completed_history}")
                     self.completed_trades = self.completed_trades[-self.max_completed_history:]
                 
                 # Update statistics

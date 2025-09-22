@@ -205,7 +205,8 @@ class TradingVisualizer:
             predictions = predictions[-min_len:]
             
             # OPTION C: Use SAME position tracker as live trading!
-            from core.smart_position_manager import SmartPositionManager as PositionTracker
+            # VERIFICATION FIX: Use ThreadSafePositionManager for backtesting consistency
+            from core.thread_safe_position_manager import ThreadSafePositionManager as PositionTracker
             from config import BACKTEST_INITIAL_BALANCE, BACKTEST_LEVERAGE, BACKTEST_BASE_RISK_PCT
             
             # Create isolated position tracker for backtest

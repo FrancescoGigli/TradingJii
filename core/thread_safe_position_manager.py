@@ -21,6 +21,17 @@ from dataclasses import dataclass, asdict
 from copy import deepcopy
 from termcolor import colored
 
+# ONLINE LEARNING INTEGRATION: Import learning manager for automatic feedback
+try:
+    from core.online_learning_manager import global_online_learning_manager
+    ONLINE_LEARNING_AVAILABLE = bool(global_online_learning_manager)
+    if ONLINE_LEARNING_AVAILABLE:
+        logging.info("🔒 ThreadSafePositionManager: Online Learning integration enabled")
+except ImportError:
+    ONLINE_LEARNING_AVAILABLE = False
+    global_online_learning_manager = None
+    logging.debug("🔒 ThreadSafePositionManager: Online Learning not available")
+
 @dataclass
 class ThreadSafePosition:
     """Position data structure ottimizzata per thread safety"""
@@ -46,6 +57,9 @@ class ThreadSafePosition:
     trailing_active: bool = False
     best_price: Optional[float] = None
     sl_corrente: Optional[float] = None
+    
+    # CRITICAL FIX: Add trailing_data field for TrailingMonitor compatibility
+    trailing_data: Optional[Any] = None
     
     # Metadata
     confidence: float = 0.7
@@ -355,12 +369,21 @@ class ThreadSafePositionManager:
                 # Generate unique position ID
                 position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
                 
-                # Calculate 6% SL (unified logic)
+                # STEP 2 FIX: Use UnifiedStopLossCalculator instead of hardcoded calculations
+                try:
+                    from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+                    stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
+                        entry_price, side, symbol
+                    )
+                except Exception as e:
+                    logging.warning(f"🔒 Unified SL failed for {symbol}: {e}")
+                    # Emergency fallback with unified constants
+                    stop_loss = entry_price * (0.94 if side.lower() == 'buy' else 1.06)
+                
+                # Calculate trailing trigger (keep this logic as it's specific to position management)
                 if side.lower() == 'buy':
-                    stop_loss = entry_price * 0.94
                     trailing_trigger = entry_price * 1.006 * 1.010  # +1% over breakeven
                 else:
-                    stop_loss = entry_price * 1.06  
                     trailing_trigger = entry_price * 0.9994 * 0.990  # -1% under breakeven
                 
                 position = ThreadSafePosition(
@@ -370,7 +393,7 @@ class ThreadSafePositionManager:
                     entry_price=entry_price,
                     position_size=position_size,
                     leverage=leverage,
-                    stop_loss=stop_loss,
+                    stop_loss=stop_loss,  # STEP 2 FIX: From unified calculator
                     take_profit=None,  # No fixed TP
                     trailing_trigger=trailing_trigger,
                     current_price=entry_price,
@@ -382,7 +405,7 @@ class ThreadSafePositionManager:
                 self._open_positions[position_id] = position
                 self._save_positions_unsafe()  # Already in lock
                 
-                logging.info(f"🔒 Thread-safe position created: {position_id}")
+                logging.info(f"🔒 Thread-safe position created with unified SL: {position_id}")
                 return position_id
                 
         except Exception as e:
@@ -392,7 +415,7 @@ class ThreadSafePositionManager:
     def thread_safe_close_position(self, position_id: str, exit_price: float, 
                                   close_reason: str = "MANUAL") -> bool:
         """
-        🔒 THREAD SAFE: Chiudi posizione
+        🔒 THREAD SAFE: Chiudi posizione + Online Learning notification
         
         Returns:
             bool: True se chiusura riuscita
@@ -420,6 +443,23 @@ class ThreadSafePositionManager:
                 position.unrealized_pnl_pct = pnl_pct
                 position.unrealized_pnl_usd = pnl_usd
                 position.current_price = exit_price
+                
+                # 🧠 ONLINE LEARNING: Notify about position closure (CENTRAL POINT)
+                if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
+                    try:
+                        # Map close reasons for learning system
+                        learning_reason = close_reason
+                        if close_reason in ["TRAILING_FAST", "TRAILING"]:
+                            learning_reason = "TRAILING_STOP"
+                        elif close_reason in ["MANUAL", "STOP_LOSS"]:
+                            learning_reason = close_reason
+                        
+                        global_online_learning_manager.track_trade_closing(
+                            position.symbol, exit_price, pnl_usd, pnl_pct, learning_reason
+                        )
+                        logging.debug(f"🧠 Learning notified: {position.symbol.replace('/USDT:USDT', '')} closed via {learning_reason} ({pnl_pct:+.2f}%)")
+                    except Exception as learning_error:
+                        logging.warning(f"🔒 Learning notification error: {learning_error}")
                 
                 # Move to closed positions
                 self._closed_positions[position_id] = position
@@ -499,7 +539,7 @@ class ThreadSafePositionManager:
         try:
             # Get Bybit data (outside lock per minimizzare lock time)
             bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_bybit_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) > 0]
+            active_bybit_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
             
             # Build Bybit data structures
             bybit_symbols = set()
@@ -509,10 +549,24 @@ class ThreadSafePositionManager:
                 symbol = pos.get('symbol')
                 if symbol:
                     try:
-                        contracts = abs(float(pos.get('contracts', 0)))
+                        contracts_raw = float(pos.get('contracts', 0))
+                        contracts = abs(contracts_raw)
                         entry_price = float(pos.get('entryPrice', 0))
                         unrealized_pnl = float(pos.get('unrealizedPnl', 0))
-                        side = 'buy' if float(pos.get('contracts', 0)) > 0 else 'sell'
+                        
+                        # Check if Bybit provides explicit 'side' field
+                        explicit_side = pos.get('side', '').lower()
+                        if explicit_side in ['buy', 'long']:
+                            side = 'buy'
+                        elif explicit_side in ['sell', 'short']:
+                            side = 'sell'
+                        else:
+                            # Fallback to contracts logic
+                            side = 'buy' if contracts_raw > 0 else 'sell'
+                        
+                        # Debug logging per vedere cosa arriva da Bybit
+                        symbol_short = symbol.replace('/USDT:USDT', '')
+                        logging.debug(f"🔍 {symbol_short}: contracts={contracts_raw}, explicit_side='{explicit_side}', final_side='{side}'")
                         
                         bybit_symbols.add(symbol)
                         bybit_position_data[symbol] = {
@@ -542,7 +596,9 @@ class ThreadSafePositionManager:
                         position = self._create_position_from_bybit_unsafe(symbol, bybit_data)
                         self._open_positions[position.position_id] = position
                         newly_opened.append(deepcopy(position))
-                        logging.info(f"🔒 Sync: NEW position {symbol} {bybit_data['side'].upper()}")
+                        # Display LONG/SHORT with colors instead of BUY/SELL
+                        side_display = "🟢 LONG" if bybit_data['side'] == 'buy' else "🔴 SHORT"
+                        logging.info(f"🔒 Sync: NEW position {symbol} {side_display}")
                 
                 # Find newly closed (tracked but not on Bybit)
                 newly_closed_symbols = tracked_symbols - bybit_symbols
@@ -558,8 +614,30 @@ class ThreadSafePositionManager:
                         
                         # Calculate final PnL
                         if position.unrealized_pnl_pct != 0:
-                            position.unrealized_pnl_pct = position.unrealized_pnl_pct
-                            position.unrealized_pnl_usd = position.unrealized_pnl_usd
+                            pnl_pct = position.unrealized_pnl_pct
+                            pnl_usd = position.unrealized_pnl_usd
+                        else:
+                            # Calculate PnL if not already set
+                            if position.side == 'buy':
+                                pnl_pct = ((position.current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                            else:
+                                pnl_pct = ((position.entry_price - position.current_price) / position.entry_price) * 100 * position.leverage
+                            
+                            initial_margin = position.position_size / position.leverage
+                            pnl_usd = (pnl_pct / 100) * initial_margin
+                            
+                            position.unrealized_pnl_pct = pnl_pct
+                            position.unrealized_pnl_usd = pnl_usd
+                        
+                        # 🧠 ONLINE LEARNING: Notify about external closure (BYBIT SYNC)
+                        if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
+                            try:
+                                global_online_learning_manager.track_trade_closing(
+                                    position.symbol, position.current_price, pnl_usd, pnl_pct, "EXTERNAL_CLOSURE"
+                                )
+                                logging.debug(f"🧠 Learning notified: {position.symbol.replace('/USDT:USDT', '')} external closure ({pnl_pct:+.2f}%)")
+                            except Exception as learning_error:
+                                logging.warning(f"🔒 Learning notification error: {learning_error}")
                         
                         # Move to closed positions
                         self._closed_positions[position.position_id] = position
@@ -608,13 +686,22 @@ class ThreadSafePositionManager:
         entry_price = bybit_data['entry_price']
         side = bybit_data['side']
         
-        # Unified 6% SL logic
+        # STEP 2 FIX: Use UnifiedStopLossCalculator instead of hardcoded calculations
+        try:
+            from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+            stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
+                entry_price, side, symbol
+            )
+        except Exception as e:
+            logging.warning(f"🔒 Bybit sync unified SL failed for {symbol}: {e}")
+            # Emergency fallback with unified constants
+            stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
+        
+        # Calculate trailing trigger (position management specific)
         if side == 'buy':
-            stop_loss = entry_price * 0.94
-            trailing_trigger = entry_price * 1.006 * 1.010
+            trailing_trigger = entry_price * 1.006 * 1.010  # +1% over breakeven
         else:
-            stop_loss = entry_price * 1.06
-            trailing_trigger = entry_price * 0.9994 * 0.990
+            trailing_trigger = entry_price * 0.9994 * 0.990  # -1% under breakeven
         
         position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         
@@ -625,7 +712,7 @@ class ThreadSafePositionManager:
             entry_price=entry_price,
             position_size=bybit_data['contracts'] * entry_price,
             leverage=10,
-            stop_loss=stop_loss,
+            stop_loss=stop_loss,  # STEP 2 FIX: From unified calculator
             take_profit=None,
             trailing_trigger=trailing_trigger,
             current_price=entry_price,
@@ -766,19 +853,28 @@ class ThreadSafePositionManager:
             entry_price = position.entry_price
             side = position.side
             
-            # Update to unified 6% SL logic
+            # STEP 2 FIX: Use UnifiedStopLossCalculator for migration
+            try:
+                from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+                position.stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
+                    entry_price, side, position.symbol
+                )
+            except Exception as e:
+                logging.warning(f"🔒 Migration unified SL failed for {position.symbol}: {e}")
+                # Emergency fallback with unified constants
+                position.stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
+            
+            # Calculate trailing trigger (position management specific)
             if side == 'buy':
-                position.stop_loss = entry_price * 0.94
-                position.trailing_trigger = entry_price * 1.006 * 1.010
+                position.trailing_trigger = entry_price * 1.006 * 1.010  # +1% over breakeven
             else:
-                position.stop_loss = entry_price * 1.06
-                position.trailing_trigger = entry_price * 0.9994 * 0.990
+                position.trailing_trigger = entry_price * 0.9994 * 0.990  # -1% under breakeven
             
             position.take_profit = None  # Remove TP
             position._migrated = True
             position._needs_sl_update_on_bybit = True
             
-            logging.debug(f"🔒 Position migrated: {position.symbol}")
+            logging.debug(f"🔒 Position migrated with unified SL: {position.symbol}")
             
         except Exception as e:
             logging.error(f"🔒 Position migration failed: {e}")

@@ -339,7 +339,7 @@ class RLTrainingManager:
     
     def record_trade_result(self, state: np.ndarray, action: bool, reward: float):
         """
-        Record trade result for learning
+        STEP 5 FIX: Record trade result with enforced memory management
         
         Args:
             state: RL state when decision was made
@@ -354,14 +354,22 @@ class RLTrainingManager:
                 'timestamp': datetime.now().isoformat()
             }
             
-            # Add to experience buffer
-            self.experience_buffer.append(experience)
+            # STEP 5 FIX: Thread-safe buffer management with enforced limits
+            with self._buffer_lock:
+                # FIFO buffer management - remove oldest when limit reached
+                if len(self.experience_buffer) >= self.max_buffer_size:
+                    removed_count = len(self.experience_buffer) - self.max_buffer_size + 1
+                    self.experience_buffer = self.experience_buffer[removed_count:]
+                    logging.debug(f"📝 RL buffer cleanup: removed {removed_count} oldest experiences")
+                
+                self.experience_buffer.append(experience)
+                
+                # Additional safety check
+                if len(self.experience_buffer) > self.max_buffer_size:
+                    logging.warning(f"⚠️ RL buffer exceeded limit: {len(self.experience_buffer)} > {self.max_buffer_size}")
+                    self.experience_buffer = self.experience_buffer[-self.max_buffer_size:]
             
-            # Maintain buffer size limit
-            if len(self.experience_buffer) > self.max_buffer_size:
-                self.experience_buffer = self.experience_buffer[-self.max_buffer_size:]
-            
-            logging.debug(f"📝 RL experience recorded: action={action}, reward={reward:.3f}")
+            logging.debug(f"📝 RL experience recorded: action={action}, reward={reward:.3f}, buffer size: {len(self.experience_buffer)}")
             
         except Exception as e:
             logging.error(f"Error recording RL experience: {e}")

@@ -11,6 +11,17 @@ Sistema di sicurezza per posizioni:
 import logging
 from termcolor import colored
 
+# ONLINE LEARNING INTEGRATION: Import learning manager for safety closure feedback
+try:
+    from core.online_learning_manager import global_online_learning_manager
+    ONLINE_LEARNING_AVAILABLE = bool(global_online_learning_manager)
+    if ONLINE_LEARNING_AVAILABLE:
+        logging.info("🛡️ PositionSafetyManager: Online Learning integration enabled")
+except ImportError:
+    ONLINE_LEARNING_AVAILABLE = False
+    global_online_learning_manager = None
+    logging.debug("🛡️ PositionSafetyManager: Online Learning not available")
+
 
 class PositionSafetyManager:
     """
@@ -38,7 +49,7 @@ class PositionSafetyManager:
         try:
             # Get real positions from Bybit
             bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) > 0]
+            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
             
             for position in active_positions:
                 try:
@@ -85,7 +96,7 @@ class PositionSafetyManager:
     
     async def _close_unsafe_position(self, exchange, symbol, contracts, position_manager):
         """
-        Chiude una posizione non sicura
+        Chiude una posizione non sicura + Online Learning notification
         """
         try:
             # Determine side for closing order
@@ -101,15 +112,31 @@ class PositionSafetyManager:
             if order and order.get('id'):
                 logging.info(f"✅ Unsafe position closed: {symbol} | Order: {order['id']}")
                 
+                exit_price = float(order.get('average', 0) or order.get('price', 0))
+                
                 # Update position manager if the position was tracked
-                if position_manager.has_position_for_symbol(symbol):
-                    exit_price = float(order.get('average', 0) or order.get('price', 0))
-                    if exit_price > 0:
-                        # Find and close the tracked position
-                        for pos_id, pos in position_manager.open_positions.items():
-                            if pos.symbol == symbol:
-                                position_manager.close_position_manual(pos_id, exit_price, "SAFETY_CLOSURE")
-                                break
+                if position_manager.has_position_for_symbol(symbol) and exit_price > 0:
+                    # Find and close the tracked position
+                    for pos_id, pos in position_manager.open_positions.items():
+                        if pos.symbol == symbol:
+                            position_manager.close_position_manual(pos_id, exit_price, "SAFETY_CLOSURE")
+                            break
+                elif exit_price > 0:
+                    # Position not tracked but we still need to notify learning system
+                    # 🧠 ONLINE LEARNING: Notify about safety closure (EXTERNAL POSITION)
+                    if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
+                        try:
+                            # For untracked positions, estimate the loss (safety closures are usually losses)
+                            # We can't calculate exact PnL without entry price, but safety closures indicate problems
+                            estimated_pnl_pct = -3.0  # Estimate -3% loss for safety closure
+                            estimated_pnl_usd = -10.0  # Estimate -$10 loss for safety closure
+                            
+                            global_online_learning_manager.track_trade_closing(
+                                symbol, exit_price, estimated_pnl_usd, estimated_pnl_pct, "SAFETY_CLOSURE"
+                            )
+                            logging.debug(f"🧠 Learning notified: {symbol.replace('/USDT:USDT', '')} safety closure (estimated {estimated_pnl_pct:+.2f}%)")
+                        except Exception as learning_error:
+                            logging.warning(f"🛡️ Learning notification error: {learning_error}")
             
         except Exception as e:
             logging.error(f"Error closing unsafe position {symbol}: {e}")
@@ -155,7 +182,7 @@ class PositionSafetyManager:
             
             # Get real positions from Bybit
             bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) > 0]
+            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
             
             for position in active_positions:
                 try:

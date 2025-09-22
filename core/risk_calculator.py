@@ -110,49 +110,35 @@ class RiskCalculator:
     def calculate_stop_loss_price(self, entry_price: float, side: str, atr: float,
                                  volatility: float = 0.0) -> float:
         """
-        Calculate stop loss price based on ATR
+        STEP 2 FIX: Delegate to UnifiedStopLossCalculator (eliminate hardcoded calculations)
         
         Args:
             entry_price: Position entry price
             side: Position side ('buy' or 'sell')
-            atr: Average True Range
-            volatility: Market volatility adjustment
+            atr: Average True Range (used for validation only)
+            volatility: Market volatility (used for validation only)
             
         Returns:
-            float: Stop loss price
+            float: Stop loss price from unified calculator
         """
         try:
-            # CONSERVATIVE: Use smaller ATR multiplier for tighter stops
-            conservative_multiplier = 1.5  # Reduced from 2.0
-            stop_distance = atr * conservative_multiplier
+            # STEP 2 FIX: Use UnifiedStopLossCalculator instead of hardcoded calculations
+            from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
             
-            # PROBLEMA TROVATO! Limitava al 3% invece che al 6%
-            # Aggiornato: Limit stop distance to max 6% of price (coerente con nuova logica)
-            max_stop_distance = entry_price * 0.06  # ERA 0.03!
-            stop_distance = min(stop_distance, max_stop_distance)
+            # Get unified stop loss calculation
+            unified_sl = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
+                entry_price, side, f"Risk_Calculator_Request"
+            )
             
-            # Ensure minimum stop distance (1%)
-            min_stop_distance = entry_price * 0.01
-            stop_distance = max(stop_distance, min_stop_distance)
+            logging.debug(f"🛡️ UNIFIED SL: Entry ${entry_price:.6f} | Side {side} | Unified SL ${unified_sl:.6f}")
             
-            # Calculate stop loss price - NUOVA LOGICA 6%
-            if side.lower() == 'buy':
-                stop_loss = entry_price - stop_distance  # Below entry for BUY
-                # AGGIORNATO: Ensure reasonable bounds (max 6% loss)
-                stop_loss = max(stop_loss, entry_price * 0.94)  # 6% invece di 5%
-            else:  # SELL position
-                stop_loss = entry_price + stop_distance  # Above entry for SELL
-                # AGGIORNATO: Ensure reasonable bounds (max 6% loss)
-                stop_loss = min(stop_loss, entry_price * 1.06)  # 6% invece di 5%
-            
-            logging.debug(f"🛡️ SL Calc: Entry ${entry_price:.6f} | Side {side} | Distance {stop_distance:.6f} | SL ${stop_loss:.6f}")
-            
-            return stop_loss
+            return unified_sl
             
         except Exception as e:
-            logging.error(f"Error calculating stop loss: {e}")
-            # AGGIORNATO: Emergency fallback al 6% (coerente con nuova logica)
-            return entry_price * (0.94 if side.lower() == 'buy' else 1.06)
+            logging.error(f"Error with unified SL calculation: {e}")
+            # STEP 2 FIX: Emergency fallback still uses unified calculator constants
+            sl_pct = 0.06  # 6% from UnifiedStopLossCalculator
+            return entry_price * (1 - sl_pct if side.lower() == 'buy' else 1 + sl_pct)
     
     def calculate_take_profit_price(self, entry_price: float, side: str, 
                                    stop_loss: float, ratio: float = None) -> float:
@@ -251,14 +237,23 @@ class RiskCalculator:
             fallback_margin = self.base_margin  # Use the new higher base (40.0)
             fallback_notional = fallback_margin * LEVERAGE
             
+            # STEP 2 FIX: Use unified calculator even in fallback
+            try:
+                from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+                fallback_sl = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
+                    market_data.price, side, "Risk_Calculator_Fallback"
+                )
+            except:
+                fallback_sl = market_data.price * (0.94 if side.lower() == 'buy' else 1.06)
+            
             return PositionLevels(
                 margin=fallback_margin,
                 position_size=fallback_notional / market_data.price,
-                stop_loss=market_data.price * (0.94 if side.lower() == 'buy' else 1.06),  # 6% SL
+                stop_loss=fallback_sl,  # STEP 2 FIX: Use unified calculator
                 take_profit=market_data.price * (1.10 if side.lower() == 'buy' else 0.90),
-                risk_pct=6.0,  # Aggiornato da 5.0 a 6.0
+                risk_pct=6.0,
                 reward_pct=10.0,
-                risk_reward_ratio=1.67  # 10/6 = 1.67
+                risk_reward_ratio=1.67
             )
     
     def validate_portfolio_margin(self, existing_margins: list, new_margin: float, 

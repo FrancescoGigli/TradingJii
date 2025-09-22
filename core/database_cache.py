@@ -20,7 +20,7 @@ from termcolor import colored
 import os
 
 class DatabaseCache:
-    """Sistema di cache intelligente basato su SQLite"""
+    """STEP 4 FIX: Thread-safe SQLite cache system"""
     
     def __init__(self, db_path="data_cache/trading_data.db"):
         """
@@ -31,6 +31,11 @@ class DatabaseCache:
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(exist_ok=True)
+        
+        # STEP 4 FIX: Thread safety for database operations
+        import threading
+        self._db_lock = threading.RLock()  # Reentrant lock for nested operations
+        self._stats_lock = threading.Lock()  # Separate lock for stats updates
         
         # Performance tracking
         self.stats = {
@@ -44,7 +49,7 @@ class DatabaseCache:
         
         self.init_database()
         self.load_stats()
-        # Silenced: logging.info(f"🗄️ Database Cache initialized: {self.db_path}")
+        logging.info("🗄️ Thread-Safe Database Cache initialized - SQLite race conditions eliminated")
     
     def init_database(self):
         """Initialize database tables and indexes"""
@@ -200,7 +205,7 @@ class DatabaseCache:
     
     def get_cached_data(self, symbol: str, timeframe: str, limit_days: int = 90) -> Optional[pd.DataFrame]:
         """
-        Recupera dati dal database per simbolo/timeframe
+        STEP 4 FIX: Thread-safe database read operation
         
         Args:
             symbol: Simbolo (es. 'DOGE/USDT:USDT')
@@ -211,35 +216,44 @@ class DatabaseCache:
             DataFrame con dati OHLCV o None se non trovati
         """
         try:
-            cutoff_date = datetime.now() - timedelta(days=limit_days)
-            
-            with self.get_connection() as conn:
-                df = pd.read_sql_query('''
-                    SELECT timestamp, open, high, low, close, volume
-                    FROM ohlcv_data 
-                    WHERE symbol = ? AND timeframe = ? AND timestamp >= ?
-                    ORDER BY timestamp ASC
-                ''', conn, params=(symbol, timeframe, cutoff_date))
+            # STEP 4 FIX: Protect database operations with lock
+            with self._db_lock:
+                cutoff_date = datetime.now() - timedelta(days=limit_days)
                 
-                if len(df) > 0:
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    df.set_index('timestamp', inplace=True)
+                with self.get_connection() as conn:
+                    df = pd.read_sql_query('''
+                        SELECT timestamp, open, high, low, close, volume
+                        FROM ohlcv_data 
+                        WHERE symbol = ? AND timeframe = ? AND timestamp >= ?
+                        ORDER BY timestamp ASC
+                    ''', conn, params=(symbol, timeframe, cutoff_date))
                     
-                    self.stats['cache_hits'] += 1
-                    logging.debug(f"🗄️ DB hit: {symbol}[{timeframe}] - {len(df)} candles")
-                    return df
-                else:
-                    self.stats['cache_misses'] += 1
-                    return None
+                    if len(df) > 0:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        df.set_index('timestamp', inplace=True)
+                        
+                        # STEP 4 FIX: Thread-safe stats update
+                        with self._stats_lock:
+                            self.stats['cache_hits'] += 1
+                        
+                        logging.debug(f"🗄️ Thread-safe DB hit: {symbol}[{timeframe}] - {len(df)} candles")
+                        return df
+                    else:
+                        # STEP 4 FIX: Thread-safe stats update
+                        with self._stats_lock:
+                            self.stats['cache_misses'] += 1
+                        return None
                     
         except Exception as e:
-            logging.warning(f"❌ Database read failed for {symbol}[{timeframe}]: {e}")
-            self.stats['cache_misses'] += 1
+            logging.warning(f"❌ Thread-safe database read failed for {symbol}[{timeframe}]: {e}")
+            # STEP 4 FIX: Thread-safe stats update even on error
+            with self._stats_lock:
+                self.stats['cache_misses'] += 1
             return None
     
     def save_data_to_db(self, symbol: str, timeframe: str, df: pd.DataFrame):
         """
-        Salva DataFrame nel database
+        STEP 4 FIX: Thread-safe database write operation
         
         Args:
             symbol: Simbolo
@@ -254,60 +268,62 @@ class DatabaseCache:
             if not isinstance(symbol, str) or not isinstance(timeframe, str):
                 logging.error(f"Invalid parameter types: symbol={type(symbol)}, timeframe={type(timeframe)}")
                 return
-                
-            # Prepare data for insertion with proper type conversion
-            data_records = []
-            for timestamp, row in df.iterrows():
-                try:
-                    # Ensure timestamp is properly formatted
-                    if hasattr(timestamp, 'strftime'):
-                        timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                    else:
-                        timestamp_str = str(timestamp)
-                    
-                    # Convert all numeric values to float with validation
-                    open_val = float(row['open']) if pd.notna(row['open']) else 0.0
-                    high_val = float(row['high']) if pd.notna(row['high']) else 0.0
-                    low_val = float(row['low']) if pd.notna(row['low']) else 0.0
-                    close_val = float(row['close']) if pd.notna(row['close']) else 0.0
-                    volume_val = float(row['volume']) if pd.notna(row['volume']) else 0.0
-                    
-                    data_records.append((
-                        str(symbol), str(timeframe), timestamp_str,
-                        open_val, high_val, low_val, close_val, volume_val
-                    ))
-                    
-                except Exception as row_error:
-                    logging.warning(f"Skipping invalid row for {symbol}[{timeframe}]: {row_error}")
-                    continue
             
-            if not data_records:
-                logging.warning(f"No valid data records to save for {symbol}[{timeframe}]")
-                return
-            
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
+            # STEP 4 FIX: Protect database write operations with lock
+            with self._db_lock:
+                # Prepare data for insertion with proper type conversion
+                data_records = []
+                for timestamp, row in df.iterrows():
+                    try:
+                        # Ensure timestamp is properly formatted
+                        if hasattr(timestamp, 'strftime'):
+                            timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            timestamp_str = str(timestamp)
+                        
+                        # Convert all numeric values to float with validation
+                        open_val = float(row['open']) if pd.notna(row['open']) else 0.0
+                        high_val = float(row['high']) if pd.notna(row['high']) else 0.0
+                        low_val = float(row['low']) if pd.notna(row['low']) else 0.0
+                        close_val = float(row['close']) if pd.notna(row['close']) else 0.0
+                        volume_val = float(row['volume']) if pd.notna(row['volume']) else 0.0
+                        
+                        data_records.append((
+                            str(symbol), str(timeframe), timestamp_str,
+                            open_val, high_val, low_val, close_val, volume_val
+                        ))
+                        
+                    except Exception as row_error:
+                        logging.warning(f"Skipping invalid row for {symbol}[{timeframe}]: {row_error}")
+                        continue
                 
-                # Use INSERT OR REPLACE for upsert behavior
-                cursor.executemany('''
-                    INSERT OR REPLACE INTO ohlcv_data 
-                    (symbol, timeframe, timestamp, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', data_records)
+                if not data_records:
+                    logging.warning(f"No valid data records to save for {symbol}[{timeframe}]")
+                    return
                 
-                # Cleanup old data to maintain retention
-                cutoff_date = datetime.now() - timedelta(days=90)
-                cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
-                cursor.execute('''
-                    DELETE FROM ohlcv_data 
-                    WHERE timestamp < ?
-                ''', (cutoff_str,))
-                
-                conn.commit()
-                logging.debug(f"🗄️ DB save: {symbol}[{timeframe}] - {len(data_records)} candles saved")
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    
+                    # Use INSERT OR REPLACE for upsert behavior
+                    cursor.executemany('''
+                        INSERT OR REPLACE INTO ohlcv_data 
+                        (symbol, timeframe, timestamp, open, high, low, close, volume)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', data_records)
+                    
+                    # Cleanup old data to maintain retention
+                    cutoff_date = datetime.now() - timedelta(days=90)
+                    cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+                    cursor.execute('''
+                        DELETE FROM ohlcv_data 
+                        WHERE timestamp < ?
+                    ''', (cutoff_str,))
+                    
+                    conn.commit()
+                    logging.debug(f"🗄️ Thread-safe DB save: {symbol}[{timeframe}] - {len(data_records)} candles saved")
                 
         except Exception as e:
-            logging.error(f"❌ Database save failed for {symbol}[{timeframe}]: {e}")
+            logging.error(f"❌ Thread-safe database save failed for {symbol}[{timeframe}]: {e}")
     
     def get_enhanced_cached_data(self, symbol: str, timeframe: str, limit_days: int = 90) -> Optional[pd.DataFrame]:
         """
@@ -360,7 +376,7 @@ class DatabaseCache:
     
     def save_enhanced_data_to_db(self, symbol: str, timeframe: str, df: pd.DataFrame):
         """
-        🚀 ENHANCED: Salva DataFrame completo con indicatori nel database (GAME CHANGER!)
+        STEP 4 FIX: Thread-safe enhanced data save operation
         
         Args:
             symbol: Simbolo
@@ -371,84 +387,86 @@ class DatabaseCache:
             if df is None or len(df) == 0:
                 return
             
-            # Expected columns from EXPECTED_COLUMNS in config.py
-            expected_cols = [
-                'open', 'high', 'low', 'close', 'volume',
-                'ema5', 'ema10', 'ema20', 'macd', 'macd_signal', 'macd_histogram',
-                'rsi_fast', 'stoch_rsi', 'atr', 'bollinger_hband', 'bollinger_lband',
-                'vwap', 'obv', 'adx', 'volatility',
-                'price_pos_5', 'price_pos_10', 'price_pos_20',
-                'vol_acceleration', 'atr_norm_move', 'momentum_divergence',
-                'volatility_squeeze', 'resistance_dist_10', 'resistance_dist_20',
-                'support_dist_10', 'support_dist_20', 'price_acceleration',
-                'vol_price_alignment'
-            ]
-            
-            # Check if DataFrame has all required columns
-            missing_cols = [col for col in expected_cols if col not in df.columns]
-            if missing_cols:
-                logging.warning(f"Missing columns for enhanced save {symbol}[{timeframe}]: {missing_cols}")
-                # Fallback to legacy save
-                self.save_data_to_db(symbol, timeframe, df)
-                return
-            
-            # Prepare data for insertion with ALL indicators
-            data_records = []
-            for timestamp, row in df.iterrows():
-                try:
-                    # Ensure timestamp is properly formatted
-                    if hasattr(timestamp, 'strftime'):
-                        timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                    else:
-                        timestamp_str = str(timestamp)
+            # STEP 4 FIX: Protect enhanced database operations with lock
+            with self._db_lock:
+                # Expected columns from EXPECTED_COLUMNS in config.py
+                expected_cols = [
+                    'open', 'high', 'low', 'close', 'volume',
+                    'ema5', 'ema10', 'ema20', 'macd', 'macd_signal', 'macd_histogram',
+                    'rsi_fast', 'stoch_rsi', 'atr', 'bollinger_hband', 'bollinger_lband',
+                    'vwap', 'obv', 'adx', 'volatility',
+                    'price_pos_5', 'price_pos_10', 'price_pos_20',
+                    'vol_acceleration', 'atr_norm_move', 'momentum_divergence',
+                    'volatility_squeeze', 'resistance_dist_10', 'resistance_dist_20',
+                    'support_dist_10', 'support_dist_20', 'price_acceleration',
+                    'vol_price_alignment'
+                ]
+                
+                # Check if DataFrame has all required columns
+                missing_cols = [col for col in expected_cols if col not in df.columns]
+                if missing_cols:
+                    logging.warning(f"Missing columns for enhanced save {symbol}[{timeframe}]: {missing_cols}")
+                    # Fallback to legacy save (also thread-safe)
+                    self.save_data_to_db(symbol, timeframe, df)
+                    return
+                
+                # Prepare data for insertion with ALL indicators
+                data_records = []
+                for timestamp, row in df.iterrows():
+                    try:
+                        # Ensure timestamp is properly formatted
+                        if hasattr(timestamp, 'strftime'):
+                            timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            timestamp_str = str(timestamp)
+                        
+                        # Convert all values to float with validation
+                        values = [str(symbol), str(timeframe), timestamp_str]
+                        
+                        for col in expected_cols:
+                            val = float(row[col]) if pd.notna(row[col]) else 0.0
+                            values.append(val)
+                        
+                        data_records.append(tuple(values))
+                        
+                    except Exception as row_error:
+                        logging.warning(f"Skipping invalid enhanced row for {symbol}[{timeframe}]: {row_error}")
+                        continue
+                
+                if not data_records:
+                    logging.warning(f"No valid enhanced data records to save for {symbol}[{timeframe}]")
+                    return
+                
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
                     
-                    # Convert all values to float with validation
-                    values = [str(symbol), str(timeframe), timestamp_str]
+                    # Create column list for INSERT
+                    col_names = ', '.join(['symbol', 'timeframe', 'timestamp'] + expected_cols)
+                    placeholders = ', '.join(['?'] * (3 + len(expected_cols)))
                     
-                    for col in expected_cols:
-                        val = float(row[col]) if pd.notna(row[col]) else 0.0
-                        values.append(val)
+                    # Use INSERT OR REPLACE for upsert behavior on enhanced table
+                    cursor.executemany(f'''
+                        INSERT OR REPLACE INTO enhanced_data 
+                        ({col_names})
+                        VALUES ({placeholders})
+                    ''', data_records)
                     
-                    data_records.append(tuple(values))
+                    # Cleanup old data to maintain retention
+                    cutoff_date = datetime.now() - timedelta(days=90)
+                    cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
+                    cursor.execute('''
+                        DELETE FROM enhanced_data 
+                        WHERE timestamp < ?
+                    ''', (cutoff_str,))
                     
-                except Exception as row_error:
-                    logging.warning(f"Skipping invalid enhanced row for {symbol}[{timeframe}]: {row_error}")
-                    continue
-            
-            if not data_records:
-                logging.warning(f"No valid enhanced data records to save for {symbol}[{timeframe}]")
-                return
-            
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # Create column list for INSERT
-                col_names = ', '.join(['symbol', 'timeframe', 'timestamp'] + expected_cols)
-                placeholders = ', '.join(['?'] * (3 + len(expected_cols)))
-                
-                # Use INSERT OR REPLACE for upsert behavior on enhanced table
-                cursor.executemany(f'''
-                    INSERT OR REPLACE INTO enhanced_data 
-                    ({col_names})
-                    VALUES ({placeholders})
-                ''', data_records)
-                
-                # Cleanup old data to maintain retention
-                cutoff_date = datetime.now() - timedelta(days=90)
-                cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
-                cursor.execute('''
-                    DELETE FROM enhanced_data 
-                    WHERE timestamp < ?
-                ''', (cutoff_str,))
-                
-                conn.commit()
-                
-                symbol_short = symbol.replace('/USDT:USDT', '')
-                logging.debug(f"🚀 Enhanced DB save: {symbol_short}[{timeframe}] - {len(data_records)} candles with ALL indicators")
-                
+                    conn.commit()
+                    
+                    symbol_short = symbol.replace('/USDT:USDT', '')
+                    logging.debug(f"🚀 Thread-safe Enhanced DB save: {symbol_short}[{timeframe}] - {len(data_records)} candles with ALL indicators")
+                    
         except Exception as e:
-            logging.error(f"❌ Enhanced database save failed for {symbol}[{timeframe}]: {e}")
-            # Fallback to legacy save
+            logging.error(f"❌ Thread-safe enhanced database save failed for {symbol}[{timeframe}]: {e}")
+            # Fallback to legacy save (also thread-safe)
             try:
                 self.save_data_to_db(symbol, timeframe, df)
             except:

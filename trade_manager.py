@@ -62,13 +62,15 @@ UNIFIED_TRADING_ENGINE_AVAILABLE = False  # Replaced by order_manager.py
 # Only realtime_display.py is now used for position display
 ENHANCED_DISPLAY_AVAILABLE = False
 
-# CONSOLIDATED: Use SmartPositionManager (position duplicates eliminated)
+# STEP 1 FIX: Use ThreadSafePositionManager (eliminate SmartPositionManager)
 try:
-    from core.smart_position_manager import global_smart_position_manager as global_position_tracker
+    from core.thread_safe_position_manager import global_thread_safe_position_manager as global_position_tracker
     POSITION_TRACKER_AVAILABLE = True
+    logging.info("🔒 Trade Manager using ThreadSafePositionManager")
 except ImportError as e:
-    logging.warning(f"⚠️ Smart Position Manager not available: {e}")
+    logging.error(f"❌ ThreadSafePositionManager not available: {e}")
     POSITION_TRACKER_AVAILABLE = False
+    raise ImportError("CRITICAL: ThreadSafePositionManager required for trade management")
 
 async def place_protective_orders_on_bybit(exchange, symbol, side, position_size, stop_loss_price, take_profit_price):
     """

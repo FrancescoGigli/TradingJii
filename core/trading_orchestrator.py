@@ -21,7 +21,8 @@ import config
 # Import clean modules
 from core.order_manager import global_order_manager
 from core.risk_calculator import global_risk_calculator, MarketData
-from core.smart_position_manager import global_smart_position_manager, Position
+# STEP 1 FIX: Import ThreadSafePositionManager instead of SmartPositionManager
+from core.thread_safe_position_manager import global_thread_safe_position_manager, ThreadSafePosition as Position
 from core.trailing_stop_manager import TrailingStopManager
 from core.price_precision_handler import global_price_precision_handler
 
@@ -83,15 +84,12 @@ class TradingOrchestrator:
         self.order_manager = global_order_manager
         self.risk_calculator = global_risk_calculator
         
-        # CRITICAL FIX: Use ThreadSafePositionManager when available
-        if UNIFIED_MANAGERS_AVAILABLE and global_thread_safe_position_manager:
-            self.position_manager = global_thread_safe_position_manager
-            self.smart_position_manager = global_thread_safe_position_manager
-            logging.info("🔒 TradingOrchestrator using ThreadSafePositionManager")
-        else:
-            self.position_manager = global_smart_position_manager
-            self.smart_position_manager = global_smart_position_manager  # alias
-            logging.warning("⚠️ TradingOrchestrator using legacy SmartPositionManager")
+        # STEP 1 FIX: Use ONLY ThreadSafePositionManager (eliminate SmartPositionManager fallback)
+        if global_thread_safe_position_manager is None:
+            raise ImportError("CRITICAL: ThreadSafePositionManager required for TradingOrchestrator")
+        
+        self.position_manager = global_thread_safe_position_manager
+        logging.info("🔒 TradingOrchestrator using ThreadSafePositionManager ONLY")
         
         self.trailing_manager = TrailingStopManager(self.order_manager, self.position_manager)
         
@@ -250,31 +248,32 @@ class TradingOrchestrator:
                 else:
                     logging.warning(colored(f"⚠️ Failed to set stop loss: {sl_result.error}", "yellow"))
 
-            # 7) 🔧 CRITICAL FIX: Use margin (USD) not position_size * price
-            # levels.position_size is in contracts, we need USD value for position_manager
-            position_usd_value = levels.margin * config.LEVERAGE  # This is the notional value in USD
+            # 7) STEP 1 FIX: Use ThreadSafe position creation with atomic operations
+            position_usd_value = levels.margin * config.LEVERAGE  # USD notional value
             
-            position_id = self.position_manager.create_trailing_position(
+            position_id = self.position_manager.thread_safe_create_position(
                 symbol=symbol,
                 side=side,
                 entry_price=market_data.price,
-                position_size=position_usd_value,  # USD value, not contracts
-                atr=market_data.atr,
-                catastrophic_sl_id=sl_order_id,
+                position_size=position_usd_value,  # USD value
                 leverage=config.LEVERAGE,
                 confidence=confidence
             )
             
-            # Salva trailing_data nella posizione creata
+            # STEP 1 FIX: Use atomic updates instead of direct position access
             if position_id:
-                position = next((p for p in self.position_manager.get_active_positions() 
-                               if p.position_id == position_id), None)
-                if position:
-                    position.trailing_data = trailing_data
-                    if trailing_data.trailing_attivo:
-                        position.trailing_attivo = True
-                        position.best_price = current_price
-                        position.sl_corrente = trailing_data.sl_corrente
+                # Store trailing data atomically
+                trailing_updates = {
+                    'trailing_data': trailing_data
+                }
+                if trailing_data.trailing_attivo:
+                    trailing_updates.update({
+                        'trailing_attivo': True,
+                        'best_price': current_price,
+                        'sl_corrente': trailing_data.sl_corrente
+                    })
+                
+                self.position_manager.atomic_update_position(position_id, trailing_updates)
 
             return TradingResult(True, position_id, "", {
                 'main': market_result.order_id,
@@ -301,13 +300,13 @@ class TradingOrchestrator:
         try:
             # 🔧 CLEANED: Log unico per sincronizzazione
             real_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_positions = [p for p in real_positions if float(p.get('contracts', 0) or 0) > 0]
+            active_positions = [p for p in real_positions if float(p.get('contracts', 0) or 0) != 0]
             if not active_positions:
                 logging.info(colored("🆕 No existing positions on Bybit - starting fresh", "green"))
                 return {}
 
-            # 2) Importa nello SmartPositionManager
-            newly_opened, _ = await self.smart_position_manager.sync_with_bybit(exchange)
+            # 2) STEP 1 FIX: Use ThreadSafePositionManager for sync
+            newly_opened, _ = await self.position_manager.thread_safe_sync_with_bybit(exchange)
             
             if newly_opened:
                 logging.info(colored(f"🛡️ PROTECTING {len(newly_opened)} positions...", "yellow", attrs=['bold']))
@@ -322,7 +321,7 @@ class TradingOrchestrator:
                     True,
                     position.position_id,
                     "",
-                    {'tracking_type': 'smart_sync', 'note': 'Position synced via SmartPositionManager'}
+                    {'tracking_type': 'thread_safe_sync', 'note': 'Position synced via ThreadSafePositionManager'}
                 )
 
                 try:
@@ -479,37 +478,37 @@ class TradingOrchestrator:
 
             logging.debug(f"🔄 TradingOrchestrator sync: {len(trailing_positions)} trailing positions")
 
-            # Solo aggiornamento prezzi e PnL per display (non trailing logic)
+            # STEP 1 FIX: Use atomic operations for price/PnL updates (no direct position access)
             for position in trailing_positions:
                 try:
                     ticker = await exchange.fetch_ticker(position.symbol)
                     current_price = ticker.get('last', 0)
                     
                     if current_price > 0:
-                        position.current_price = current_price
+                        # STEP 1 FIX: Use atomic price/PnL update instead of direct access
+                        success = self.position_manager.atomic_update_price_and_pnl(position.position_id, current_price)
+                        if not success:
+                            logging.warning(f"⚠️ Failed to update price for {position.symbol}")
+                            continue
                         
-                        # Solo PnL update (no trailing logic - delegato al TrailingMonitor)
-                        if position.side == 'buy':
-                            pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-                        else:
-                            pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
-                        
-                        position.unrealized_pnl_pct = pnl_pct
-                        position.unrealized_pnl_usd = (pnl_pct / 100) * position.position_size
-                        
-                        # Inizializza trailing_data se mancante (solo init, no logic)
+                        # Initialize trailing_data if missing (atomic update)
                         if not hasattr(position, 'trailing_data') or position.trailing_data is None:
-                            atr_value = getattr(position, "atr_value", current_price * 0.02)
-                            position.trailing_data = self.trailing_manager.initialize_trailing_data(
+                            atr_value = current_price * 0.02  # fallback ATR
+                            trailing_data = self.trailing_manager.initialize_trailing_data(
                                 position.symbol, position.side, position.entry_price, atr_value
                             )
+                            
+                            # STEP 1 FIX: Use atomic update for trailing_data
+                            self.position_manager.atomic_update_position(position.position_id, {
+                                'trailing_data': trailing_data
+                            })
                             logging.debug(f"🔧 Initialized trailing_data for {position.symbol}")
                             
                 except Exception as e:
                     logging.debug(f"Error updating price for {position.symbol}: {e}")
 
-            # Salva posizioni aggiornate
-            self.position_manager.save_positions()
+            # Note: ThreadSafePositionManager auto-saves during atomic operations
+            # No manual save needed
 
             # Nota: Le chiusure trailing sono gestite dal TrailingMonitor (30s)
             # Questo metodo non fa più uscite per evitare conflitti

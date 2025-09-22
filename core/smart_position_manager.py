@@ -171,7 +171,7 @@ class SmartPositionManager:
             
             # 1. Get real positions from Bybit
             bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_bybit_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) > 0]
+            active_bybit_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
             
             # 2. Create mapping of Bybit positions
             bybit_symbols = set()
