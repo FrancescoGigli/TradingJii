@@ -752,8 +752,12 @@ class ThreadSafePositionManager:
                     try:
                         if hasattr(position.trailing_data, 'to_dict'):
                             pos_dict['trailing_data'] = position.trailing_data.to_dict()
+                        elif hasattr(position.trailing_data, '__dict__'):
+                            # Convert object to dictionary recursively
+                            pos_dict['trailing_data'] = self._serialize_object_to_dict(position.trailing_data)
                         else:
                             # Remove non-serializable trailing_data
+                            logging.debug(f"🔒 Removing non-serializable trailing_data for {pos_id}")
                             pos_dict['trailing_data'] = None
                     except Exception as trailing_serial_error:
                         logging.warning(f"🔒 Failed to serialize trailing_data for {pos_id}: {trailing_serial_error}")
@@ -761,7 +765,24 @@ class ThreadSafePositionManager:
                 
                 open_positions_dict[pos_id] = pos_dict
             
-            closed_positions_dict = {pos_id: asdict(position) for pos_id, position in self._closed_positions.items()}
+            # Handle closed positions with same serialization logic
+            closed_positions_dict = {}
+            for pos_id, position in self._closed_positions.items():
+                pos_dict = asdict(position)
+                
+                # Handle trailing_data in closed positions too
+                if hasattr(position, 'trailing_data') and position.trailing_data is not None:
+                    try:
+                        if hasattr(position.trailing_data, 'to_dict'):
+                            pos_dict['trailing_data'] = position.trailing_data.to_dict()
+                        elif hasattr(position.trailing_data, '__dict__'):
+                            pos_dict['trailing_data'] = self._serialize_object_to_dict(position.trailing_data)
+                        else:
+                            pos_dict['trailing_data'] = None
+                    except Exception:
+                        pos_dict['trailing_data'] = None
+                
+                closed_positions_dict[pos_id] = pos_dict
             
             data = {
                 'open_positions': open_positions_dict,
@@ -780,6 +801,53 @@ class ThreadSafePositionManager:
             
         except Exception as e:
             logging.error(f"🔒 Thread-safe save failed: {e}")
+    
+    def _serialize_object_to_dict(self, obj) -> Dict:
+        """
+        Recursively convert object to JSON-serializable dictionary
+        
+        Args:
+            obj: Object to serialize
+            
+        Returns:
+            Dict: JSON-serializable dictionary
+        """
+        try:
+            if obj is None:
+                return None
+            
+            # Basic types that are JSON serializable
+            if isinstance(obj, (str, int, float, bool)):
+                return obj
+            
+            # Lists and tuples
+            if isinstance(obj, (list, tuple)):
+                return [self._serialize_object_to_dict(item) for item in obj]
+            
+            # Dictionaries
+            if isinstance(obj, dict):
+                return {str(k): self._serialize_object_to_dict(v) for k, v in obj.items()}
+            
+            # Objects with __dict__
+            if hasattr(obj, '__dict__'):
+                result = {}
+                for key, value in obj.__dict__.items():
+                    # Skip private attributes and methods
+                    if not key.startswith('_') and not callable(value):
+                        try:
+                            result[key] = self._serialize_object_to_dict(value)
+                        except Exception as attr_error:
+                            logging.debug(f"🔒 Skipping non-serializable attribute {key}: {attr_error}")
+                            # Skip attributes that can't be serialized
+                            continue
+                return result
+            
+            # For other types, convert to string representation
+            return str(obj)
+            
+        except Exception as e:
+            logging.warning(f"🔒 Object serialization failed: {e}")
+            return None
     
     # ========================================
     # BACKWARDS COMPATIBILITY LAYER
@@ -830,7 +898,7 @@ class ThreadSafePositionManager:
     # ========================================
     
     def load_positions(self):
-        """Load positions from storage with thread safety"""
+        """Load positions from storage with thread safety and corruption recovery"""
         try:
             with self._lock:
                 with open(self.storage_file, 'r') as f:
@@ -858,8 +926,40 @@ class ThreadSafePositionManager:
                 
         except FileNotFoundError:
             logging.info("🔒 No position file found, starting fresh thread-safe session")
+        except json.JSONDecodeError as json_error:
+            # Handle corrupted JSON file
+            logging.warning(f"🔒 Corrupted position file detected: {json_error}")
+            logging.warning("🔒 Creating backup and starting fresh session...")
+            
+            # Create backup of corrupted file
+            try:
+                import shutil
+                backup_name = f"{self.storage_file}.corrupted.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                shutil.copy2(self.storage_file, backup_name)
+                logging.info(f"🔒 Corrupted file backed up as: {backup_name}")
+            except Exception as backup_error:
+                logging.error(f"🔒 Could not backup corrupted file: {backup_error}")
+            
+            # Initialize fresh session
+            self._open_positions.clear()
+            self._closed_positions.clear()
+            self._session_balance = 1000.0
+            self._session_start_balance = 1000.0
+            self._operation_count = 0
+            self._lock_contention_count = 0
+            
+            # Save fresh data
+            self._save_positions_unsafe()
+            logging.info("🔒 Fresh session initialized after corruption recovery")
+            
         except Exception as e:
             logging.error(f"🔒 Error loading thread-safe positions: {e}")
+            # Emergency fallback to fresh session
+            logging.warning("🔒 Emergency fallback: Starting fresh session")
+            self._open_positions.clear()
+            self._closed_positions.clear()
+            self._session_balance = 1000.0
+            self._session_start_balance = 1000.0
     
     def _migrate_position_to_new_logic_unsafe(self, position: ThreadSafePosition):
         """UNSAFE: Migrate position to new logic (use only when in lock)"""

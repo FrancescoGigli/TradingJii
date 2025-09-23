@@ -112,41 +112,75 @@ class MarketAnalyzer:
             logging.warning(colored("⚠️ No symbols with complete data this cycle", "yellow"))
             return {}, 0
         
-        logging.info(colored("🧠 PHASE 2: PARALLEL ML PREDICTIONS", "cyan", attrs=['bold']))
+        # Enhanced dynamic phase header with market insights
+        total_symbols = len(self.complete_symbols)
+        estimated_time = total_symbols * 3.5  # ~3.5 seconds per symbol
         
-        # Check if parallel predictor is available
-        try:
-            from core.parallel_predictor import predict_all_parallel
-            parallel_available = True
-        except ImportError:
-            parallel_available = False
-            logging.warning("⚠️ Parallel predictor not available, using sequential predictions")
+        logging.info(colored("🎯 PHASE 2: AI MARKET INTELLIGENCE ANALYSIS", "cyan", attrs=['bold']))
+        logging.info(colored(f"📊 Scanning {total_symbols} crypto assets • Est. {estimated_time:.0f}s", "cyan"))
+        logging.info(colored("🔍 Evaluating technical patterns, volume trends & market momentum", "cyan"))
         
         ml_start_time = time.time()
         prediction_results = {}
         
-        if parallel_available:
-            # Use parallel predictor for better performance
-            prediction_results = await predict_all_parallel(
-                self.all_symbol_data, xgb_models, xgb_scalers, time_steps
-            )
-        else:
-            # Fallback to sequential predictions with countdown
-            for i, symbol in enumerate(self.complete_symbols, 1):
-                symbol_short = symbol.replace('/USDT:USDT', '')
-                logging.info(colored(f"🧠 Analyzing {symbol_short} ({i}/{len(self.complete_symbols)})", "magenta"))
+        # Dynamic wait messages for variety
+        wait_messages = [
+            "🔬 Processing market microstructure...",
+            "📈 Evaluating price action signals...",
+            "⚡ Computing momentum indicators...",
+            "🎲 Analyzing risk/reward ratios...",
+            "💡 Cross-referencing market patterns...",
+            "🧮 Calculating probability distributions...",
+            "🌊 Reading market sentiment waves...",
+            "🔮 Forecasting trend continuations..."
+        ]
+        
+        # Sequential predictions with enhanced logging
+        for i, symbol in enumerate(self.complete_symbols, 1):
+            symbol_short = symbol.replace('/USDT:USDT', '')
+            
+            # More expressive analysis header with context
+            logging.info(colored(f"🎯 [{i:2d}/{total_symbols:2d}] {symbol_short:12s} • Deep Learning Analysis", "magenta", attrs=['bold']))
+            
+            # Get symbol data for context
+            dataframes = self.all_symbol_data[symbol]
+            
+            # Perform prediction
+            start_prediction = time.time()
+            result = predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_steps)
+            prediction_time = time.time() - start_prediction
+            
+            prediction_results[symbol] = result
+            
+            # Enhanced result logging with insights
+            if result and len(result) >= 3:
+                confidence, signal, individual_preds = result
+                if confidence is not None and signal is not None:
+                    signal_names = {0: 'SELL 🔴', 1: 'BUY 🟢', 2: 'NEUTRAL 🟡'}
+                    signal_name = signal_names.get(signal, 'UNKNOWN')
+                    logging.info(colored(f"   💡 Prediction: {signal_name} • Confidence: {confidence:.1%} • {prediction_time:.2f}s", "white"))
+                else:
+                    logging.info(colored(f"   ⚠️  Analysis inconclusive • Market data insufficient", "yellow"))
+            else:
+                logging.info(colored(f"   ❌ Analysis failed • Technical error occurred", "red"))
+            
+            # Enhanced wait messaging (skip for last symbol)
+            if i < total_symbols:
+                message_idx = (i - 1) % len(wait_messages)
+                wait_msg = wait_messages[message_idx]
+                remaining = total_symbols - i
+                eta_remaining = remaining * 3.5
                 
-                dataframes = self.all_symbol_data[symbol]
-                result = predict_signal_ensemble(dataframes, xgb_models, xgb_scalers, symbol, time_steps)
-                prediction_results[symbol] = result
-                
-                # 🕐 COUNTDOWN: 3 secondi tra una moneta e l'altra (esclusa l'ultima)
-                if i < len(self.complete_symbols):  # Non aspettare dopo l'ultima moneta
-                    logging.info(colored(f"⏳ Waiting 3 seconds before next analysis... ({i}/{len(self.complete_symbols)})", "magenta"))
-                    await asyncio.sleep(3)
+                logging.info(colored(f"   {wait_msg} • {remaining} remaining • ~{eta_remaining:.0f}s ETA", "cyan"))
+                await asyncio.sleep(3)
 
         ml_time = time.time() - ml_start_time
-        logging.info(colored(f"✅ ML predictions completed in {ml_time:.1f}s", "green"))
+        
+        # Final summary with market insights
+        successful_predictions = sum(1 for result in prediction_results.values() 
+                                   if result and len(result) >= 2 and result[0] is not None)
+        
+        logging.info(colored(f"🎯 AI Analysis Complete: {successful_predictions}/{total_symbols} successful • {ml_time:.1f}s total", "green", attrs=['bold']))
         
         return prediction_results, ml_time
 

@@ -212,18 +212,175 @@ def display_top_signals(all_signals, limit=10):
         
     from core.enhanced_logging_system import enhanced_logger
     enhanced_logger.display_table("🏆 TOP SIGNALS BY CONFIDENCE:", "yellow", attrs=['bold'])
-    enhanced_logger.display_table("-" * 120, "yellow")
-    enhanced_logger.display_table(f"{'RANK':<4} {'SYMBOL':<20} {'SIGNAL':<6} {'CONFIDENCE':<12} {'EXPLANATION':<60} {'PRICE':<12}", "white", attrs=['bold'])
-    enhanced_logger.display_table("-" * 120, "yellow")
+    enhanced_logger.display_table("-" * 108, "yellow")
+    enhanced_logger.display_table(f"{'RANK':<4} {'SYMBOL':<20} {'SIGNAL':<6} {'CONFIDENCE':<12} {'EXPLANATION':<60}", "white", attrs=['bold'])
+    enhanced_logger.display_table("-" * 108, "yellow")
     
     for i, signal in enumerate(all_signals[:limit], 1):
         symbol_short = signal['symbol'].replace('/USDT:USDT', '')
         signal_color = 'green' if signal['signal_name'] == 'BUY' else 'red'
         
         confidence_pct = f"{signal['confidence']:.1%}"
-        enhanced_logger.display_table(f"{i:<4} {symbol_short:<20} {colored(signal['signal_name'], signal_color, attrs=['bold']):<6} {confidence_pct:<12} {signal['confidence_explanation']:<60} ${signal['price']:.6f}")
+        enhanced_logger.display_table(f"{i:<4} {symbol_short:<20} {colored(signal['signal_name'], signal_color, attrs=['bold']):<6} {confidence_pct:<12} {signal['confidence_explanation']:<60}")
     
-    enhanced_logger.display_table("-" * 120, "yellow")
+    enhanced_logger.display_table("-" * 108, "yellow")
+
+
+def display_execution_card(trade_num, total_trades, symbol, signal_data, levels=None, status="EXECUTING", error_msg=""):
+    """
+    Display beautiful execution card for each trade
+    
+    Args:
+        trade_num: Current trade number (1-based)
+        total_trades: Total trades to execute
+        symbol: Trading symbol
+        signal_data: Signal information dict
+        levels: Position levels from risk calculator (optional)
+        status: Trade status ("EXECUTING", "SUCCESS", "SKIPPED", "FAILED")
+        error_msg: Error message if status is FAILED
+    """
+    try:
+        symbol_short = symbol.replace('/USDT:USDT', '')
+        signal_name = signal_data.get('signal_name', 'UNKNOWN')
+        confidence = signal_data.get('confidence', 0.0)
+        tf_predictions = signal_data.get('tf_predictions', {})
+        
+        # Calculate consensus
+        signal_counts = {}
+        for pred in tf_predictions.values():
+            pred_name = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}.get(pred, 'UNKNOWN')
+            signal_counts[pred_name] = signal_counts.get(pred_name, 0) + 1
+        
+        consensus_text = f"{len([p for p in tf_predictions.values() if {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}.get(p) == signal_name])}/{len(tf_predictions)}"
+        
+        # Create card header
+        card_width = 62
+        card_title = f"TRADE #{trade_num}: {symbol_short} {signal_name}"
+        logging.info(colored("┌" + "─" * (card_width-2) + "┐", "cyan"))
+        logging.info(colored(f"│ {card_title:<{card_width-4}} │", "cyan", attrs=['bold']))
+        
+        # Signal line with color
+        signal_color = 'green' if signal_name == 'BUY' else 'red' if signal_name == 'SELL' else 'yellow'
+        signal_emoji = '🟢' if signal_name == 'BUY' else '🔴' if signal_name == 'SELL' else '🟡'
+        signal_line = f"│ 🎯 Signal: {signal_emoji} {colored(signal_name, signal_color, attrs=['bold'])} | Confidence: {confidence:.1%} | ML Consensus: {consensus_text}"
+        padding = card_width - len(signal_line.replace(colored(signal_name, signal_color, attrs=['bold']), signal_name)) - 1
+        logging.info(signal_line + " " * max(0, padding) + "│")
+        
+        # Position details line (if levels provided)
+        if levels and status in ["SUCCESS", "EXECUTING"]:
+            entry_price = levels.margin * 10 / levels.position_size if levels.position_size > 0 else 0
+            position_line = f"│ 💰 Entry: ${entry_price:.6f} | Size: {levels.position_size:.2f} | Margin: ${levels.margin:.2f}"
+            padding = card_width - len(position_line) - 1
+            logging.info(position_line + " " * max(0, padding) + "│")
+            
+            # Protection line
+            protection_line = f"│ 🛡️ Protection: Stop -6.0% (${levels.stop_loss:.6f}) | TP +8.0% (${levels.take_profit:.6f})"
+            padding = card_width - len(protection_line) - 1
+            logging.info(protection_line + " " * max(0, padding) + "│")
+        
+        # Status line with appropriate emoji and color
+        if status == "SUCCESS":
+            status_emoji = "✅"
+            status_color = "green" 
+            status_text = "SUCCESS - Position opened with protection"
+        elif status == "SKIPPED":
+            status_emoji = "⚠️"
+            status_color = "yellow"
+            status_text = f"SKIPPED - {error_msg}" if error_msg else "SKIPPED - Position already exists"
+        elif status == "FAILED":
+            status_emoji = "❌"
+            status_color = "red"
+            status_text = f"FAILED - {error_msg}" if error_msg else "FAILED - Unknown error"
+        elif status == "STOPPED":
+            status_emoji = "⏹️"
+            status_color = "yellow"
+            status_text = f"STOPPED - {error_msg}" if error_msg else "STOPPED - Portfolio limit"
+        else:  # EXECUTING
+            status_emoji = "⚡"
+            status_color = "cyan"
+            status_text = "EXECUTING... Market order → Stop loss setup"
+        
+        status_line = f"│ {status_emoji} Status: {colored(status_text, status_color, attrs=['bold'])}"
+        padding = card_width - len(status_line.replace(colored(status_text, status_color, attrs=['bold']), status_text)) - 1
+        logging.info(status_line + " " * max(0, padding) + "│")
+        
+        # Close card
+        logging.info(colored("└" + "─" * (card_width-2) + "┘", "cyan"))
+        
+        # Add success message outside card for successful trades
+        if status == "SUCCESS":
+            logging.info(colored(f"✅ POSITION OPENED: {symbol_short} protected with automatic stop loss", "green", attrs=['bold']))
+        
+    except Exception as e:
+        logging.error(f"Error displaying execution card for {symbol}: {e}")
+        # Fallback to simple display
+        logging.info(colored(f"📝 Trade #{trade_num}: {symbol.replace('/USDT:USDT', '')} {status}", "white"))
+
+
+def display_execution_summary(executed_count, total_signals, total_margin_used, remaining_balance):
+    """
+    Display execution summary with beautiful formatting
+    
+    Args:
+        executed_count: Number of trades executed successfully
+        total_signals: Total number of signals processed
+        total_margin_used: Total margin used in USD
+        remaining_balance: Remaining available balance
+    """
+    try:
+        logging.info(colored("", "white"))  # Empty line
+        logging.info(colored("🏆 EXECUTION SUMMARY", "green", attrs=['bold']))
+        logging.info(colored("╔" + "═" * 58 + "╗", "green"))
+        
+        # Results line
+        results_text = f"🎯 Executed: {executed_count} positions | 💰 Margin Used: ${total_margin_used:.2f}"
+        padding = 58 - len(results_text)
+        logging.info(colored(f"║ {results_text}{' ' * max(0, padding)} ║", "green"))
+        
+        # Balance line
+        balance_text = f"💰 Remaining balance: ${remaining_balance:.2f} available for next cycle"
+        padding = 58 - len(balance_text)
+        logging.info(colored(f"║ {balance_text}{' ' * max(0, padding)} ║", "green"))
+        
+        # Success rate
+        success_rate = (executed_count / total_signals * 100) if total_signals > 0 else 0
+        rate_text = f"📊 Success Rate: {success_rate:.1f}% ({executed_count}/{total_signals})"
+        padding = 58 - len(rate_text)
+        logging.info(colored(f"║ {rate_text}{' ' * max(0, padding)} ║", "green"))
+        
+        logging.info(colored("╚" + "═" * 58 + "╝", "green"))
+        
+    except Exception as e:
+        logging.error(f"Error displaying execution summary: {e}")
+        # Fallback
+        logging.info(colored(f"🏆 EXECUTION COMPLETE: {executed_count} trades executed", "green"))
+
+
+def display_phase5_header(balance, available_balance, in_use_balance, signal_count):
+    """
+    Display beautiful Phase 5 header with balance information
+    
+    Args:
+        balance: Total account balance
+        available_balance: Available balance for trading
+        in_use_balance: Balance currently in use
+        signal_count: Number of signals to execute
+    """
+    try:
+        logging.info(colored("🚀 PHASE 5: LIVE TRADE EXECUTION", "cyan", attrs=['bold']))
+        
+        balance_line = f"💰 Account Balance: ${balance:.2f} | Available: ${available_balance:.2f} | In Use: ${in_use_balance:.2f}"
+        logging.info(colored(balance_line, "cyan"))
+        
+        signals_line = f"🎯 Signals Ready: {signal_count} candidates selected for execution"
+        logging.info(colored(signals_line, "cyan"))
+        
+        logging.info(colored("═" * 80, "cyan"))
+        
+    except Exception as e:
+        logging.error(f"Error displaying Phase 5 header: {e}")
+        # Fallback
+        logging.info(colored("🚀 PHASE 5: TRADE EXECUTION", "cyan", attrs=['bold']))
 
 
 def display_selected_symbols(symbols_list, title="SIMBOLI SELEZIONATI", volumes_data=None):

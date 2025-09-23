@@ -301,21 +301,7 @@ async def get_data_async(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, limit=10
                 frame = frame.f_back
         except:
             pass
-        
-        # Completely suppress console output (only save to log files)
-        # No more console printing of candles - too verbose
-        pass
-        
-        # Save to dedicated candle log file
-        candle_log_path = Path("logs/latest_candles.log")
-        candle_log_path.parent.mkdir(exist_ok=True)
-        
-        try:
-            with open(candle_log_path, "a", encoding="utf-8") as f:
-                f.write(f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} - {symbol} [{timeframe}]: {last_candle_formatted}\n")
-        except Exception as e:
-            logging.warning(f"Failed to write to candle log: {e}")
-        
+
         # Only log during analysis phase, not training (silenced for clean output)
         pass
         return df

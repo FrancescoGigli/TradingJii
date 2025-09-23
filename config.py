@@ -59,13 +59,13 @@ exchange_config = {
 }
 
 # Trading parameters
-MARGIN_BASE_USDT = 30.0    # Minimum margin per trade
-MARGIN_MAX_USDT = 60.0     # Maximum margin per trade  
+MARGIN_BASE_USDT = 40.0    # Minimum margin per trade
+MARGIN_MAX_USDT = 70.0     # Maximum margin per trade  
 LEVERAGE = 10
 
 # Stop Loss e Trailing Management
-INITIAL_SL_MARGIN_LOSS_PCT = 0.6      # 60% perdita sul margine
-INITIAL_SL_PRICE_PCT = 0.06           # 6% dal prezzo (equivalente con leva 10x)
+INITIAL_SL_MARGIN_LOSS_PCT = 0.4      # 40% perdita sul margine
+INITIAL_SL_PRICE_PCT = 0.04           # 4% dal prezzo (equivalente con leva 10x)
 
 TRAILING_TRIGGER_BASE_PCT = 0.10      # 10% base per bassa volatilità
 TRAILING_TRIGGER_MIN_PCT = 0.05       # 5% minimo per alta volatilità  

@@ -131,20 +131,15 @@ def is_symbol_excluded(symbol):
 async def get_real_balance(exchange):
     # Modalità Demo: usa balance fittizio senza API
     if config.DEMO_MODE:
-        logging.info(colored(f"🎮 DEMO MODE: Utilizzo balance fittizio di {DEMO_BALANCE} USDT", "magenta"))
         return DEMO_BALANCE
     
     # Modalità Live: usa API Bybit reali
     try:
-        logging.info(colored("🔍 LIVE MODE: Tentativo di recupero balance USDT tramite API...", "cyan"))
+        logging.info("🔍 LIVE MODE: Tentativo di recupero balance USDT tramite API...")
         balance = await exchange.fetch_balance()
-        logging.info(colored(f"📊 Balance response ricevuto: {type(balance)}", "cyan"))
         
-        # ENHANCED: Bybit Unified Account Balance Recovery
+        # ENHANCED: Bybit Unified Account Balance Recovery (silent processing)
         if isinstance(balance, dict):
-            available_keys = list(balance.keys())
-            logging.info(colored(f"🔑 Balance keys found ({len(available_keys)}): {available_keys}", "cyan"))
-            
             usdt_balance = None
             found_key = None
             
@@ -152,33 +147,25 @@ async def get_real_balance(exchange):
             try:
                 if 'info' in balance and isinstance(balance['info'], dict):
                     info_data = balance['info']
-                    logging.debug(f"🔍 Info data found: {type(info_data)}")
                     
                     if 'result' in info_data and isinstance(info_data['result'], dict):
                         result_data = info_data['result']
-                        logging.debug(f"🔍 Result data found: {type(result_data)}")
                         
                         if 'list' in result_data and isinstance(result_data['list'], list) and len(result_data['list']) > 0:
                             account_data = result_data['list'][0]
-                            logging.info(colored(f"🔍 Account data keys: {list(account_data.keys())}", "yellow"))
                             
                             # Try totalWalletBalance first (best for trading)
                             if 'totalWalletBalance' in account_data and account_data['totalWalletBalance']:
                                 usdt_balance = float(account_data['totalWalletBalance'])
                                 found_key = "info.result.list[0].totalWalletBalance"
-                                logging.info(colored(f"💰 Total Wallet Balance: ${usdt_balance:.2f} (Unified Account)", "green", attrs=['bold']))
                             
                             # Fallback to totalEquity
                             elif 'totalEquity' in account_data and account_data['totalEquity']:
                                 usdt_balance = float(account_data['totalEquity'])
                                 found_key = "info.result.list[0].totalEquity"
-                                logging.info(colored(f"💰 Total Equity: ${usdt_balance:.2f} (Unified Account)", "green", attrs=['bold']))
-                            
-                            else:
-                                logging.warning(colored("🔍 totalWalletBalance/totalEquity not found in account data", "yellow"))
                                 
             except Exception as nested_error:
-                logging.warning(f"Could not extract from nested info structure: {nested_error}")
+                logging.debug(f"Could not extract from nested info structure: {nested_error}")
             
             # STEP 2: Direct keys fallback (if not found in info structure)
             if usdt_balance is None:
@@ -187,20 +174,16 @@ async def get_real_balance(exchange):
                         try:
                             usdt_balance = float(balance[direct_key])
                             found_key = direct_key
-                            logging.info(colored(f"💰 {direct_key}: ${usdt_balance:.2f} (direct key)", "green"))
                             break
                         except (ValueError, TypeError) as e:
-                            logging.warning(f"Could not convert {direct_key}: {e}")
+                            logging.debug(f"Could not convert {direct_key}: {e}")
             
             # STEP 3: Fallback to USDT-specific balance (classic method)
             if usdt_balance is None:
-                logging.info(colored("🔍 Trying classic USDT balance method...", "yellow"))
-                
                 priority_keys = ['USDT', 'usdt', 'USDT:USDT', 'USDT/USDT']
                 for key in priority_keys:
                     if key in balance:
                         usdt_data = balance[key]
-                        logging.info(colored(f"📋 Found {key}: {usdt_data}", "cyan"))
                         
                         if isinstance(usdt_data, dict):
                             # Try multiple balance keys, prioritizing non-None values
@@ -209,7 +192,6 @@ async def get_real_balance(exchange):
                                     try:
                                         usdt_balance = float(usdt_data[balance_key])
                                         found_key = f"{key}.{balance_key}"
-                                        logging.info(colored(f"💰 USDT Balance: ${usdt_balance:.2f} (from {found_key})", "green"))
                                         break
                                     except (ValueError, TypeError):
                                         continue
@@ -221,63 +203,49 @@ async def get_real_balance(exchange):
                             try:
                                 usdt_balance = float(usdt_data)
                                 found_key = key
-                                logging.info(colored(f"💰 USDT Balance: ${usdt_balance:.2f} (from {found_key})", "green"))
                                 break
                             except (ValueError, TypeError):
                                 continue
             
             # STEP 4: Final validation
             if usdt_balance is None:
-                logging.error(colored("❌ Could not find any valid balance! Available data:", "red"))
-                for key, value in balance.items():
-                    if isinstance(value, dict) and any(sub_key in ['total', 'free', 'balance'] for sub_key in value.keys()):
-                        logging.error(colored(f"🔍 {key}: {value}", "red"))
-                    elif isinstance(value, (int, float, str)) and 'balance' in key.lower():
-                        logging.error(colored(f"🔍 {key}: {value}", "red"))
-                
+                logging.error("❌ Could not find any valid balance in API response")
                 usdt_balance = 0
                 found_key = "NOT_FOUND"
             
         else:
-            logging.error(colored(f"❌ Balance response non è un dictionary: {balance}", "red"))
+            logging.error(f"❌ Balance response is not a dictionary: {type(balance)}")
             usdt_balance = 0
             found_key = "INVALID_RESPONSE"
         
-        # RISULTATO FINALE CON DISPLAY MIGLIORATO
+        # Clean final result
         if usdt_balance is None or usdt_balance == 0:
-            logging.warning(colored(f"⚠️ Balance non disponibile (source: {found_key})", "yellow"))
+            logging.warning(f"⚠️ Balance not available (source: {found_key})")
             return None
         else:
-            # Enhanced balance display
-            balance_type = "💼 TOTAL EQUITY" if found_key in ["totalWalletBalance", "totalEquity"] else "💰 USDT ONLY"
-            logging.info(colored("=" * 60, "green"))
-            logging.info(colored(f"✅ LIVE MODE BALANCE RECOVERY SUCCESS", "green", attrs=['bold']))
-            logging.info(colored(f"💳 Account Type: Bybit Unified Account", "green"))
-            logging.info(colored(f"{balance_type}: ${usdt_balance:.2f} USD", "green", attrs=['bold']))
-            logging.info(colored(f"🔑 Source: {found_key}", "green"))
-            logging.info(colored(f"🚀 Ready for live trading with ${usdt_balance:.2f}", "green"))
-            logging.info(colored("=" * 60, "green"))
+            # Clean balance display - no verbose logging
+            logging.info(f"💰 Total Wallet Balance: ${usdt_balance:.2f} (Unified Account)")
+            logging.info("============================================================")
+            logging.info("✅ LIVE MODE BALANCE RECOVERY SUCCESS")
+            logging.info("💳 Account Type: Bybit Unified Account") 
+            logging.info(f"💰 USDT ONLY: ${usdt_balance:.2f} USD")
+            logging.info(f"🔑 Source: {found_key}")
+            logging.info(f"🚀 Ready for live trading with ${usdt_balance:.2f}")
+            logging.info("============================================================")
         
         return usdt_balance
         
     except Exception as e:
         error_msg = str(e)
-        logging.error(colored(f"❌ Errore nel recupero del saldo: {error_msg}", "red"))
-        logging.error(colored(f"🔍 Tipo errore: {type(e).__name__}", "red"))
+        logging.error(f"❌ Error retrieving balance: {error_msg}")
         
-        # Controlla errori comuni Bybit
+        # Check common Bybit errors (simplified)
         if "33004" in error_msg or "api key expired" in error_msg.lower():
-            logging.error(colored("🔑 Errore: API key scaduta o non valida", "red"))
+            logging.error("🔑 API key expired or invalid")
         elif "10003" in error_msg or "invalid api key" in error_msg.lower():
-            logging.error(colored("🔑 Errore: API key non valida", "red"))
+            logging.error("🔑 Invalid API key")
         elif "permissions" in error_msg.lower():
-            logging.error(colored("🔒 Errore: Permissions insufficienti - serve 'Read' permission", "red"))
-        elif "authentication" in error_msg.lower():
-            logging.error(colored("🔐 Errore: Problema di autenticazione", "red"))
-        elif "invalid signature" in error_msg.lower():
-            logging.error(colored("🔏 Errore: Firma API non valida", "red"))
-        else:
-            logging.error(colored(f"❓ Errore sconosciuto: {error_msg}", "red"))
+            logging.error("🔒 Insufficient permissions - need 'Read' permission")
         
         return None
 

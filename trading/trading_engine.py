@@ -228,50 +228,104 @@ class TradingEngine:
     # Helpers
     # ------------------------------------------------------------------
     async def _execute_signals(self, exchange, all_signals):
-        """Execute trading signals with enhanced logging"""
-        from core.enhanced_logging_system import enhanced_logger
-
+        """Execute trading signals with enhanced logging and beautiful execution cards"""
+        from utils.display_utils import display_phase5_header, display_execution_card, display_execution_summary
+        
         if not all_signals:
-            enhanced_logger.display_table("😐 No signals to execute this cycle", "yellow")
+            logging.info(colored("😐 No signals to execute this cycle", "yellow"))
             return
 
+        # STEP 1: PRE-EXECUTION SYNC - Get accurate balance
+        if self.clean_modules_available and not config.DEMO_MODE:
+            logging.info(colored("🔄 PRE-EXECUTION SYNC: Checking existing positions...", "cyan"))
+            try:
+                newly_opened, newly_closed = await self.position_manager.thread_safe_sync_with_bybit(exchange)
+                if newly_opened or newly_closed:
+                    logging.info(colored(f"🔄 Sync found: {len(newly_opened)} new, {len(newly_closed)} closed", "cyan"))
+            except Exception as sync_error:
+                logging.warning(f"⚠️ Pre-execution sync failed: {sync_error}")
+
+        # STEP 2: GET ACCURATE BALANCE
         usdt_balance = await get_real_balance(exchange) if not config.DEMO_MODE else config.DEMO_BALANCE
         if usdt_balance is None:
-            enhanced_logger.display_table("⚠️ Failed to get balance", "yellow")
+            logging.warning(colored("⚠️ Failed to get balance", "yellow"))
             return
 
-        # Position limits
+        # STEP 3: CALCULATE AVAILABLE BALANCE
         open_positions_count = (
             self.position_manager.get_position_count() if self.clean_modules_available else 0
         )
-        max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
-        signals_to_execute = all_signals[: min(max_positions, len(all_signals))]
-        if not signals_to_execute:
-            enhanced_logger.display_table("⚠️ No slots for new positions", "yellow")
+        used_margin = 0
+        if self.clean_modules_available:
+            session_summary = self.position_manager.get_session_summary()
+            used_margin = session_summary.get('used_margin', 0)
+        
+        available_balance = max(0, usdt_balance - used_margin)
+        
+        # STEP 4: BEAUTIFUL PHASE 5 HEADER
+        display_phase5_header(usdt_balance, available_balance, used_margin, len(all_signals))
+
+        if not all_signals:
             return
 
-        enhanced_logger.display_table(f"🎯 Executing {len(signals_to_execute)} signals", "red")
-        await self._setup_trading_parameters(exchange, signals_to_execute)
+        # STEP 5: POSITION LIMITS
+        max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
+        signals_to_execute = all_signals[: min(max_positions, len(all_signals))]
+        
+        if not signals_to_execute:
+            logging.info(colored("⚠️ No slots for new positions", "yellow"))
+            return
 
-        # Execute each signal
+        # Early balance check - test first signal to avoid useless loops
+        if signals_to_execute and self.clean_modules_available:
+            first_signal = signals_to_execute[0]
+            df = first_signal["dataframes"][self.config_manager.get_default_timeframe()]
+            if df is not None and len(df) > 0:
+                latest_candle = df.iloc[-1]
+                current_price = latest_candle.get("close", 0)
+                atr = latest_candle.get("atr", current_price * 0.003)
+                volatility = latest_candle.get("volatility", 0.0)
+                
+                market_data = self.MarketData(price=current_price, atr=atr, volatility=volatility)
+                levels = self.global_risk_calculator.calculate_position_levels(
+                    market_data, first_signal["signal_name"].lower(), first_signal["confidence"], usdt_balance
+                )
+                
+                # Early exit if first signal requires more than available balance
+                if levels.margin > usdt_balance:
+                    enhanced_logger.display_table(f"⚠️ INSUFFICIENT BALANCE: Need ${levels.margin:.2f}+ per trade, have ${usdt_balance:.2f}", "yellow")
+                    enhanced_logger.display_table("⏭️ SKIPPING EXECUTION → Moving to Position Management", "yellow")
+                    return
+
+        # Setup trading parameters (silent)
+        await self._setup_trading_parameters_silent(exchange, signals_to_execute)
+
+        # STEP 6: EXECUTE SIGNALS WITH BEAUTIFUL CARDS
         executed_trades = 0
+        skipped_existing = 0
+        failed_trades = 0
+        total_margin_used = 0
+        
         for i, signal in enumerate(signals_to_execute, 1):
             try:
                 if not self.clean_modules_available:
-                    logging.warning("⚠️ Clean modules not available, skipping execution")
+                    display_execution_card(i, len(signals_to_execute), signal["symbol"], signal, None, "FAILED", "Clean modules not available")
                     break
 
                 symbol = signal["symbol"]
+                symbol_short = symbol.replace('/USDT:USDT', '')
 
-                # Skip if already open
+                # Check if position already exists
                 if self.position_manager.has_position_for_symbol(symbol):
-                    logging.info(colored(f"📝 {i}/{len(signals_to_execute)} {symbol}: Position exists, skipping", "cyan"))
+                    skipped_existing += 1
+                    display_execution_card(i, len(signals_to_execute), symbol, signal, None, "SKIPPED", "Position already exists")
                     continue
 
-                # Risk and execution
+                # Get market data and calculate levels
                 df = signal["dataframes"][self.config_manager.get_default_timeframe()]
                 if df is None or len(df) == 0:
-                    logging.warning(f"⚠️ {symbol}: No market data available")
+                    failed_trades += 1
+                    display_execution_card(i, len(signals_to_execute), symbol, signal, None, "FAILED", "No market data available")
                     continue
 
                 latest_candle = df.iloc[-1]
@@ -281,27 +335,58 @@ class TradingEngine:
 
                 market_data = self.MarketData(price=current_price, atr=atr, volatility=volatility)
                 levels = self.global_risk_calculator.calculate_position_levels(
-                    market_data, signal["signal_name"].lower(), signal["confidence"], usdt_balance
+                    market_data, signal["signal_name"].lower(), signal["confidence"], available_balance
                 )
-                if levels.margin > usdt_balance:
-                    logging.warning(f"⚠️ {symbol}: Insufficient balance")
+                
+                # Portfolio margin check with beautiful card display
+                if levels.margin > available_balance:
+                    display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "STOPPED", f"Portfolio margin limit: ${levels.margin:.2f} > ${available_balance:.2f}")
+                    logging.info(colored("⏭️ STOPPING EXECUTION → Insufficient balance for remaining signals", "yellow"))
                     break
 
-                result = await self.global_trading_orchestrator.execute_new_trade(exchange, signal, market_data, usdt_balance)
+                # Show executing card
+                display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "EXECUTING")
+                
+                # Execute the trade
+                result = await self.global_trading_orchestrator.execute_new_trade(exchange, signal, market_data, available_balance)
+                
                 if result.success:
+                    # Success card
+                    display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "SUCCESS")
                     executed_trades += 1
-                    usdt_balance -= levels.margin
-                    logging.info(colored(f"✅ {i}/{len(signals_to_execute)} {symbol}: Trade executed", "green"))
+                    total_margin_used += levels.margin
+                    available_balance -= levels.margin
                 else:
-                    logging.warning(f"❌ {i}/{len(signals_to_execute)} {symbol}: {result.error}")
+                    # Failed card  
+                    display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "FAILED", result.error)
+                    failed_trades += 1
+                    
+                    # If it's a margin limit error, stop trying other signals
+                    if "margin limit" in result.error.lower() or "insufficient" in result.error.lower():
+                        logging.info(colored("⏭️ STOPPING EXECUTION → Balance exhausted", "yellow"))
+                        break
+                        
             except Exception as e:
-                logging.error(f"❌ Error executing {signal['symbol']}: {e}", exc_info=True)
+                failed_trades += 1
+                display_execution_card(i, len(signals_to_execute), signal["symbol"], signal, None, "FAILED", str(e)[:50])
+                logging.error(f"❌ Error executing {signal['symbol']}: {e}")
                 continue
 
-        if executed_trades > 0:
-            enhanced_logger.display_table(f"✅ Execution complete: {executed_trades} trades", "green")
-        else:
-            enhanced_logger.display_table("⚠️ No signals executed", "yellow")
+        # STEP 7: BEAUTIFUL EXECUTION SUMMARY
+        remaining_balance = available_balance
+        display_execution_summary(executed_trades, len(signals_to_execute), total_margin_used, remaining_balance)
+
+    async def _setup_trading_parameters_silent(self, exchange, signals_to_execute):
+        """Setup trading parameters without verbose logging"""
+        for signal in signals_to_execute:
+            symbol = signal["symbol"]
+            try:
+                await exchange.set_leverage(config.LEVERAGE, symbol)
+                await exchange.set_margin_mode("isolated", symbol)
+            except Exception as e:
+                # Only log actual errors, not "leverage not modified" warnings
+                if "leverage not modified" not in str(e).lower():
+                    logging.debug(f"⚠️ {symbol}: Param setup failed: {e}")
 
     async def _setup_trading_parameters(self, exchange, signals_to_execute):
         from core.enhanced_logging_system import enhanced_logger
@@ -379,14 +464,14 @@ class TradingEngine:
                 await self.run_trading_cycle(exchange, xgb_models, xgb_scalers)
                 await self._wait_with_countdown(config.TRADE_CYCLE_INTERVAL)
             except KeyboardInterrupt:
-                logging.info("🛑 Trading stopped by user")
+                logging.info("� Trading stopped by user")
                 break
             except Exception as e:
                 logging.error(f"❌ Error in trading loop: {e}", exc_info=True)
                 await asyncio.sleep(60)
 
     async def _wait_with_countdown(self, total_seconds: int):
-        """Clean countdown with minimal logging"""
+        """Clean countdown with minimal logging - shows every minute"""
         from core.enhanced_logging_system import enhanced_logger
 
         # Log only the start
@@ -395,13 +480,22 @@ class TradingEngine:
         
         remaining = total_seconds
         last_logged_minute = -1
+        last_displayed_minute = -1
 
         while remaining > 0:
             minutes, seconds = divmod(remaining, 60)
             
-            # Terminal display (overwrites same line)
-            countdown_text = f"⏰ Next cycle in: {minutes}m{seconds:02d}s"
-            print(f"\r{colored(countdown_text, 'magenta')}", end="", flush=True)
+            # Display countdown every minute (or at significant milestones)
+            should_display = (
+                minutes != last_displayed_minute or  # New minute
+                remaining <= 10 or  # Final 10 seconds
+                remaining % 60 == 0  # Every minute boundary
+            )
+            
+            if should_display:
+                countdown_text = f"⏰ Next cycle in: {minutes}m{seconds:02d}s"
+                print(f"\r{colored(countdown_text, 'magenta')}", end="", flush=True)
+                last_displayed_minute = minutes
 
             # Log only significant milestones to avoid spam
             if minutes != last_logged_minute and minutes in [10, 5, 2, 1]:

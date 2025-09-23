@@ -4,7 +4,13 @@ Restructured Trading Bot - Clean Main Entry Point
 Live trading only • Static realtime display at end of cycle
 """
 
-import sys
+
+import sys, io
+
+# Forza UTF-8 su Windows (per emoji e simboli)
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+
 import os
 import numpy as np
 import warnings
@@ -41,7 +47,6 @@ from logging_config import *
 
 # Unified managers
 try:
-    from core.unified_balance_manager import initialize_balance_manager
     from core.thread_safe_position_manager import global_thread_safe_position_manager
     from core.smart_api_manager import global_smart_api_manager
     from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
@@ -59,7 +64,7 @@ from trading import TradingEngine
 # Trailing monitor
 from core.trailing_monitor import TrailingMonitor
 from core.trailing_stop_manager import TrailingStopManager
-from core.order_manager import OrderManager
+from core.order_manager import global_order_manager
 
 # Realtime display
 from core.realtime_display import initialize_global_realtime_display
@@ -172,30 +177,20 @@ async def main():
         # Fresh session
         await trading_engine.initialize_session(async_exchange)
 
-        # Balance sync
-        if UNIFIED_MANAGERS_AVAILABLE and not demo_mode:
-            try:
-                real_balance = await get_real_balance(async_exchange)
-                if real_balance and real_balance > 0:
-                    success = await balance_manager.sync_balance_with_bybit(async_exchange)
-                    if success:
-                        logging.info(
-                            colored(
-                                f"💰 Balance Manager synced with Bybit: ${balance_manager.get_total_balance():.2f}",
-                                "green",
-                            )
-                        )
-                        balance_manager.display_balance_dashboard()
-                    else:
-                        logging.warning("⚠️ Failed to sync balance manager with Bybit")
-                else:
-                    logging.warning("⚠️ Could not get real balance for sync")
-            except Exception as balance_error:
-                logging.error(f"❌ Balance manager sync error: {balance_error}")
+        # Balance sync removed for cleaner startup
+        logging.debug("🔧 Balance sync disabled - using direct balance queries when needed")
 
-        # Trailing monitor - TEMPORARILY DISABLED FOR TESTING
-        trailing_monitor = None
-        logging.info("⚡ Trailing monitor temporarily disabled for testing")
+        # Initialize trailing monitor for dynamic stop loss updates
+        trailing_manager = TrailingStopManager(global_order_manager, trading_engine.position_manager)
+        trailing_monitor = TrailingMonitor(
+            trading_engine.position_manager, 
+            trailing_manager, 
+            global_order_manager
+        )
+        
+        # Start trailing monitor for real-time stop loss updates
+        await trailing_monitor.start_monitoring(async_exchange)
+        logging.info("⚡ Trailing monitor ENABLED - Real-time stop loss updates active")
 
         # Static realtime display
         initialize_global_realtime_display(

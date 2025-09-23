@@ -297,6 +297,41 @@ class TrailingMonitor:
                             'sl_corrente': trailing_data.sl_corrente
                         })
                     
+                    # 🔧 CRITICAL FIX: Update Bybit stop loss (previously skipped in lightweight mode)
+                    try:
+                        # Check if the new SL is significantly different to avoid 34040 "not modified" errors
+                        sl_diff_pct = abs(trailing_data.sl_corrente - old_sl) / old_sl * 100
+                        if sl_diff_pct >= 0.1:  # Only update if difference >= 0.1%
+                            sl_result = await self.order_manager.set_trading_stop(
+                                exchange, symbol, trailing_data.sl_corrente, None
+                            )
+                            if sl_result.success:
+                                symbol_short = symbol.replace('/USDT:USDT', '')
+                                
+                                # Calculate PnL at new stop loss for display
+                                if position.side.lower() == 'buy':
+                                    pnl_at_new_sl = ((trailing_data.sl_corrente - position.entry_price) / position.entry_price) * 100 * getattr(position, 'leverage', 10)
+                                else:
+                                    pnl_at_new_sl = ((position.entry_price - trailing_data.sl_corrente) / position.entry_price) * 100 * getattr(position, 'leverage', 10)
+                                
+                                # PROMINENT DISPLAY: Clear visual update during cycle wait
+                                print(colored("=" * 80, "yellow"))
+                                print(colored(f"🎯 TRAILING STOP UPDATED: {symbol_short}", "cyan", attrs=['bold']))
+                                print(colored(f"💰 Old SL: ${old_sl:.6f} → New SL: ${trailing_data.sl_corrente:.6f}", "green", attrs=['bold']))
+                                print(colored(f"🛡️ Protected PnL: {pnl_at_new_sl:+.1f}% minimum guaranteed", "green", attrs=['bold']))
+                                print(colored(f"📈 Current Price: ${current_price:.6f} | Entry: ${position.entry_price:.6f}", "white"))
+                                print(colored("=" * 80, "yellow"))
+                                
+                                logging.info(colored(f"🎯 {symbol_short}: Bybit SL updated → ${trailing_data.sl_corrente:.6f}", "green"))
+                            else:
+                                error_msg = sl_result.error or "unknown error"
+                                if "34040" not in error_msg.lower() and "not modified" not in error_msg.lower():
+                                    logging.warning(f"⚠️ {symbol}: SL update failed: {error_msg}")
+                        else:
+                            logging.debug(f"⚡ {symbol}: SL change too small ({sl_diff_pct:.2f}%), skipping Bybit update")
+                    except Exception as e:
+                        logging.warning(f"⚡ {symbol}: SL update error: {e}")
+                    
                     # Log the trailing stop update with details
                     if position.side.lower() == 'buy':
                         pnl_at_sl = ((trailing_data.sl_corrente - position.entry_price) / position.entry_price) * 100 * getattr(position, 'leverage', 10)

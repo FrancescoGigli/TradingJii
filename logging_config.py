@@ -31,11 +31,6 @@ class EmojiFormatter(logging.Formatter):
         return super().format(record)
 
 
-# ==============================
-# CARTELLA LOG
-# ==============================
-logs_dir = Path("logs")
-logs_dir.mkdir(exist_ok=True)
 
 
 # ==============================
@@ -45,22 +40,8 @@ logs_dir.mkdir(exist_ok=True)
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(EmojiFormatter("%(asctime)s %(levelname)s %(message)s"))
 
-# File unico con tutto
-file_handler = logging.FileHandler(
-    logs_dir / "trading_bot.log", mode="w", encoding="utf-8"
-)
-file_handler.setFormatter(
-    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-)
 
-# File errori
-error_handler = logging.FileHandler(
-    logs_dir / "trading_bot_errors.log", mode="w", encoding="utf-8"
-)
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(
-    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(funcName)s:%(lineno)d %(message)s")
-)
+
 
 
 # ==============================
@@ -89,8 +70,3 @@ for module in noisy_modules:
     logging.getLogger(module).setLevel(logging.WARNING)
 
 
-# ==============================
-# STARTUP LOG
-# ==============================
-logging.info("🚀 LOGGING SYSTEM INITIALIZED (balanced)")
-logging.info(f"📁 Log files location: {logs_dir.absolute()}")

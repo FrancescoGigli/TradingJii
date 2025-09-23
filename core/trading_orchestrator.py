@@ -313,10 +313,11 @@ class TradingOrchestrator:
             if newly_opened:
                 logging.info(colored(f"🛡️ PROTECTING {len(newly_opened)} positions...", "yellow", attrs=['bold']))
 
-            # 3) Applica protezione per ogni posizione con log ridotto
+            # 3) Applica protezione per ogni posizione (silenzioso)
             protected_count = 0
             already_protected_count = 0
             trailing_count = 0
+            protection_details = []
             
             for i, position in enumerate(newly_opened, 1):
                 results[position.symbol] = TradingResult(
@@ -327,9 +328,8 @@ class TradingOrchestrator:
                 )
 
                 try:
-                    # 🔧 CLEANED: Log più conciso per protezione posizioni
+                    # Silent protection - no individual logs
                     symbol_short = position.symbol.replace('/USDT:USDT', '')
-                    logging.debug(f"🛡️ Protecting {symbol_short} ({i}/{len(newly_opened)})")
                     
                     entry = float(position.entry_price)
                     side = position.side.lower()
@@ -437,22 +437,31 @@ class TradingOrchestrator:
                                     except Exception as retry_error:
                                         logging.error(f"SL retry {retry+1} error: {retry_error}")
 
-                    # Conta trailing se attivato
+                    # Conta trailing se attivato e raccogli dettagli
                     if trailing_data.trailing_attivo:
                         trailing_count += 1
+                        protection_details.append(f"{symbol_short}:TRAILING")
+                    else:
+                        protection_details.append(f"{symbol_short}:FIXED_SL")
 
                 except Exception as e:
-                    logging.error(f"❌ Error protecting {position.symbol}: {e}")
+                    logging.debug(f"❌ Error protecting {position.symbol}: {e}")
+                    protection_details.append(f"{symbol_short}:ERROR")
 
-            # 🔧 CLEANED: Summary finale pulito con dettagli
-            total_secure = protected_count + already_protected_count
-            logging.info(colored(f"✅ PROTECTION COMPLETE: {total_secure}/{len(newly_opened)} positions secured", "green"))
-            if protected_count > 0:
-                logging.info(colored(f"🆕 New Protection: {protected_count} positions", "green"))
-            if already_protected_count > 0:
-                logging.info(colored(f"🔒 Already Protected: {already_protected_count} positions", "cyan"))
-            if trailing_count > 0:
-                logging.info(colored(f"🚀 TRAILING ACTIVE: {trailing_count} positions with trailing stops", "cyan"))
+            # 🔧 CLEAN SUMMARY: Single line with all protection results
+            if newly_opened:
+                total_secure = protected_count + already_protected_count
+                summary_parts = []
+                
+                if protected_count > 0:
+                    summary_parts.append(f"{protected_count} new")
+                if already_protected_count > 0:
+                    summary_parts.append(f"{already_protected_count} existing")
+                if trailing_count > 0:
+                    summary_parts.append(f"{trailing_count} trailing")
+                
+                summary_text = " | ".join(summary_parts) if summary_parts else "none"
+                logging.info(colored(f"✅ PROTECTION COMPLETE: {total_secure}/{len(newly_opened)} secured ({summary_text})", "green"))
             
             return results
 
