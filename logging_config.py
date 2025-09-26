@@ -49,7 +49,7 @@ console_handler.setFormatter(EmojiFormatter("%(asctime)s %(levelname)s %(message
 # ==============================
 logging.basicConfig(
     level=logging.INFO,  # base rimane INFO
-    handlers=[console_handler, file_handler, error_handler],
+    handlers=[console_handler],
     format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
 
