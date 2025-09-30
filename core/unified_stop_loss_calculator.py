@@ -20,6 +20,13 @@ from termcolor import colored
 # Import precision handler per mandatory validation
 from core.price_precision_handler import global_price_precision_handler
 
+# Import config parameters
+from config import (
+    SL_PRICE_PCT_FALLBACK,
+    SL_MIN_DISTANCE_PCT,
+    SL_MAX_DISTANCE_PCT,
+)
+
 
 @dataclass
 class StopLossResult:
@@ -50,8 +57,10 @@ class UnifiedStopLossCalculator:
     """
     
     def __init__(self):
-        # Unified SL parameters
-        self.sl_percentage = 0.06  # 6% stop loss fisso
+        # Unified SL parameters from config
+        self.sl_percentage = SL_PRICE_PCT_FALLBACK  # From config (default 6%)
+        self.sl_min_distance = SL_MIN_DISTANCE_PCT   # Min 2% distance
+        self.sl_max_distance = SL_MAX_DISTANCE_PCT   # Max 10% distance
         self.commission_rate = 0.0006  # 0.06% total commissions
         
         # Retry parameters
@@ -89,14 +98,18 @@ class UnifiedStopLossCalculator:
                 raw_sl = entry_price * (1 + self.sl_percentage)
             
             symbol_short = symbol.replace('/USDT:USDT', '') if symbol else 'Unknown'
-            logging.debug(f"🛡️ Unified SL: {symbol_short} {side.upper()} @ ${entry_price:.6f} → SL ${raw_sl:.6f} (6%)")
+            sl_pct_display = self.sl_percentage * 100
+            logging.debug(f"🛡️ Unified SL: {symbol_short} {side.upper()} @ ${entry_price:.6f} → SL ${raw_sl:.6f} ({sl_pct_display:.1f}%)")
             
             return raw_sl
             
         except Exception as e:
             logging.error(f"🛡️ Unified SL calculation failed: {e}")
-            # Fallback: same logic but with hardcoded values
-            return entry_price * (0.94 if side.lower() in ['buy', 'long'] else 1.06)
+            # Fallback: use config fallback percentage
+            return entry_price * (
+                1 - self.sl_percentage if side.lower() in ['buy', 'long'] 
+                else 1 + self.sl_percentage
+            )
     
     async def calculate_and_normalize_stop_loss(self, exchange, symbol: str, side: str, 
                                               entry_price: float) -> StopLossResult:
@@ -304,12 +317,16 @@ class UnifiedStopLossCalculator:
             # Calculate theoretical SL for validation
             theoretical_sl = self.calculate_unified_stop_loss(entry_price, side, symbol)
             
-            # Validate SL is reasonable (not too close to entry)
-            min_distance = entry_price * 0.01  # Minimum 1% distance
+            # Validate SL is reasonable (not too close/far from entry)
+            min_distance = entry_price * self.sl_min_distance  # From config (2%)
+            max_distance = entry_price * self.sl_max_distance  # From config (10%)
             distance = abs(theoretical_sl - entry_price)
             
             if distance < min_distance:
                 return False, f"SL too close to entry: {distance:.6f} < {min_distance:.6f}"
+            
+            if distance > max_distance:
+                return False, f"SL too far from entry: {distance:.6f} > {max_distance:.6f}"
             
             return True, "Parameters validated successfully"
             
@@ -328,7 +345,10 @@ class UnifiedStopLossCalculator:
             Dict: Informazioni SL dettagliate
         """
         try:
-            raw_sl = entry_price * (0.94 if side.lower() in ['buy', 'long'] else 1.06)
+            raw_sl = entry_price * (
+                1 - self.sl_percentage if side.lower() in ['buy', 'long'] 
+                else 1 + self.sl_percentage
+            )
             distance = abs(raw_sl - entry_price)
             distance_pct = (distance / entry_price) * 100
             
@@ -343,8 +363,11 @@ class UnifiedStopLossCalculator:
                 'potential_loss_with_leverage': potential_loss_pct,
                 'side': side.lower(),
                 'sl_percentage_used': self.sl_percentage * 100,
-                'risk_reward_ratio': f"1:{(0.06 / 0.06):.1f}",  # 6% risk for 6% reward = 1:1
-                'recommended_take_profit': entry_price * (1.06 if side.lower() in ['buy', 'long'] else 0.94)
+                'risk_reward_ratio': f"1:{(self.sl_percentage / self.sl_percentage):.1f}",
+                'recommended_take_profit': entry_price * (
+                    1 + self.sl_percentage if side.lower() in ['buy', 'long'] 
+                    else 1 - self.sl_percentage
+                )
             }
             
         except Exception as e:

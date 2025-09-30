@@ -39,6 +39,11 @@ except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
 
+# COORDINATORS: Import new coordinators for atomic operations (REQUIRED)
+from core.stop_loss_coordinator import global_sl_coordinator
+from core.position_opening_coordinator import global_position_opening_coordinator
+logging.info("🎯 Trading Coordinators loaded - Atomic operations REQUIRED")
+
 
 class TradingResult:
     """Simple result for trading operations"""

@@ -51,6 +51,11 @@ except ImportError:
     logging.error("❌ CRITICAL: ThreadSafePositionManager not available — cannot proceed safely")
     raise ImportError("CRITICAL: ThreadSafePositionManager required for unified position management")
 
+# Trading Coordinators (mandatory)
+from core.stop_loss_coordinator import global_sl_coordinator
+from core.position_opening_coordinator import global_position_opening_coordinator
+logging.info("🎯 Trading Coordinators loaded - Atomic operations active")
+
 
 class TradingEngine:
     """
@@ -192,6 +197,19 @@ class TradingEngine:
             # Phase 6: Position Management
             cycle_logger.log_phase(6, "POSITION MANAGEMENT & RISK CONTROL", "cyan")
             await self._manage_positions(exchange)
+
+            # Phase 6.5: Process SL Updates (COORDINATOR)
+            enhanced_logger.display_table("🎯 Processing queued Stop Loss updates...", "yellow")
+            try:
+                results = await global_sl_coordinator.process_sl_updates(exchange)
+                if results:
+                    successful = sum(1 for r in results.values() if r)
+                    total = len(results)
+                    enhanced_logger.display_table(f"✅ SL Updates: {successful}/{total} successful", "green")
+                else:
+                    enhanced_logger.display_table("ℹ️ No pending SL updates", "cyan")
+            except Exception as sl_error:
+                logging.error(f"❌ SL coordinator error: {sl_error}")
 
             # Phase 7: Performance Analysis
             cycle_logger.log_phase(7, "PERFORMANCE ANALYSIS & REPORTING", "white")

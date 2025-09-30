@@ -59,24 +59,89 @@ exchange_config = {
 }
 
 # Trading parameters
-MARGIN_BASE_USDT = 40.0    # Minimum margin per trade
-MARGIN_MAX_USDT = 70.0     # Maximum margin per trade  
 LEVERAGE = 10
 
-# Stop Loss e Trailing Management
-INITIAL_SL_MARGIN_LOSS_PCT = 0.4      # 40% perdita sul margine
-INITIAL_SL_PRICE_PCT = 0.04           # 4% dal prezzo (equivalente con leva 10x)
+# ==============================================================================
+# 🎯 DYNAMIC POSITION SIZING - 3-TIER SYSTEM (50/75/100 USD)
+# ==============================================================================
+# Sistema intelligente che adatta la size della posizione in base a:
+# - Confidence del segnale ML
+# - Volatilità del mercato
+# - Forza del trend (ADX)
 
-TRAILING_TRIGGER_BASE_PCT = 0.10      # 10% base per bassa volatilità
+# Position Size Tiers
+POSITION_SIZE_CONSERVATIVE = 50.0   # Trade rischioso (alta volatilità o bassa confidence)
+POSITION_SIZE_MODERATE = 75.0       # Trade medio (volatilità normale, confidence media)
+POSITION_SIZE_AGGRESSIVE = 100.0    # Trade sicuro (bassa volatilità, alta confidence)
+
+# Thresholds per Position Sizing
+CONFIDENCE_HIGH_THRESHOLD = 0.75    # ≥75% confidence = aggressive
+CONFIDENCE_LOW_THRESHOLD = 0.65     # <65% confidence = conservative
+VOLATILITY_SIZING_LOW = 0.015       # <1.5% volatilità = aggressive
+VOLATILITY_SIZING_HIGH = 0.035      # >3.5% volatilità = conservative
+ADX_STRONG_TREND = 25.0             # ADX ≥25 = trend forte
+
+# Dynamic Margin Range (per calcoli interni RiskCalculator)
+MARGIN_MIN = 25.0                   # Margine minimo assoluto
+MARGIN_MAX = 100.0                  # Margine massimo assoluto
+MARGIN_BASE = 50.0                  # Margine base di partenza
+
+# ==============================================================================
+# 🛡️ STOP LOSS CONFIGURATION
+# ==============================================================================
+# Stop loss basato su ATR (Average True Range) per adattarsi alla volatilità
+
+SL_ATR_MULTIPLIER = 2.0             # Stop loss = 2x ATR dal prezzo di entrata
+SL_PRICE_PCT_FALLBACK = 0.06        # 6% fallback se ATR non disponibile
+SL_MIN_DISTANCE_PCT = 0.02          # Distanza minima 2% (sicurezza)
+SL_MAX_DISTANCE_PCT = 0.10          # Distanza massima 10% (contenimento rischio)
+
+# ==============================================================================
+# 🎯 TAKE PROFIT CONFIGURATION
+# ==============================================================================
+# Take profit basato su risk-reward ratio
+
+TP_RISK_REWARD_RATIO = 1.5          # Target 1.5x il rischio (es: rischio 4% → target 6%)
+TP_MAX_PROFIT_PCT = 0.08            # Profitto massimo 8% (realismo)
+TP_MIN_PROFIT_PCT = 0.02            # Profitto minimo 2% (sensatezza)
+
+# ==============================================================================
+# 📊 VOLATILITY THRESHOLDS
+# ==============================================================================
+# Soglie per classificare la volatilità del mercato
+
+VOLATILITY_LOW_THRESHOLD = 0.02     # <2% ATR = bassa volatilità
+VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
+# Tra 2-4% = volatilità media
+
+# ==============================================================================
+# 🔄 TRAILING STOP CONFIGURATION
+# ==============================================================================
+# Trailing stop dinamico che segue il prezzo quando il trade è in profitto
+
+# Trailing Trigger (quando attivare il trailing)
+TRAILING_TRIGGER_BASE_PCT = 0.10      # 10% profitto base per attivazione
 TRAILING_TRIGGER_MIN_PCT = 0.05       # 5% minimo per alta volatilità  
-TRAILING_TRIGGER_MAX_PCT = 0.10       # 10% massimo per media volatilità
+TRAILING_TRIGGER_MAX_PCT = 0.10       # 10% massimo per bassa volatilità
 
-TRAILING_DISTANCE_LOW_VOL = 0.010     # 1.0% per bassa volatilità = 10% PnL movement
-TRAILING_DISTANCE_MED_VOL = 0.008     # 0.8% per media volatilità = 8% PnL movement  
-TRAILING_DISTANCE_HIGH_VOL = 0.007    # 0.7% per alta volatilità = 7% PnL movement
+# Trailing Distance (distanza dal best price)
+TRAILING_DISTANCE_LOW_VOL = 0.010     # 1.0% per bassa volatilità (tight trailing)
+TRAILING_DISTANCE_MED_VOL = 0.008     # 0.8% per media volatilità
+TRAILING_DISTANCE_HIGH_VOL = 0.007    # 0.7% per alta volatilità (wider trailing)
 
-VOLATILITY_LOW_THRESHOLD = 0.02       # 2% ATR
-VOLATILITY_HIGH_THRESHOLD = 0.04      # 4% ATR
+# ==============================================================================
+# 🔙 LEGACY COMPATIBILITY
+# ==============================================================================
+# Aliases per backward compatibility con vecchi moduli (verranno deprecati)
+
+MARGIN_BASE_USDT = MARGIN_BASE                    # For trade_manager.py
+INITIAL_SL_PRICE_PCT = SL_PRICE_PCT_FALLBACK      # For trailing_stop_manager.py
+INITIAL_SL_MARGIN_LOSS_PCT = 0.4                  # Legacy: 40% margin loss
+
+# ==============================================================================
+# ⚡ TRAILING MONITOR OPERATIONAL CONFIG
+# ==============================================================================
+# Configurazione tecnica del trailing monitor (non toccare senza motivo)
 
 # High-frequency trailing monitor configuration
 TRAILING_MONITOR_INTERVAL = 30        

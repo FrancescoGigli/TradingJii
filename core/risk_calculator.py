@@ -15,7 +15,31 @@ GARANTISCE: Calcoli accurati e configurabili
 import logging
 from typing import Tuple, Dict, Optional
 from dataclasses import dataclass
-from config import LEVERAGE
+from config import (
+    LEVERAGE,
+    # Dynamic Position Sizing
+    POSITION_SIZE_CONSERVATIVE,
+    POSITION_SIZE_MODERATE,
+    POSITION_SIZE_AGGRESSIVE,
+    CONFIDENCE_HIGH_THRESHOLD,
+    CONFIDENCE_LOW_THRESHOLD,
+    VOLATILITY_SIZING_LOW,
+    VOLATILITY_SIZING_HIGH,
+    ADX_STRONG_TREND,
+    # Margin Ranges
+    MARGIN_MIN,
+    MARGIN_MAX,
+    MARGIN_BASE,
+    # Stop Loss
+    SL_ATR_MULTIPLIER,
+    SL_PRICE_PCT_FALLBACK,
+    SL_MIN_DISTANCE_PCT,
+    SL_MAX_DISTANCE_PCT,
+    # Take Profit
+    TP_RISK_REWARD_RATIO,
+    TP_MAX_PROFIT_PCT,
+    TP_MIN_PROFIT_PCT,
+)
 
 @dataclass
 class PositionLevels:
@@ -34,6 +58,7 @@ class MarketData:
     price: float
     atr: float
     volatility: float
+    adx: float = 0.0  # Trend strength (optional, default 0)
     
 class RiskCalculator:
     """
@@ -43,69 +68,146 @@ class RiskCalculator:
     """
     
     def __init__(self):
-        # Risk parameters - CRITICAL FIX: Force higher minimums
-        self.min_margin = 25.0      # INCREASED: Minimum margin USD (was 20)
-        self.max_margin = 60.0      # INCREASED: Maximum margin USD (was 50)
-        self.base_margin = 40.0     # INCREASED: Center point USD (was 35)
-        self.atr_multiplier = 2.0   # Stop loss = 2x ATR
-        self.risk_reward_ratio = 2.0 # Take profit ratio
+        # Position Sizing from config
+        self.position_conservative = POSITION_SIZE_CONSERVATIVE
+        self.position_moderate = POSITION_SIZE_MODERATE
+        self.position_aggressive = POSITION_SIZE_AGGRESSIVE
         
-    def calculate_dynamic_margin(self, atr_pct: float, confidence: float, 
-                                volatility: float = 0.0, balance: float = 200.0) -> float:
+        # Thresholds from config
+        self.confidence_high = CONFIDENCE_HIGH_THRESHOLD
+        self.confidence_low = CONFIDENCE_LOW_THRESHOLD
+        self.volatility_low = VOLATILITY_SIZING_LOW
+        self.volatility_high = VOLATILITY_SIZING_HIGH
+        self.adx_strong = ADX_STRONG_TREND
+        
+        # Margin ranges from config
+        self.min_margin = MARGIN_MIN
+        self.max_margin = MARGIN_MAX
+        self.base_margin = MARGIN_BASE
+        
+        # Stop Loss from config
+        self.atr_multiplier = SL_ATR_MULTIPLIER
+        self.sl_fallback = SL_PRICE_PCT_FALLBACK
+        self.sl_min_distance = SL_MIN_DISTANCE_PCT
+        self.sl_max_distance = SL_MAX_DISTANCE_PCT
+        
+        # Take Profit from config
+        self.risk_reward_ratio = TP_RISK_REWARD_RATIO
+        self.tp_max_profit = TP_MAX_PROFIT_PCT
+        self.tp_min_profit = TP_MIN_PROFIT_PCT
+        
+    def calculate_intelligent_position_size(self, confidence: float, atr_pct: float, 
+                                           adx: float = 0.0) -> float:
         """
-        Calculate dynamic margin in 20-50 USD range
+        🎯 INTELLIGENT 3-TIER POSITION SIZING
+        
+        Determina intelligentemente la size della posizione basandosi su:
+        - Confidence del segnale ML
+        - Volatilità del mercato (ATR)
+        - Forza del trend (ADX)
+        
+        Returns:
+            float: 50.0, 75.0, or 100.0 USD
+        """
+        try:
+            # Score factors (0-3 points)
+            score = 0
+            
+            # Factor 1: ML Confidence (0-1 point)
+            if confidence >= self.confidence_high:  # ≥75%
+                score += 1
+                confidence_tier = "HIGH"
+            elif confidence >= self.confidence_low:  # 65-75%
+                score += 0.5
+                confidence_tier = "MEDIUM"
+            else:  # <65%
+                confidence_tier = "LOW"
+            
+            # Factor 2: Volatility (0-1 point)
+            volatility_pct = atr_pct / 100.0  # Convert to decimal
+            if volatility_pct < self.volatility_low:  # <1.5%
+                score += 1
+                volatility_tier = "LOW"
+            elif volatility_pct < self.volatility_high:  # 1.5-3.5%
+                score += 0.5
+                volatility_tier = "MEDIUM"
+            else:  # >3.5%
+                volatility_tier = "HIGH"
+            
+            # Factor 3: Trend Strength (0-1 point)
+            if adx >= self.adx_strong:  # ≥25
+                score += 1
+                trend_tier = "STRONG"
+            elif adx >= 20.0:
+                score += 0.5
+                trend_tier = "MODERATE"
+            else:
+                trend_tier = "WEAK"
+            
+            # Determine position size based on total score
+            if score >= 2.5:
+                # AGGRESSIVE: High confidence + low volatility + strong trend
+                position_size = self.position_aggressive
+                tier = "AGGRESSIVE"
+            elif score >= 1.5:
+                # MODERATE: Medium conditions
+                position_size = self.position_moderate
+                tier = "MODERATE"
+            else:
+                # CONSERVATIVE: Uncertain conditions
+                position_size = self.position_conservative
+                tier = "CONSERVATIVE"
+            
+            logging.info(
+                f"💰 POSITION SIZING: ${position_size:.0f} USD ({tier})\n"
+                f"   📊 Score: {score:.1f}/3.0\n"
+                f"   🎯 Confidence: {confidence:.1%} ({confidence_tier})\n"
+                f"   📉 Volatility: {atr_pct:.2f}% ({volatility_tier})\n"
+                f"   📈 Trend ADX: {adx:.1f} ({trend_tier})"
+            )
+            
+            return position_size
+            
+        except Exception as e:
+            logging.error(f"Error in intelligent position sizing: {e}")
+            return self.position_conservative  # Safe fallback
+    
+    def calculate_dynamic_margin(self, atr_pct: float, confidence: float, 
+                                volatility: float = 0.0, balance: float = 200.0,
+                                adx: float = 0.0) -> float:
+        """
+        Calculate dynamic margin using intelligent 3-tier system
         
         Args:
             atr_pct: ATR as percentage of price
             confidence: ML signal confidence (0-1)
-            volatility: Market volatility
-            balance: Account balance
+            volatility: Market volatility (legacy, not used)
+            balance: Account balance (for safety checks)
+            adx: Trend strength (ADX indicator)
             
         Returns:
-            float: Dynamic margin amount (20-50 USD range)
+            float: Dynamic margin amount (50/75/100 USD)
         """
         try:
-            # CRITICAL FIX: Start with higher base to ensure proper IM
-            margin = self.base_margin  # Use the increased base_margin (40.0)
+            # Use intelligent 3-tier position sizing
+            position_size = self.calculate_intelligent_position_size(
+                confidence, atr_pct, adx
+            )
             
-            # 1. Volatility adjustment (more conservative)
-            if atr_pct < 1.0:          # Low volatility
-                margin += 5.0
-            elif atr_pct < 2.0:        # Medium-low volatility  
-                margin += 2.0
-            elif atr_pct < 3.0:        # Medium volatility
-                margin += 0.0
-            elif atr_pct < 5.0:        # High volatility
-                margin -= 3.0  
-            else:                      # Very high volatility
-                margin -= 5.0
+            # Balance safety check
+            max_allowed = balance * 0.5  # Never use more than 50% of balance
+            if position_size > max_allowed:
+                logging.warning(
+                    f"⚠️ Position size ${position_size:.0f} exceeds 50% of balance "
+                    f"(${balance:.0f}). Capping at ${max_allowed:.0f}"
+                )
+                position_size = max_allowed
             
-            # 2. Confidence adjustment (more conservative)
-            confidence_adjustment = (confidence - 0.7) * 15  # Reduced from 20
-            margin += max(-5.0, min(5.0, confidence_adjustment))  # Reduced range
-            
-            # 3. Market volatility adjustment (more conservative)
-            if volatility > 3.0:
-                margin -= 2.0  # Reduced from 3.0
-            elif volatility < 1.0:
-                margin += 1.0  # Reduced from 2.0
-                
-            # 4. Balance safety adjustment (more conservative)
-            if balance < 100:
-                margin -= 2.0  # Reduced from 3.0
-            elif balance > 500:
-                margin += 1.0  # Reduced from 2.0
-            
-            # 5. CRITICAL FIX: Enforce higher minimum range (25-60 USD)
-            final_margin = max(self.min_margin, min(self.max_margin, margin))
-            
-            logging.debug(f"💰 Dynamic margin: ATR {atr_pct:.1f}% + Conf {confidence:.1%} = ${final_margin:.2f} (20-50 USD range)")
-            
-            return final_margin
+            return position_size
             
         except Exception as e:
             logging.error(f"Error calculating dynamic margin: {e}")
-            return 25.0  # Safe fallback in 20-50 range
+            return self.position_conservative  # Safe fallback
     
     def calculate_stop_loss_price(self, entry_price: float, side: str, atr: float,
                                  volatility: float = 0.0) -> float:
@@ -136,8 +238,8 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error with unified SL calculation: {e}")
-            # STEP 2 FIX: Emergency fallback still uses unified calculator constants
-            sl_pct = 0.06  # 6% from UnifiedStopLossCalculator
+            # STEP 2 FIX: Emergency fallback uses config
+            sl_pct = self.sl_fallback  # From config
             return entry_price * (1 - sl_pct if side.lower() == 'buy' else 1 + sl_pct)
     
     def calculate_take_profit_price(self, entry_price: float, side: str, 
@@ -156,19 +258,21 @@ class RiskCalculator:
         """
         try:
             if ratio is None:
-                ratio = 1.5  # CONSERVATIVE: Reduced from 2.0 to 1.5 for more realistic targets
+                ratio = self.risk_reward_ratio  # From config
             
             # Calculate risk distance
             if side.lower() == 'buy':
                 risk = abs(entry_price - stop_loss)  # Use abs to ensure positive
                 take_profit = entry_price + (risk * ratio)  # Above entry for BUY
-                # CONSERVATIVE: Cap at max 8% profit instead of 30%
-                take_profit = min(take_profit, entry_price * 1.08)
+                # Cap at max profit from config
+                max_tp = entry_price * (1 + self.tp_max_profit)
+                take_profit = min(take_profit, max_tp)
             else:  # SELL position
                 risk = abs(stop_loss - entry_price)  # Use abs to ensure positive  
                 take_profit = entry_price - (risk * ratio)  # Below entry for SELL
-                # CONSERVATIVE: Cap at max 8% profit instead of 30%
-                take_profit = max(take_profit, entry_price * 0.92)
+                # Cap at max profit from config
+                min_tp = entry_price * (1 - self.tp_max_profit)
+                take_profit = max(take_profit, min_tp)
             
             logging.debug(f"🎯 TP Calc: Entry ${entry_price:.6f} | Side {side} | Risk {risk:.6f} | Ratio {ratio:.1f} | TP ${take_profit:.6f}")
             
@@ -176,8 +280,11 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error calculating take profit: {e}")
-            # Conservative fallback: 4% profit target
-            return entry_price * (1.04 if side.lower() == 'buy' else 0.96)
+            # Conservative fallback: min profit from config
+            return entry_price * (
+                1 + self.tp_min_profit if side.lower() == 'buy' 
+                else 1 - self.tp_min_profit
+            )
     
     def calculate_position_levels(self, market_data: MarketData, side: str, 
                                  confidence: float, balance: float) -> PositionLevels:
@@ -194,9 +301,11 @@ class RiskCalculator:
             PositionLevels: Complete position setup data
         """
         try:
-            # 1. Calculate dynamic margin
+            # 1. Calculate dynamic margin with ADX for intelligent position sizing
             atr_pct = (market_data.atr / market_data.price) * 100
-            margin = self.calculate_dynamic_margin(atr_pct, confidence, market_data.volatility, balance)
+            margin = self.calculate_dynamic_margin(
+                atr_pct, confidence, market_data.volatility, balance, market_data.adx
+            )
             
             # 2. Calculate position size
             notional_value = margin * LEVERAGE
