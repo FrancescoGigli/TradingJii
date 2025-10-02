@@ -7,19 +7,28 @@ CRITICAL FIX: Eliminazione race conditions tra multiple thread
 - Centralized state management
 - Thread-safe access patterns
 - Backward compatibility con sistema esistente
+- OS-level file locking per prevenire corruzione JSON
 
-GARANTISCE: Zero race conditions, state consistency
+GARANTISCE: Zero race conditions, state consistency, file integrity
 """
 
 import threading
 import logging
 import json
 import asyncio
+import sys
+import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from copy import deepcopy
 from termcolor import colored
+
+# OS-level file locking (CRITICAL FIX per prevenire corruzione JSON)
+if sys.platform == 'win32':
+    import msvcrt
+else:
+    import fcntl
 
 # ONLINE LEARNING INTEGRATION: Import learning manager for automatic feedback
 try:
@@ -454,10 +463,63 @@ class ThreadSafePositionManager:
                         elif close_reason in ["MANUAL", "STOP_LOSS"]:
                             learning_reason = close_reason
                         
-                        global_online_learning_manager.track_trade_closing(
-                            position.symbol, exit_price, pnl_usd, pnl_pct, learning_reason
-                        )
-                        logging.debug(f"🧠 Learning notified: {position.symbol.replace('/USDT:USDT', '')} closed via {learning_reason} ({pnl_pct:+.2f}%)")
+                        # 🎯 FIX #1: INTELLIGENT MANUAL CLOSURE TRACKING
+                        should_track = False
+                        track_reason = learning_reason
+                        
+                        if close_reason == "MANUAL":
+                            # Case 1: Manual + Negative → SEMPRE genera post-mortem
+                            if pnl_pct < 0:
+                                should_track = True
+                                track_reason = "MANUAL_LOSS"
+                                logging.info(colored(
+                                    f"📊 Manual closure in LOSS: {position.symbol.replace('/USDT:USDT', '')} "
+                                    f"({pnl_pct:.2f}%) → Post-mortem will be generated",
+                                    "yellow"
+                                ))
+                            
+                            # Case 2: Manual + Positive MA "early close" (< max favorable PnL)
+                            elif pnl_pct > 0 and position.max_favorable_pnl > 0:
+                                # Calcola quanto ha lasciato sul tavolo
+                                pnl_left_on_table = position.max_favorable_pnl - pnl_pct
+                                
+                                # Se ha chiuso con almeno 1% in meno del max, è "early"
+                                if pnl_left_on_table >= 1.0:
+                                    should_track = True
+                                    track_reason = "MANUAL_EARLY_CLOSE"
+                                    logging.info(colored(
+                                        f"📊 Manual EARLY close: {position.symbol.replace('/USDT:USDT', '')} "
+                                        f"at +{pnl_pct:.2f}% (max was +{position.max_favorable_pnl:.2f}%) "
+                                        f"→ Left {pnl_left_on_table:.2f}% on table",
+                                        "cyan"
+                                    ))
+                                else:
+                                    # Chiusura manuale positiva vicina al max → OK, no post-mortem
+                                    logging.info(colored(
+                                        f"✅ Manual close near peak: {position.symbol.replace('/USDT:USDT', '')} "
+                                        f"+{pnl_pct:.2f}% (max +{position.max_favorable_pnl:.2f}%) → Good exit",
+                                        "green"
+                                    ))
+                            
+                            else:
+                                # Chiusura manuale positiva senza tracking max_favorable → assume OK
+                                logging.info(colored(
+                                    f"✅ Manual close in profit: {position.symbol.replace('/USDT:USDT', '')} "
+                                    f"+{pnl_pct:.2f}% → No analysis needed",
+                                    "green"
+                                ))
+                        
+                        else:
+                            # Chiusure automatiche (trailing, SL, etc) → sempre traccia
+                            should_track = True
+                        
+                        # Track con learning manager
+                        if should_track:
+                            global_online_learning_manager.track_trade_closing(
+                                position.symbol, exit_price, pnl_usd, pnl_pct, track_reason
+                            )
+                            logging.debug(f"🧠 Learning notified: {position.symbol.replace('/USDT:USDT', '')} closed via {track_reason} ({pnl_pct:+.2f}%)")
+                        
                     except Exception as learning_error:
                         logging.warning(f"🔒 Learning notification error: {learning_error}")
                 
@@ -740,7 +802,11 @@ class ThreadSafePositionManager:
         position.max_favorable_pnl = max(position.max_favorable_pnl, pnl_pct)
     
     def _save_positions_unsafe(self):
-        """UNSAFE: Save positions (use only when already in lock)"""
+        """
+        UNSAFE: Save positions (use only when already in lock)
+        
+        CRITICAL FIX: OS-level file locking per prevenire corruzione JSON
+        """
         try:
             # Convert to serializable format with trailing_data handling
             open_positions_dict = {}
@@ -794,10 +860,31 @@ class ThreadSafePositionManager:
                 'lock_contention_count': self._lock_contention_count
             }
             
+            # 🔒 CRITICAL FIX: OS-level file locking per prevenire corruzione
             with open(self.storage_file, 'w') as f:
-                json.dump(data, f, indent=2)
+                try:
+                    # Acquire exclusive OS-level lock
+                    if sys.platform == 'win32':
+                        # Windows: Lock 1 byte at file start
+                        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        # Unix/Linux/Mac: Exclusive non-blocking lock
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    
+                    # Write JSON with lock held
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())  # Force write to disk
+                    
+                    # Lock released automatically on file close
+                    
+                except (IOError, OSError) as lock_error:
+                    # File already locked by another process
+                    logging.warning(f"🔒 File lock conflict (another process writing): {lock_error}")
+                    # Data remains in memory, will retry next save
+                    return
             
-            logging.debug(f"🔒 Thread-safe positions saved: {len(self._open_positions)} open, {len(self._closed_positions)} closed")
+            logging.debug(f"🔒 Thread-safe positions saved with OS lock: {len(self._open_positions)} open, {len(self._closed_positions)} closed")
             
         except Exception as e:
             logging.error(f"🔒 Thread-safe save failed: {e}")

@@ -92,8 +92,8 @@ class RLTrainingManager:
         # Load existing model if available
         self.load_model()
         
-        # Execution threshold (tunable) - REDUCED for initial learning
-        self.execution_threshold = 0.5  # Reduced from 0.7 to allow learning
+        # Execution threshold (tunable) - REDUCED for better capital utilization
+        self.execution_threshold = 0.40  # Reduced from 0.5 to open more positions
         
         # Silenced: logging.info("🤖 RL Signal Filter initialized")
     
@@ -236,7 +236,7 @@ class RLTrainingManager:
             
             # 1. Signal Strength Analysis
             signal_confidence = signal_data.get('confidence', 0.0)
-            signal_threshold = 0.65  # Minimum signal confidence
+            signal_threshold = 0.60  # Minimum signal confidence (reduced for better capital utilization)
             
             factors['signal_strength'] = {
                 'value': f"{signal_confidence:.1%}",

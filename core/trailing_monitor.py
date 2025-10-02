@@ -430,18 +430,17 @@ class TrailingMonitor:
                         position.best_price = current_price
                         position.sl_corrente = trailing_data.sl_corrente
                     
-                    # 🔧 NUOVO: Aggiorna SL su Bybit con valore trailing iniziale
+                    # 🎯 CRITICAL FIX: Use SL Coordinator instead of direct Bybit update
                     if trailing_data.sl_corrente is not None:
-                        try:
-                            sl_result = await self.order_manager.set_trading_stop(
-                                exchange, symbol, trailing_data.sl_corrente, None
-                            )
-                            if sl_result.success:
-                                logging.info(colored(f"🎯 {symbol}: Trailing SL activated on Bybit ${trailing_data.sl_corrente:.6f}", "green"))
-                            else:
-                                logging.debug(f"⚡ {symbol}: Could not set trailing SL on Bybit (continuing with internal tracking)")
-                        except Exception as e:
-                            logging.debug(f"⚡ {symbol}: SL update error (continuing with internal tracking)")
+                        update_accepted = await global_sl_coordinator.request_sl_update(
+                            position_id,
+                            trailing_data.sl_corrente,
+                            source="TRAILING_ACTIVE"
+                        )
+                        if update_accepted:
+                            logging.info(colored(f"🎯 {symbol}: Trailing SL activation queued via coordinator ${trailing_data.sl_corrente:.6f}", "green"))
+                        else:
+                            logging.debug(f"⚡ {symbol}: SL update queued for coordinator processing")
                     
                     logging.info(colored(f"⚡ TRAILING SYSTEM ACTIVE: {symbol} monitoring every 30s", "green"))
             
@@ -471,24 +470,23 @@ class TrailingMonitor:
                         position.best_price = trailing_data.best_price
                         position.sl_corrente = trailing_data.sl_corrente
                 
-                # 🔧 NUOVO: Aggiorna SL su Bybit se cambiato
+                # 🎯 CRITICAL FIX: Use SL Coordinator instead of direct Bybit update (ELIMINATES RACE CONDITION)
                 if old_sl != trailing_data.sl_corrente and trailing_data.sl_corrente is not None:
-                    try:
-                        sl_result = await self.order_manager.set_trading_stop(
-                            exchange, symbol, trailing_data.sl_corrente, None
-                        )
-                        if sl_result.success:
-                            # Calcola PnL target per uscita
-                            if position.side == 'buy':
-                                exit_pnl_pct = ((trailing_data.sl_corrente - position.entry_price) / position.entry_price) * 100 * 10
-                            else:
-                                exit_pnl_pct = ((position.entry_price - trailing_data.sl_corrente) / position.entry_price) * 100 * 10
-                            
-                            logging.debug(colored(f"📈 {symbol}: Stop updated → Exit at {exit_pnl_pct:+.1f}% PnL (${trailing_data.sl_corrente:.6f})", "cyan"))
+                    update_accepted = await global_sl_coordinator.request_sl_update(
+                        position_id,
+                        trailing_data.sl_corrente,
+                        source="TRAILING_ACTIVE"
+                    )
+                    if update_accepted:
+                        # Calcola PnL target per uscita
+                        if position.side == 'buy':
+                            exit_pnl_pct = ((trailing_data.sl_corrente - position.entry_price) / position.entry_price) * 100 * 10
                         else:
-                            logging.debug(f"⚡ {symbol}: SL update on Bybit skipped (internal tracking continues)")
-                    except Exception as e:
-                        logging.debug(f"⚡ {symbol}: SL update error (internal tracking continues)")
+                            exit_pnl_pct = ((position.entry_price - trailing_data.sl_corrente) / position.entry_price) * 100 * 10
+                        
+                        logging.debug(colored(f"🎯 {symbol}: Stop update queued via coordinator → Target exit at {exit_pnl_pct:+.1f}% PnL (${trailing_data.sl_corrente:.6f})", "cyan"))
+                    else:
+                        logging.debug(f"🎯 {symbol}: SL update queued for coordinator (lower priority)")
                 
                 # Controlla se trailing stop è colpito
                 if self.trailing_manager.is_trailing_hit(trailing_data, current_price, position.side):

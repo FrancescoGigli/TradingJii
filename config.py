@@ -234,6 +234,9 @@ def get_xgb_scaler_file(tf: str) -> str:
 # ----------------------------------------------------------------------
 EXCLUDED_SYMBOLS = []  
 AUTO_EXCLUDE_INSUFFICIENT_DATA = True
+
+# Symbols to exclude ONLY from trading (still used for training)
+EXCLUDED_FROM_TRADING = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
 MIN_REQUIRED_CANDLES = 50
 EXCLUDED_SYMBOLS_FILE = "excluded_symbols.txt"  
 
@@ -333,6 +336,70 @@ TIMEFRAME_WEIGHTS = {
 # Position Limits
 # ----------------------------------------------------------------------
 MAX_CONCURRENT_POSITIONS = 20  
+
+# ==============================================================================
+# 🧹 FRESH START MODE
+# ==============================================================================
+# Modalità fresh start: chiude tutte le posizioni e resetta file all'avvio
+# Utile per:
+# - Testing di fix/modifiche con ambiente pulito
+# - Forzare reload di codice aggiornato
+# - Ripartire da zero senza posizioni esistenti
+
+# Master switch
+FRESH_START_MODE = False  # True = chiudi tutto e ripulisci all'avvio
+
+# Opzioni granulari (cosa resettare)
+FRESH_START_OPTIONS = {
+    'close_all_positions': True,      # Chiudi tutte le posizioni su Bybit
+    'clear_position_json': True,      # Cancella thread_safe_positions.json
+    'clear_learning_state': False,    # Mantieni learning history (raccomandato)
+    'clear_rl_model': True,           # Reset RL agent (threshold 0.40!)
+    'clear_decisions': False,         # Mantieni decision files per analisi
+    'clear_postmortem': False,        # Mantieni post-mortem files per analisi
+    'log_detailed_cleanup': True      # Log dettagliato operazioni di cleanup
+}
+
+# Esempi di configurazione per diversi scenari:
+#
+# SCENARIO 1: Testing Fix (reset threshold RL)
+# FRESH_START_MODE = True
+# FRESH_START_OPTIONS = {
+#     'close_all_positions': True,
+#     'clear_position_json': True,
+#     'clear_learning_state': False,  # Mantieni history
+#     'clear_rl_model': True,         # Reset threshold vecchi!
+#     'clear_decisions': False,
+#     'clear_postmortem': False,
+#     'log_detailed_cleanup': True
+# }
+#
+# SCENARIO 2: Trading Normale (default)
+# FRESH_START_MODE = False  # Protegge posizioni esistenti
+#
+# SCENARIO 3: Pulizia Settimanale
+# FRESH_START_MODE = True
+# FRESH_START_OPTIONS = {
+#     'close_all_positions': True,
+#     'clear_position_json': True,
+#     'clear_learning_state': False,  # Mantieni learning!
+#     'clear_rl_model': False,
+#     'clear_decisions': True,        # Pulisci files vecchi
+#     'clear_postmortem': True,
+#     'log_detailed_cleanup': True
+# }
+#
+# SCENARIO 4: Reset TOTALE (debugging)
+# FRESH_START_MODE = True
+# FRESH_START_OPTIONS = {  # Tutto True = tabula rasa completa
+#     'close_all_positions': True,
+#     'clear_position_json': True,
+#     'clear_learning_state': True,
+#     'clear_rl_model': True,
+#     'clear_decisions': True,
+#     'clear_postmortem': True,
+#     'log_detailed_cleanup': True
+# }
 
 # ----------------------------------------------------------------------
 # Data Cache

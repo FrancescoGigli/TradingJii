@@ -371,22 +371,20 @@ class RiskCalculator:
         Validate portfolio margin usage
         
         Args:
-            existing_margins: List of existing position margins
+            existing_margins: List of existing position margins (IGNORED if total_balance is available balance)
             new_margin: New position margin to add
-            total_balance: Total account balance
+            total_balance: AVAILABLE balance (already net of existing positions)
             
         Returns:
             Tuple[bool, str]: (approved, reason)
         """
         try:
-            current_total = sum(existing_margins)
-            new_total = current_total + new_margin
+            # FIX: Don't double-count! If balance is already "available", 
+            # just check if new_margin fits within it
+            # (existing_margins are already deducted from total_balance)
             
-            # Rule: Total margin ≤ Account balance
-            max_allowed = total_balance * 1.0
-            
-            if new_total > max_allowed:
-                return False, f"Portfolio margin limit: ${new_total:.2f} > ${max_allowed:.2f}"
+            if new_margin > total_balance:
+                return False, f"Insufficient available balance: ${new_margin:.2f} > ${total_balance:.2f}"
             
             # CRITICAL FIX: Update to match new max_margin
             if new_margin > self.max_margin:

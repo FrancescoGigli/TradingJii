@@ -111,22 +111,28 @@ class TradingEngine:
     async def initialize_session(self, exchange):
         """
         Initialize fresh session with position sync
+        
+        FIX #3: Balance Centralization - Single source of truth
         """
         logging.info(colored("🧹 FRESH SESSION STARTUP", "cyan", attrs=['bold']))
 
         if self.clean_modules_available:
             self.position_manager.reset_session()
 
+        # FIX #3: Centralized balance initialization
         real_balance = None
         if not config.DEMO_MODE:
             real_balance = await get_real_balance(exchange)
-
-        if real_balance and real_balance > 0:
-            if self.clean_modules_available:
+            
+            # Update ONLY position manager (single source of truth)
+            if real_balance and real_balance > 0 and self.clean_modules_available:
                 self.position_manager.update_real_balance(real_balance)
-            logging.info(colored(f"💰 Balance synced: ${real_balance:.2f}", "green"))
+                logging.info(colored(f"💰 Balance synced (centralized): ${real_balance:.2f}", "green"))
         else:
-            logging.warning("⚠️ Using fallback balance (demo or zero balance detected)")
+            # Demo mode - use demo balance
+            if self.clean_modules_available:
+                self.position_manager.update_real_balance(config.DEMO_BALANCE)
+            logging.info(colored(f"🧪 DEMO MODE: Using ${config.DEMO_BALANCE:.2f}", "yellow"))
 
         logging.info(colored("✅ Ready for fresh sync", "green"))
 
@@ -263,22 +269,24 @@ class TradingEngine:
             except Exception as sync_error:
                 logging.warning(f"⚠️ Pre-execution sync failed: {sync_error}")
 
-        # STEP 2: GET ACCURATE BALANCE
-        usdt_balance = await get_real_balance(exchange) if not config.DEMO_MODE else config.DEMO_BALANCE
-        if usdt_balance is None:
-            logging.warning(colored("⚠️ Failed to get balance", "yellow"))
-            return
+        # FIX #3: CENTRALIZED BALANCE - Use ONLY position manager (single source of truth)
+        if not config.DEMO_MODE and self.clean_modules_available:
+            # Sync balance from Bybit ONCE per cycle
+            real_balance = await get_real_balance(exchange)
+            if real_balance and real_balance > 0:
+                self.position_manager.update_real_balance(real_balance)
+                logging.debug(f"💰 Balance updated: ${real_balance:.2f}")
 
-        # STEP 3: CALCULATE AVAILABLE BALANCE
-        open_positions_count = (
-            self.position_manager.get_position_count() if self.clean_modules_available else 0
-        )
-        used_margin = 0
+        # Get balance from centralized source
         if self.clean_modules_available:
             session_summary = self.position_manager.get_session_summary()
+            usdt_balance = session_summary.get('balance', config.DEMO_BALANCE)
             used_margin = session_summary.get('used_margin', 0)
-        
-        available_balance = max(0, usdt_balance - used_margin)
+            available_balance = session_summary.get('available_balance', 0)
+            open_positions_count = session_summary.get('active_positions', 0)
+        else:
+            logging.warning("⚠️ Clean modules not available")
+            return
         
         # STEP 4: BEAUTIFUL PHASE 5 HEADER
         display_phase5_header(usdt_balance, available_balance, used_margin, len(all_signals))
@@ -286,9 +294,21 @@ class TradingEngine:
         if not all_signals:
             return
 
-        # STEP 5: POSITION LIMITS
+        # STEP 5: FILTER + SORT + LIMIT
+        # Filter out symbols excluded from trading (BTC/ETH kept for training only)
+        tradeable_signals = [s for s in all_signals if s["symbol"] not in config.EXCLUDED_FROM_TRADING]
+        
+        if len(all_signals) != len(tradeable_signals):
+            excluded_count = len(all_signals) - len(tradeable_signals)
+            logging.info(colored(f"🚫 Filtered {excluded_count} excluded symbols (training only)", "yellow"))
+        
+        # Sort by confidence (highest first) - Priority-based execution
+        tradeable_signals.sort(key=lambda x: x["confidence"], reverse=True)
+        logging.info(colored(f"📊 Sorted {len(tradeable_signals)} signals by confidence (priority execution)", "cyan"))
+        
+        # Apply position limits
         max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
-        signals_to_execute = all_signals[: min(max_positions, len(all_signals))]
+        signals_to_execute = tradeable_signals[: min(max_positions, len(tradeable_signals))]
         
         if not signals_to_execute:
             logging.info(colored("⚠️ No slots for new positions", "yellow"))
@@ -358,9 +378,9 @@ class TradingEngine:
                 
                 # Portfolio margin check with beautiful card display
                 if levels.margin > available_balance:
-                    display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "STOPPED", f"Portfolio margin limit: ${levels.margin:.2f} > ${available_balance:.2f}")
-                    logging.info(colored("⏭️ STOPPING EXECUTION → Insufficient balance for remaining signals", "yellow"))
-                    break
+                    display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "SKIPPED", f"Insufficient margin: ${levels.margin:.2f} > ${available_balance:.2f}")
+                    logging.debug(f"⏭️ Skipping {symbol_short} → trying smaller positions...")
+                    continue  # FIX: Try next position instead of stopping all execution
 
                 # Show executing card
                 display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "EXECUTING")
@@ -379,10 +399,10 @@ class TradingEngine:
                     display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "FAILED", result.error)
                     failed_trades += 1
                     
-                    # If it's a margin limit error, stop trying other signals
+                    # If it's a margin error, try next position (might be smaller)
                     if "margin limit" in result.error.lower() or "insufficient" in result.error.lower():
-                        logging.info(colored("⏭️ STOPPING EXECUTION → Balance exhausted", "yellow"))
-                        break
+                        logging.debug(f"⏭️ Margin error on {symbol_short} → trying next position...")
+                        continue  # FIX: Try next position instead of stopping all execution
                         
             except Exception as e:
                 failed_trades += 1

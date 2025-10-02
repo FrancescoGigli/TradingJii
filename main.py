@@ -30,6 +30,7 @@ if sys.platform.startswith("win"):
 import ccxt.async_support as ccxt_async
 
 # Configuration and logging
+import config
 from config import (
     exchange_config,
     EXCLUDED_SYMBOLS,
@@ -151,6 +152,23 @@ async def main():
         )
 
         async_exchange = await initialize_exchange()
+        
+        # 🧹 FRESH START MODE: Close all positions and cleanup files before starting
+        if config.FRESH_START_MODE:
+            from core.fresh_start_manager import execute_fresh_start
+            logging.info(colored("🧹 Fresh Start Mode is ENABLED", "yellow", attrs=['bold']))
+            
+            fresh_start_success = await execute_fresh_start(
+                exchange=async_exchange,
+                options=config.FRESH_START_OPTIONS
+            )
+            
+            if not fresh_start_success:
+                logging.error(colored("❌ Fresh start failed - check logs above", "red"))
+                logging.warning(colored("⚠️ Proceeding anyway, but state may be inconsistent", "yellow"))
+            
+            # Small delay to ensure all operations completed
+            await asyncio.sleep(2)
         trading_engine = TradingEngine(config_manager)
 
         # Market init
@@ -173,6 +191,31 @@ async def main():
 
         # ML models
         xgb_models, xgb_scalers = await initialize_models(config_manager, top_symbols_training)
+
+        # 🧠 CRITICAL FIX #6: Initialize Online Learning Manager for post-mortem analysis
+        from core.online_learning_manager import initialize_online_learning_manager
+        try:
+            # Initialize with None RL agent (not used in this bot version)
+            global_learning_manager = initialize_online_learning_manager(rl_agent=None)
+            if global_learning_manager is None:
+                logging.error(colored("❌ CRITICAL: Online Learning Manager failed to initialize!", "red", attrs=["bold"]))
+                raise RuntimeError("Online Learning Manager initialization failed - post-mortem analysis unavailable")
+            logging.info(colored("🧠 Online Learning Manager initialized successfully", "green"))
+        except Exception as learning_init_error:
+            logging.error(colored(f"❌ CRITICAL: Failed to initialize Online Learning Manager: {learning_init_error}", "red", attrs=["bold"]))
+            raise RuntimeError(f"Online Learning Manager required for post-mortem analysis: {learning_init_error}")
+        
+        # ⚠️ CRITICAL FIX #9: Initialize Pattern Warning System for preventive checks
+        from core.pattern_warning_system import initialize_pattern_warning_system
+        try:
+            global_pattern_warning = initialize_pattern_warning_system(global_learning_manager)
+            if global_pattern_warning is None:
+                logging.warning(colored("⚠️ Pattern Warning System failed to initialize - preventive checks disabled", "yellow"))
+            else:
+                logging.info(colored("⚠️ Pattern Warning System initialized successfully", "green"))
+        except Exception as warning_init_error:
+            logging.warning(colored(f"⚠️ Pattern Warning System initialization failed: {warning_init_error}", "yellow"))
+            logging.warning(colored("Continuing without preventive warnings", "yellow"))
 
         # Fresh session
         await trading_engine.initialize_session(async_exchange)

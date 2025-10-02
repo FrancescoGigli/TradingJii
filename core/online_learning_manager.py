@@ -84,12 +84,32 @@ class OnlineLearningManager:
         """
         try:
             with self._lock:
+                # NEW: Genera spiegazione dettagliata della decisione iniziale
+                from core.decision_explainer import global_decision_explainer
+                
+                decision_explanation = {
+                    'timestamp': datetime.now().isoformat(),
+                    'signal_name': signal_data.get('signal_name', 'UNKNOWN'),
+                    'direction': 'LONG' if signal_data.get('signal_name') == 'LONG' else 'SHORT',
+                    'xgb_confidence': signal_data.get('confidence', 0.0),
+                    'rl_confidence': signal_data.get('rl_confidence', 0.0),
+                    'timeframe_votes': signal_data.get('tf_predictions', {}),
+                    'market_snapshot': {
+                        'volatility': market_context.get('volatility', 0.0),
+                        'volume_surge': market_context.get('volume_surge', 1.0),
+                        'trend_strength': market_context.get('trend_strength', 0.0),
+                        'rsi': market_context.get('rsi_position', 50.0)
+                    },
+                    'decision_rationale': self._generate_decision_rationale(signal_data, market_context)
+                }
+                
                 trade_info = {
                     'symbol': symbol,
                     'open_timestamp': datetime.now().isoformat(),
                     'signal_data': signal_data.copy(),
                     'market_context': market_context.copy(),
                     'portfolio_state': portfolio_state.copy(),
+                    'decision_explanation': decision_explanation,  # NEW: Salva motivazione iniziale
                     'rl_state': None,  # Will be set by RL agent
                     'entry_price': 0.0,  # Will be updated when actual entry is confirmed
                     'exit_price': 0.0,
@@ -101,10 +121,69 @@ class OnlineLearningManager:
                 }
                 
                 self.active_trades[symbol] = trade_info
-                logging.debug(f"📊 Started tracking trade: {symbol.replace('/USDT:USDT', '')}")
+                
+                # Log decisione con motivazione
+                symbol_short = symbol.replace('/USDT:USDT', '')
+                direction = decision_explanation['direction']
+                confidence = decision_explanation['xgb_confidence']
+                logging.info(colored(
+                    f"📊 Trade aperto: {symbol_short} {direction} (confidence {confidence:.1%})",
+                    'green'
+                ))
+                logging.debug(f"💡 Rationale: {decision_explanation['decision_rationale']}")
                 
         except Exception as e:
             logging.error(f"Error tracking trade opening: {e}")
+    
+    def _generate_decision_rationale(self, signal_data: Dict, market_context: Dict) -> str:
+        """Genera una spiegazione testuale del perché è stata presa questa decisione"""
+        try:
+            rationale_parts = []
+            
+            # Analizza segnali timeframe
+            tf_preds = signal_data.get('tf_predictions', {})
+            if tf_preds:
+                tf_consensus = {}
+                for tf, pred in tf_preds.items():
+                    signal_name = ['SELL', 'BUY', 'NEUTRAL'][pred]
+                    tf_consensus[signal_name] = tf_consensus.get(signal_name, 0) + 1
+                
+                winner = max(tf_consensus.items(), key=lambda x: x[1])
+                rationale_parts.append(f"{winner[1]}/{len(tf_preds)} timeframes concordano su {winner[0]}")
+            
+            # Analizza confidence
+            xgb_conf = signal_data.get('confidence', 0.0)
+            if xgb_conf >= 0.7:
+                rationale_parts.append(f"XGBoost molto sicuro ({xgb_conf:.1%})")
+            elif xgb_conf >= 0.65:
+                rationale_parts.append(f"XGBoost sopra threshold ({xgb_conf:.1%})")
+            else:
+                rationale_parts.append(f"XGBoost al limite ({xgb_conf:.1%})")
+            
+            # Analizza RL
+            rl_conf = signal_data.get('rl_confidence', 0.0)
+            if rl_conf >= 0.6:
+                rationale_parts.append(f"RL approva ({rl_conf:.1%})")
+            elif rl_conf > 0:
+                rationale_parts.append(f"RL dubita ({rl_conf:.1%})")
+            
+            # Analizza mercato
+            volatility = market_context.get('volatility', 0.0)
+            if volatility < 0.03:
+                rationale_parts.append("bassa volatilità")
+            elif volatility > 0.05:
+                rationale_parts.append("ALTA volatilità ⚠️")
+            
+            trend = market_context.get('trend_strength', 0.0)
+            if trend >= 25:
+                rationale_parts.append(f"trend forte (ADX {trend:.0f})")
+            elif trend < 20:
+                rationale_parts.append(f"trend debole (ADX {trend:.0f}) ⚠️")
+            
+            return " | ".join(rationale_parts)
+            
+        except Exception as e:
+            return "Error generating rationale"
     
     def update_trade_entry(self, symbol: str, entry_price: float, actual_size: float):
         """
@@ -198,6 +277,10 @@ class OnlineLearningManager:
                     status_color
                 ))
                 
+                # NEW: Se il trade è fallito, genera automaticamente il post-mortem
+                if not trade_info['success']:
+                    asyncio.create_task(self._generate_automatic_postmortem(trade_info))
+                
                 # Auto-save learning data
                 self.save_learning_data()
                 
@@ -251,45 +334,118 @@ class OnlineLearningManager:
         except Exception as e:
             logging.error(f"Error processing RL feedback: {e}")
     
+    async def _generate_automatic_postmortem(self, trade_info: Dict):
+        """
+        Genera automaticamente un post-mortem dettagliato per un trade fallito
+        """
+        try:
+            from core.trade_postmortem_analyzer import global_postmortem_analyzer
+            
+            symbol_short = trade_info['symbol'].replace('/USDT:USDT', '')
+            
+            # Analizza il trade fallito
+            analysis = global_postmortem_analyzer.analyze_failed_trade(trade_info)
+            
+            # Salva il report su file
+            filepath = global_postmortem_analyzer.save_postmortem_report(analysis)
+            
+            # Estrai informazioni chiave
+            failure_category = analysis.get('failure_analysis', {}).get('primary_category', 'UNKNOWN')
+            severity = analysis.get('severity', 'UNKNOWN')
+            should_have_traded = analysis.get('decision_review', {}).get('should_have_traded', True)
+            
+            # Log del post-mortem generato
+            logging.info(colored(
+                f"\n🔍 POST-MORTEM AUTO-GENERATO per {symbol_short}",
+                'cyan',
+                attrs=['bold']
+            ))
+            
+            # Mostra confronto decisione iniziale vs risultato
+            decision_exp = trade_info.get('decision_explanation', {})
+            if decision_exp:
+                logging.info(colored("📊 DECISIONE INIZIALE:", 'yellow'))
+                logging.info(f"  Direction: {decision_exp.get('direction', 'N/A')}")
+                logging.info(f"  Rationale: {decision_exp.get('decision_rationale', 'N/A')}")
+                logging.info(f"  XGB Confidence: {decision_exp.get('xgb_confidence', 0):.1%}")
+                
+                logging.info(colored("\n❌ RISULTATO FINALE:", 'red'))
+                logging.info(f"  Category: {failure_category}")
+                logging.info(f"  Severity: {colored(severity, 'red', attrs=['bold'])}")
+                logging.info(f"  Close Reason: {trade_info.get('close_reason', 'UNKNOWN')}")
+                logging.info(f"  Loss: {trade_info.get('pnl_percentage', 0):.2f}%")
+                
+                logging.info(colored("\n🎯 VALUTAZIONE:", 'magenta'))
+                if should_have_traded:
+                    logging.info(colored("  ✓ Decisione iniziale era ragionevole", 'yellow'))
+                    logging.info(colored("  ✓ Condizioni di mercato sono cambiate", 'yellow'))
+                else:
+                    logging.info(colored("  ✗ Decisione iniziale era errata", 'red', attrs=['bold']))
+                    logging.info(colored("  ✗ Segnali erano troppo deboli", 'red'))
+                
+                # Mostra raccomandazioni principali
+                recommendations = analysis.get('recommendations', [])
+                if recommendations:
+                    logging.info(colored("\n💡 RACCOMANDAZIONI TOP:", 'cyan'))
+                    for i, rec in enumerate(recommendations[:3], 1):
+                        logging.info(f"  {i}. {rec}")
+            
+            logging.info(colored(f"\n📄 Report completo salvato: {filepath}\n", 'cyan'))
+            
+            # Se la perdita è grave (severity CRITICAL o HIGH), mostra report completo
+            if severity in ['CRITICAL', 'HIGH']:
+                logging.warning(colored(
+                    f"⚠️  ATTENZIONE: Perdita {severity} rilevata su {symbol_short}",
+                    'red',
+                    attrs=['bold']
+                ))
+                logging.warning(colored("📋 Visualizzazione report completo:", 'yellow'))
+                global_postmortem_analyzer.display_postmortem_report(analysis)
+            
+        except Exception as e:
+            logging.error(f"Error generating automatic post-mortem: {e}")
+    
     async def _update_adaptive_threshold(self):
         """
         Aggiorna dinamicamente la soglia di esecuzione basandosi sulle performance recenti
         """
         try:
-            if len(self.completed_trades) < self.short_term_window:
-                return  # Not enough data yet
-            
-            # Analyze recent performance
-            recent_trades = self.completed_trades[-self.short_term_window:]
-            recent_win_rate = sum(1 for trade in recent_trades if trade['success']) / len(recent_trades)
-            recent_avg_pnl = np.mean([trade['pnl_percentage'] for trade in recent_trades])
-            
-            # Calculate performance trend
-            if len(self.completed_trades) >= self.medium_term_window:
-                older_trades = self.completed_trades[-self.medium_term_window:-self.short_term_window]
-                older_win_rate = sum(1 for trade in older_trades if trade['success']) / len(older_trades)
+            # CRITICAL FIX #7: Add lock for thread safety
+            with self._lock:
+                if len(self.completed_trades) < self.short_term_window:
+                    return  # Not enough data yet
                 
-                if recent_win_rate > older_win_rate + 0.05:  # 5% improvement
-                    self.learning_stats['performance_trend'] = 'improving'
-                    # Lower threshold slightly to allow more trades
-                    threshold_adjustment = -self.threshold_adjustment_factor
-                elif recent_win_rate < older_win_rate - 0.05:  # 5% decline
-                    self.learning_stats['performance_trend'] = 'declining'
-                    # Raise threshold to be more selective
-                    threshold_adjustment = self.threshold_adjustment_factor
-                else:
-                    self.learning_stats['performance_trend'] = 'stable'
-                    threshold_adjustment = 0
+                # Analyze recent performance
+                recent_trades = self.completed_trades[-self.short_term_window:]
+                recent_win_rate = sum(1 for trade in recent_trades if trade['success']) / len(recent_trades)
+                recent_avg_pnl = np.mean([trade['pnl_percentage'] for trade in recent_trades])
                 
-                # Apply threshold adjustment
-                new_threshold = self.learning_stats['adaptive_threshold'] + threshold_adjustment
-                self.learning_stats['adaptive_threshold'] = np.clip(
-                    new_threshold, self.min_threshold, self.max_threshold
-                )
-                
-                # Update RL agent threshold
-                if hasattr(self.rl_agent, 'execution_threshold'):
-                    self.rl_agent.execution_threshold = self.learning_stats['adaptive_threshold']
+                # Calculate performance trend
+                if len(self.completed_trades) >= self.medium_term_window:
+                    older_trades = self.completed_trades[-self.medium_term_window:-self.short_term_window:]
+                    older_win_rate = sum(1 for trade in older_trades if trade['success']) / len(older_trades)
+                    
+                    if recent_win_rate > older_win_rate + 0.05:  # 5% improvement
+                        self.learning_stats['performance_trend'] = 'improving'
+                        # Lower threshold slightly to allow more trades
+                        threshold_adjustment = -self.threshold_adjustment_factor
+                    elif recent_win_rate < older_win_rate - 0.05:  # 5% decline
+                        self.learning_stats['performance_trend'] = 'declining'
+                        # Raise threshold to be more selective
+                        threshold_adjustment = self.threshold_adjustment_factor
+                    else:
+                        self.learning_stats['performance_trend'] = 'stable'
+                        threshold_adjustment = 0
+                    
+                    # Apply threshold adjustment
+                    new_threshold = self.learning_stats['adaptive_threshold'] + threshold_adjustment
+                    self.learning_stats['adaptive_threshold'] = np.clip(
+                        new_threshold, self.min_threshold, self.max_threshold
+                    )
+                    
+                    # Update RL agent threshold
+                    if hasattr(self.rl_agent, 'execution_threshold'):
+                        self.rl_agent.execution_threshold = self.learning_stats['adaptive_threshold']
                 
         except Exception as e:
             logging.error(f"Error updating adaptive threshold: {e}")

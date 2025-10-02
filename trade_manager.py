@@ -466,6 +466,44 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
         logging.warning(colored(f"{symbol}: Saldo USDT insufficiente ({usdt_balance:.2f} < 60.0).", "yellow"))
         return "insufficient_balance"
     
+    # ⚠️ CRITICAL FIX #9: Pattern Warning System - Check BEFORE opening trade
+    try:
+        from core.pattern_warning_system import global_pattern_warning_system
+        if global_pattern_warning_system:
+            # Build signal_data and market_context for check
+            signal_data_for_check = {
+                'signal_name': side,
+                'confidence': predictions.get('confidence', 0.7) if predictions else 0.7,
+                'rl_confidence': predictions.get('rl_confidence', 0.0) if predictions else 0.0,
+                'tf_predictions': predictions.get('tf_predictions', {}) if predictions else {}
+            }
+            
+            market_context_for_check = {
+                'volatility': volatility,
+                'volume_surge': latest_candle.get('volume_surge', 1.0) if df is not None and len(df) > 0 else 1.0,
+                'trend_strength': latest_candle.get('adx', 25.0) if df is not None and len(df) > 0 else 25.0,
+                'rsi_position': latest_candle.get('rsi', 50.0) if df is not None and len(df) > 0 else 50.0
+            }
+            
+            # Check for dangerous patterns
+            warnings, should_skip = global_pattern_warning_system.check_before_opening(
+                symbol, signal_data_for_check, market_context_for_check
+            )
+            
+            # Display warnings if any
+            if warnings:
+                global_pattern_warning_system.display_warnings(symbol, warnings, should_skip)
+                
+                # If critical warnings, skip trade
+                if should_skip:
+                    logging.warning(colored(f"❌ SKIPPING {symbol}: Too many critical pattern warnings", "red", attrs=["bold"]))
+                    return "pattern_risk_too_high"
+                else:
+                    logging.warning(colored(f"⚠️ PROCEEDING with {symbol} despite {len(warnings)} warning(s)", "yellow"))
+    except Exception as warning_check_error:
+        logging.debug(f"Pattern warning check failed (non-critical): {warning_check_error}")
+        # Continue - warnings are helpful but not critical for operation
+    
     # Use advanced risk management V2 (Thread-safe) if available
     if RISK_MANAGER_AVAILABLE and global_risk_manager:
         try:
@@ -612,6 +650,51 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
                     confidence=confidence,
                     atr=atr
                 )
+                
+                # 🧠 ONLINE LEARNING: Track trade opening for decision analysis
+                try:
+                    from core.online_learning_manager import global_online_learning_manager
+                    if global_online_learning_manager:
+                        # Build market context from df
+                        market_context = {
+                            'volatility': volatility,
+                            'volume_surge': 1.0,  # Default if not available
+                            'trend_strength': 25.0,  # Default if not available
+                            'rsi_position': 50.0  # Default if not available
+                        }
+                        
+                        # Extract from df if available
+                        if df is not None and len(df) > 0:
+                            latest = df.iloc[-1]
+                            market_context['volume_surge'] = float(latest.get('volume_surge', 1.0))
+                            market_context['trend_strength'] = float(latest.get('adx', 25.0))
+                            market_context['rsi_position'] = float(latest.get('rsi', 50.0))
+                        
+                        # Build signal data
+                        signal_data = {
+                            'signal_name': side,
+                            'confidence': confidence,
+                            'rl_confidence': 0.0,  # Demo doesn't use RL
+                            'rl_approved': True,
+                            'tf_predictions': {}  # Demo doesn't track timeframes
+                        }
+                        
+                        # Build portfolio state
+                        portfolio_state = {
+                            'available_balance': available_balance,
+                            'wallet_balance': current_wallet,
+                            'active_positions': active_positions,
+                            'total_realized_pnl': 0.0,
+                            'unrealized_pnl_pct': 0.0
+                        }
+                        
+                        # Track opening
+                        global_online_learning_manager.track_trade_opening(
+                            symbol, signal_data, market_context, portfolio_state
+                        )
+                        logging.debug(f"🧠 Learning: Tracked opening for {symbol.replace('/USDT:USDT', '')}")
+                except Exception as learning_error:
+                    logging.debug(f"Learning tracking error (non-critical): {learning_error}")
                 
                 # Enhanced display removed (duplicate display system eliminated)
                 risk_pct = (3.0 / LEVERAGE) if LEVERAGE > 0 else 3.0  # Base risk divided by leverage
@@ -846,6 +929,51 @@ async def execute_order_with_risk_management(exchange, symbol, side, position_si
                 )
                 logging.info(colored(f"✅ TRAILING STOP ACTIVE: Tracker ID {position_id}", "magenta", attrs=['bold']))
                 logging.info(colored(f"🎪 Bot will manage trailing stop automatically", "magenta"))
+                
+                # 🧠 ONLINE LEARNING: Track LIVE trade opening
+                try:
+                    from core.online_learning_manager import global_online_learning_manager
+                    if global_online_learning_manager:
+                        # Build market context
+                        market_context = {
+                            'volatility': atr / entry_price if entry_price > 0 else 0.02,
+                            'volume_surge': 1.0,
+                            'trend_strength': 25.0,
+                            'rsi_position': 50.0
+                        }
+                        
+                        # Extract from df if available
+                        if df is not None and len(df) > 0:
+                            latest = df.iloc[-1]
+                            market_context['volume_surge'] = float(latest.get('volume_surge', 1.0))
+                            market_context['trend_strength'] = float(latest.get('adx', 25.0))
+                            market_context['rsi_position'] = float(latest.get('rsi', 50.0))
+                        
+                        # Build signal data
+                        signal_data = {
+                            'signal_name': side,
+                            'confidence': predictions.get('confidence', 0.7) if predictions else 0.7,
+                            'rl_confidence': predictions.get('rl_confidence', 0.0) if predictions else 0.0,
+                            'rl_approved': predictions.get('rl_approved', True) if predictions else True,
+                            'tf_predictions': predictions.get('tf_predictions', {}) if predictions else {}
+                        }
+                        
+                        # Build portfolio state
+                        portfolio_state = {
+                            'available_balance': usdt_balance * 0.8,  # Approximate
+                            'wallet_balance': usdt_balance,
+                            'active_positions': len(global_position_tracker.active_positions),
+                            'total_realized_pnl': 0.0,
+                            'unrealized_pnl_pct': 0.0
+                        }
+                        
+                        # Track opening
+                        global_online_learning_manager.track_trade_opening(
+                            symbol, signal_data, market_context, portfolio_state
+                        )
+                        logging.debug(f"🧠 Learning: Tracked LIVE opening for {symbol.replace('/USDT:USDT', '')}")
+                except Exception as learning_error:
+                    logging.debug(f"Learning tracking error (non-critical): {learning_error}")
                 
             except Exception as tracker_error:
                 logging.error(colored(f"❌ TRAILING STOP FAILED: {tracker_error}", "red", attrs=['bold']))
