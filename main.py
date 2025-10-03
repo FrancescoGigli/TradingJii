@@ -78,7 +78,7 @@ from utils.display_utils import display_selected_symbols
 
 
 async def initialize_exchange():
-    """Initialize and test exchange connection"""
+    """Initialize and test exchange connection with robust timestamp sync"""
     if DEMO_MODE:
         logging.info(colored("🧪 DEMO MODE: Exchange not required", "yellow"))
         return None
@@ -86,22 +86,51 @@ async def initialize_exchange():
     logging.info(colored("🚀 Initializing Bybit exchange connection...", "cyan"))
     async_exchange = ccxt_async.bybit(exchange_config)
 
-    # Time sync
-    try:
-        await async_exchange.load_markets()
-        await async_exchange.load_time_difference()
-        server_time = await async_exchange.fetch_time()
-        local_time = async_exchange.milliseconds()
-        diff = abs(server_time - local_time)
-        logging.info(colored(f"⏰ Time sync diff={diff}ms", "cyan"))
-    except Exception as e:
-        logging.warning(f"⚠️ Timestamp sync issue: {e}")
+    # Robust time synchronization with retry logic
+    max_sync_attempts = 3
+    sync_success = False
+    
+    for attempt in range(1, max_sync_attempts + 1):
+        try:
+            logging.info(f"⏰ Time sync attempt {attempt}/{max_sync_attempts}...")
+            
+            # Load markets first (required for proper initialization)
+            await async_exchange.load_markets()
+            
+            # Synchronize time difference with server
+            await async_exchange.load_time_difference()
+            
+            # Verify synchronization
+            server_time = await async_exchange.fetch_time()
+            local_time = async_exchange.milliseconds()
+            time_diff = abs(server_time - local_time)
+            
+            # Check if sync is within acceptable range (5 seconds)
+            if time_diff < 5000:
+                logging.info(colored(f"✅ Time sync successful: diff={time_diff}ms", "green"))
+                sync_success = True
+                break
+            else:
+                logging.warning(f"⚠️ Time difference too large: {time_diff}ms, retrying...")
+                await asyncio.sleep(2)  # Wait before retry
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Time sync attempt {attempt} failed: {e}")
+            if attempt < max_sync_attempts:
+                await asyncio.sleep(2)  # Wait before retry
+            else:
+                logging.error(colored(f"❌ Time sync failed after {max_sync_attempts} attempts", "red"))
+    
+    if not sync_success:
+        logging.warning(colored("⚠️ Proceeding with timestamp sync issues - may cause API errors", "yellow"))
 
+    # Test API connection
     try:
         await async_exchange.fetch_balance()
         logging.info(colored("🎯 BYBIT CONNECTION: API test successful", "green"))
     except Exception as e:
-        logging.warning(f"⚠️ Connection test failed: {e}")
+        logging.error(colored(f"❌ Connection test failed: {e}", "red"))
+        raise RuntimeError(f"Failed to connect to Bybit: {e}")
 
     return async_exchange
 

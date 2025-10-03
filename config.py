@@ -53,8 +53,9 @@ exchange_config = {
     "secret": API_SECRET,
     "enableRateLimit": True,
     "options": {
-        "adjustForTimeDifference": True,
-        "recvWindow": 120_000,  # INCREASED: da 60s a 120s per timestamp issues
+        "adjustForTimeDifference": True,  # Enable automatic time adjustment
+        "recvWindow": 180_000,  # 180 seconds (3 minutes) tolerance window for timestamp sync
+        "timeDifference": 0,  # Will be auto-adjusted by ccxt
     },
 }
 
@@ -82,7 +83,7 @@ VOLATILITY_SIZING_HIGH = 0.035      # >3.5% volatilità = conservative
 ADX_STRONG_TREND = 25.0             # ADX ≥25 = trend forte
 
 # Dynamic Margin Range (per calcoli interni RiskCalculator)
-MARGIN_MIN = 25.0                   # Margine minimo assoluto
+MARGIN_MIN = 50.0                   # Margine minimo assoluto (coerente con POSITION_SIZE_CONSERVATIVE)
 MARGIN_MAX = 100.0                  # Margine massimo assoluto
 MARGIN_BASE = 50.0                  # Margine base di partenza
 
@@ -145,8 +146,8 @@ INITIAL_SL_MARGIN_LOSS_PCT = 0.4                  # Legacy: 40% margin loss
 
 # High-frequency trailing monitor configuration
 TRAILING_MONITOR_INTERVAL = 30        
-TRAILING_MONITOR_ENABLED = False      # DISABLED FOR TESTING
-TRAILING_PRICE_CACHE_TTL = 60        
+TRAILING_MONITOR_ENABLED = True       # ENABLED - Real-time trailing active
+TRAILING_PRICE_CACHE_TTL = 60
 TRAILING_MAX_API_CALLS_PER_MIN = 120
 
 TRAILING_ERROR_RECOVERY_DELAY = 10    
@@ -347,7 +348,7 @@ MAX_CONCURRENT_POSITIONS = 20
 # - Ripartire da zero senza posizioni esistenti
 
 # Master switch
-FRESH_START_MODE = False  # True = chiudi tutto e ripulisci all'avvio
+FRESH_START_MODE = True  # True = chiudi tutto e ripulisci all'avvio
 
 # Opzioni granulari (cosa resettare)
 FRESH_START_OPTIONS = {

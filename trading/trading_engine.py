@@ -343,6 +343,8 @@ class TradingEngine:
         skipped_existing = 0
         failed_trades = 0
         total_margin_used = 0
+        consecutive_insufficient_balance = 0  # FIX 3: Track consecutive balance failures
+        MAX_CONSECUTIVE_BALANCE_FAILURES = 5  # FIX 3: Early exit threshold
         
         for i, signal in enumerate(signals_to_execute, 1):
             try:
@@ -379,8 +381,25 @@ class TradingEngine:
                 # Portfolio margin check with beautiful card display
                 if levels.margin > available_balance:
                     display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "SKIPPED", f"Insufficient margin: ${levels.margin:.2f} > ${available_balance:.2f}")
-                    logging.debug(f"⏭️ Skipping {symbol_short} → trying smaller positions...")
-                    continue  # FIX: Try next position instead of stopping all execution
+                    
+                    # FIX 3: Track consecutive balance failures for early exit
+                    consecutive_insufficient_balance += 1
+                    
+                    # FIX 3: Early exit if too many consecutive failures
+                    if consecutive_insufficient_balance >= MAX_CONSECUTIVE_BALANCE_FAILURES:
+                        from core.enhanced_logging_system import enhanced_logger
+                        enhanced_logger.display_table(
+                            f"⚠️ EARLY EXIT: {consecutive_insufficient_balance} consecutive insufficient balance failures",
+                            "yellow"
+                        )
+                        enhanced_logger.display_table(
+                            f"💡 Available balance (${available_balance:.2f}) too low for remaining signals (need ~${levels.margin:.2f}+)",
+                            "yellow"
+                        )
+                        break  # Stop trying more signals
+                    
+                    logging.debug(f"⏭️ Skipping {symbol_short} → trying next position ({consecutive_insufficient_balance}/{MAX_CONSECUTIVE_BALANCE_FAILURES} consecutive fails)...")
+                    continue  # FIX 2: Try next position instead of stopping all execution
 
                 # Show executing card
                 display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "EXECUTING")
@@ -394,6 +413,7 @@ class TradingEngine:
                     executed_trades += 1
                     total_margin_used += levels.margin
                     available_balance -= levels.margin
+                    consecutive_insufficient_balance = 0  # FIX 3: Reset counter on success
                 else:
                     # Failed card  
                     display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "FAILED", result.error)

@@ -611,12 +611,71 @@ class ThreadSafePositionManager:
                 symbol = pos.get('symbol')
                 if symbol:
                     try:
-                        contracts_raw = float(pos.get('contracts', 0))
-                        contracts = abs(contracts_raw)
-                        entry_price = float(pos.get('entryPrice', 0))
-                        unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+                        symbol_short = symbol.replace('/USDT:USDT', '')
                         
-                        # Check if Bybit provides explicit 'side' field
+                        # FIX #1: ROBUST PRE-FLOAT VALIDATION
+                        # Validate critical fields before float conversion
+                        contracts_val = pos.get('contracts')
+                        entry_price_val = pos.get('entryPrice')
+                        
+                        # Skip position if critical data is missing
+                        if contracts_val is None or contracts_val == '':
+                            logging.warning(f"⚠️ {symbol_short}: 'contracts' is None/empty, skipping position")
+                            continue
+                        
+                        if entry_price_val is None or entry_price_val == '':
+                            logging.warning(f"⚠️ {symbol_short}: 'entryPrice' is None/empty, skipping position")
+                            continue
+                        
+                        # Safe float conversion of critical fields
+                        contracts_raw = float(contracts_val)
+                        contracts = abs(contracts_raw)
+                        entry_price = float(entry_price_val)
+                        
+                        # FIX #2: INTELLIGENT PNL CALCULATION FALLBACK
+                        # If unrealizedPnl is None, calculate it manually
+                        unrealized_pnl_val = pos.get('unrealizedPnl')
+                        
+                        if unrealized_pnl_val is None or unrealized_pnl_val == '':
+                            logging.info(f"💡 {symbol_short}: unrealizedPnl missing, calculating manually...")
+                            
+                            # Get current/mark price for calculation
+                            current_price_val = pos.get('markPrice') or pos.get('lastPrice')
+                            
+                            if current_price_val is not None and current_price_val != '':
+                                current_price = float(current_price_val)
+                                
+                                # Determine side first for PnL calculation
+                                explicit_side = pos.get('side', '').lower()
+                                if explicit_side in ['buy', 'long']:
+                                    side_for_calc = 'buy'
+                                elif explicit_side in ['sell', 'short']:
+                                    side_for_calc = 'sell'
+                                else:
+                                    side_for_calc = 'buy' if contracts_raw > 0 else 'sell'
+                                
+                                # Calculate PnL percentage
+                                if side_for_calc == 'buy':
+                                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                                else:
+                                    pnl_pct = ((entry_price - current_price) / entry_price) * 100
+                                
+                                # Get leverage (default to 10 if not available)
+                                leverage = float(pos.get('leverage', 10))
+                                
+                                # Calculate unrealized PnL in USD
+                                position_value = contracts * entry_price
+                                unrealized_pnl = (pnl_pct / 100) * position_value * leverage
+                                
+                                logging.info(f"✅ {symbol_short}: Calculated PnL = ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)")
+                            else:
+                                # Cannot calculate without price - use 0 as emergency fallback
+                                unrealized_pnl = 0.0
+                                logging.warning(f"⚠️ {symbol_short}: No markPrice/lastPrice available, using PnL=0")
+                        else:
+                            unrealized_pnl = float(unrealized_pnl_val)
+                        
+                        # Determine side for storage
                         explicit_side = pos.get('side', '').lower()
                         if explicit_side in ['buy', 'long']:
                             side = 'buy'
@@ -626,8 +685,7 @@ class ThreadSafePositionManager:
                             # Fallback to contracts logic
                             side = 'buy' if contracts_raw > 0 else 'sell'
                         
-                        # Debug logging per vedere cosa arriva da Bybit
-                        symbol_short = symbol.replace('/USDT:USDT', '')
+                        # Debug logging
                         logging.debug(f"🔍 {symbol_short}: contracts={contracts_raw}, explicit_side='{explicit_side}', final_side='{side}'")
                         
                         bybit_symbols.add(symbol)
@@ -637,8 +695,15 @@ class ThreadSafePositionManager:
                             'entry_price': entry_price,
                             'unrealized_pnl': unrealized_pnl
                         }
+                        
                     except (ValueError, TypeError) as e:
-                        logging.warning(f"🔒 Invalid Bybit position data for {symbol}: {e}")
+                        # FIX #3: ENHANCED ERROR LOGGING
+                        logging.warning(f"⚠️ Invalid Bybit position data for {symbol_short}: {e}")
+                        logging.warning(f"   📊 Raw data: contracts={pos.get('contracts')}, "
+                                      f"entryPrice={pos.get('entryPrice')}, "
+                                      f"unrealizedPnl={pos.get('unrealizedPnl')}, "
+                                      f"markPrice={pos.get('markPrice')}, "
+                                      f"side={pos.get('side')}")
                         continue
             
             # ATOMIC SYNC OPERATION

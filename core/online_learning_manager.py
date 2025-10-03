@@ -278,8 +278,16 @@ class OnlineLearningManager:
                 ))
                 
                 # NEW: Se il trade è fallito, genera automaticamente il post-mortem
+                # CRITICAL FIX: Usa thread sincrono per garantire esecuzione
                 if not trade_info['success']:
-                    asyncio.create_task(self._generate_automatic_postmortem(trade_info))
+                    postmortem_thread = threading.Thread(
+                        target=self._generate_automatic_postmortem_sync,
+                        args=(trade_info.copy(),),  # Pass copy to avoid race conditions
+                        daemon=True,  # Daemon thread won't block shutdown
+                        name=f"PostMortem-{trade_info['symbol']}"
+                    )
+                    postmortem_thread.start()
+                    logging.debug(f"🔍 Post-mortem thread started for {trade_info['symbol'].replace('/USDT:USDT', '')}")
                 
                 # Auto-save learning data
                 self.save_learning_data()
@@ -334,9 +342,10 @@ class OnlineLearningManager:
         except Exception as e:
             logging.error(f"Error processing RL feedback: {e}")
     
-    async def _generate_automatic_postmortem(self, trade_info: Dict):
+    def _generate_automatic_postmortem_sync(self, trade_info: Dict):
         """
         Genera automaticamente un post-mortem dettagliato per un trade fallito
+        CRITICAL FIX: Metodo sincrono eseguito in thread separato per garantire esecuzione
         """
         try:
             from core.trade_postmortem_analyzer import global_postmortem_analyzer
