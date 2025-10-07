@@ -48,13 +48,22 @@ if not API_KEY or not API_SECRET:
 # ----------------------------------------------------------------------
 # Configurazione exchange
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Time Synchronization Configuration
+# ----------------------------------------------------------------------
+TIME_SYNC_MAX_RETRIES = 5              # Maximum sync attempts before giving up
+TIME_SYNC_RETRY_DELAY = 3              # Seconds between retry attempts
+TIME_SYNC_INITIAL_RECV_WINDOW = 60000  # 60 seconds for initial sync (more tolerant)
+TIME_SYNC_NORMAL_RECV_WINDOW = 20000   # 20 seconds for normal operations (tighter)
+MANUAL_TIME_OFFSET = None              # Optional manual offset in milliseconds (None = auto)
+
 exchange_config = {
     "apiKey": API_KEY,
     "secret": API_SECRET,
     "enableRateLimit": True,
     "options": {
         "adjustForTimeDifference": True,  # Enable automatic time adjustment
-        "recvWindow": 180_000,  # 180 seconds (3 minutes) tolerance window for timestamp sync
+        "recvWindow": TIME_SYNC_INITIAL_RECV_WINDOW,  # Start with larger window
         "timeDifference": 0,  # Will be auto-adjusted by ccxt
     },
 }
@@ -63,17 +72,28 @@ exchange_config = {
 LEVERAGE = 10
 
 # ==============================================================================
-# 🎯 DYNAMIC POSITION SIZING - 3-TIER SYSTEM (50/75/100 USD)
+# 🎯 DYNAMIC POSITION SIZING - BALANCE-ADAPTIVE SYSTEM
 # ==============================================================================
-# Sistema intelligente che adatta la size della posizione in base a:
-# - Confidence del segnale ML
-# - Volatilità del mercato
-# - Forza del trend (ADX)
+# Sistema dinamico che scala le position size in base al balance disponibile
+# Garantisce sempre un numero minimo di posizioni possibili
 
-# Position Size Tiers
-POSITION_SIZE_CONSERVATIVE = 50.0   # Trade rischioso (alta volatilità o bassa confidence)
-POSITION_SIZE_MODERATE = 75.0       # Trade medio (volatilità normale, confidence media)
-POSITION_SIZE_AGGRESSIVE = 100.0    # Trade sicuro (bassa volatilità, alta confidence)
+# Target: numero minimo di posizioni aggressive possibili
+# INCREASED: 10 positions for safer sizing with better margin buffer
+POSITION_SIZING_TARGET_POSITIONS = 10  # Garantisce almeno 10 posizioni aggressive (più sicuro di 8)
+
+# Ratios tra i tier (mantiene proporzioni 60% / 75% / 100%)
+POSITION_SIZING_RATIO_AGGRESSIVE = 1.0      # Base (100%)
+POSITION_SIZING_RATIO_MODERATE = 0.75       # 75% dell'aggressive
+POSITION_SIZING_RATIO_CONSERVATIVE = 0.60   # 60% dell'aggressive
+
+# Limiti di sicurezza assoluti
+POSITION_SIZE_MIN_ABSOLUTE = 15.0   # Mai sotto $15 (troppo piccolo per Bybit)
+POSITION_SIZE_MAX_ABSOLUTE = 150.0  # Mai sopra $150 (singola pos troppo grande)
+
+# DEPRECATED: Position Size Tiers fissi (usati solo come fallback)
+POSITION_SIZE_CONSERVATIVE = 20.0   # Fallback se dynamic calculation fails
+POSITION_SIZE_MODERATE = 30.0       # Fallback se dynamic calculation fails
+POSITION_SIZE_AGGRESSIVE = 40.0     # Fallback se dynamic calculation fails
 
 # Thresholds per Position Sizing
 CONFIDENCE_HIGH_THRESHOLD = 0.75    # ≥75% confidence = aggressive
@@ -83,28 +103,9 @@ VOLATILITY_SIZING_HIGH = 0.035      # >3.5% volatilità = conservative
 ADX_STRONG_TREND = 25.0             # ADX ≥25 = trend forte
 
 # Dynamic Margin Range (per calcoli interni RiskCalculator)
-MARGIN_MIN = 50.0                   # Margine minimo assoluto (coerente con POSITION_SIZE_CONSERVATIVE)
-MARGIN_MAX = 100.0                  # Margine massimo assoluto
-MARGIN_BASE = 50.0                  # Margine base di partenza
-
-# ==============================================================================
-# 🛡️ STOP LOSS CONFIGURATION
-# ==============================================================================
-# Stop loss basato su ATR (Average True Range) per adattarsi alla volatilità
-
-SL_ATR_MULTIPLIER = 2.0             # Stop loss = 2x ATR dal prezzo di entrata
-SL_PRICE_PCT_FALLBACK = 0.06        # 6% fallback se ATR non disponibile
-SL_MIN_DISTANCE_PCT = 0.02          # Distanza minima 2% (sicurezza)
-SL_MAX_DISTANCE_PCT = 0.10          # Distanza massima 10% (contenimento rischio)
-
-# ==============================================================================
-# 🎯 TAKE PROFIT CONFIGURATION
-# ==============================================================================
-# Take profit basato su risk-reward ratio
-
-TP_RISK_REWARD_RATIO = 1.5          # Target 1.5x il rischio (es: rischio 4% → target 6%)
-TP_MAX_PROFIT_PCT = 0.08            # Profitto massimo 8% (realismo)
-TP_MIN_PROFIT_PCT = 0.02            # Profitto minimo 2% (sensatezza)
+MARGIN_MIN = 15.0                   # Margine minimo assoluto (coerente con POSITION_SIZE_MIN_ABSOLUTE)
+MARGIN_MAX = 150.0                  # Margine massimo assoluto (coerente con POSITION_SIZE_MAX_ABSOLUTE)
+MARGIN_BASE = 40.0                  # Margine base di partenza (valore medio realistico)
 
 # ==============================================================================
 # 📊 VOLATILITY THRESHOLDS
@@ -116,52 +117,24 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # Tra 2-4% = volatilità media
 
 # ==============================================================================
-# 🔄 TRAILING STOP CONFIGURATION
+# 📡 SMART API MANAGER CACHE CONFIG
 # ==============================================================================
-# Trailing stop dinamico che segue il prezzo quando il trade è in profitto
+# Configurazione cache intelligente per riduzione API calls
 
-# Trailing Trigger (quando attivare il trailing)
-TRAILING_TRIGGER_BASE_PCT = 0.10      # 10% profitto base per attivazione
-TRAILING_TRIGGER_MIN_PCT = 0.05       # 5% minimo per alta volatilità  
-TRAILING_TRIGGER_MAX_PCT = 0.10       # 10% massimo per bassa volatilità
+# Cache TTL (Time To Live) in secondi
+API_CACHE_POSITIONS_TTL = 30          # Positions cache: 30s TTL
+API_CACHE_TICKERS_TTL = 15            # Tickers cache: 15s TTL
+API_CACHE_BATCH_TTL = 20              # Batch operations cache: 20s TTL
 
-# Trailing Distance (distanza dal best price)
-TRAILING_DISTANCE_LOW_VOL = 0.010     # 1.0% per bassa volatilità (tight trailing)
-TRAILING_DISTANCE_MED_VOL = 0.008     # 0.8% per media volatilità
-TRAILING_DISTANCE_HIGH_VOL = 0.007    # 0.7% per alta volatilità (wider trailing)
-
-# ==============================================================================
-# 🔙 LEGACY COMPATIBILITY
-# ==============================================================================
-# Aliases per backward compatibility con vecchi moduli (verranno deprecati)
-
-MARGIN_BASE_USDT = MARGIN_BASE                    # For trade_manager.py
-INITIAL_SL_PRICE_PCT = SL_PRICE_PCT_FALLBACK      # For trailing_stop_manager.py
-INITIAL_SL_MARGIN_LOSS_PCT = 0.4                  # Legacy: 40% margin loss
-
-# ==============================================================================
-# ⚡ TRAILING MONITOR OPERATIONAL CONFIG
-# ==============================================================================
-# Configurazione tecnica del trailing monitor (non toccare senza motivo)
-
-# High-frequency trailing monitor configuration
-TRAILING_MONITOR_INTERVAL = 30        
-TRAILING_MONITOR_ENABLED = True       # ENABLED - Real-time trailing active
-TRAILING_PRICE_CACHE_TTL = 60
-TRAILING_MAX_API_CALLS_PER_MIN = 120
-
-TRAILING_ERROR_RECOVERY_DELAY = 10    
-TRAILING_MAX_CONSECUTIVE_ERRORS = 5   
-TRAILING_ENABLE_LOGGING = True        
+# Rate Limiting Protection
+API_RATE_LIMIT_MAX_CALLS = 100        # Max 100 calls per minute (conservative)
+API_RATE_LIMIT_WINDOW = 60            # 60 seconds window
 
 # Real-time position display configuration
 REALTIME_DISPLAY_ENABLED = True
 REALTIME_DISPLAY_INTERVAL = 1.0
 REALTIME_PRICE_CACHE_TTL = 2
 REALTIME_MAX_API_CALLS = 60
-
-REALTIME_SHOW_TRIGGERS = True
-REALTIME_SHOW_TRAILING_INFO = True
 REALTIME_COLOR_CODING = True
 
 ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]

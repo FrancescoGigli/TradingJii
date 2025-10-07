@@ -25,12 +25,7 @@ except ImportError:
     DECISION_EXPLAINER_AVAILABLE = False
     global_decision_explainer = None
 
-try:
-    from core.rl_agent import global_online_learning_manager
-    ONLINE_LEARNING_AVAILABLE = bool(global_online_learning_manager)
-except ImportError:
-    ONLINE_LEARNING_AVAILABLE = False
-    global_online_learning_manager = None
+# Removed: Online Learning / Post-mortem system (not functioning)
 
 # Import Position Safety Manager
 try:
@@ -52,9 +47,8 @@ except ImportError:
     raise ImportError("CRITICAL: ThreadSafePositionManager required for unified position management")
 
 # Trading Coordinators (mandatory)
-from core.stop_loss_coordinator import global_sl_coordinator
 from core.position_opening_coordinator import global_position_opening_coordinator
-logging.info("🎯 Trading Coordinators loaded - Atomic operations active")
+logging.info("🎯 Position Opening Coordinator loaded - Atomic operations active")
 
 
 class TradingEngine:
@@ -204,19 +198,6 @@ class TradingEngine:
             cycle_logger.log_phase(6, "POSITION MANAGEMENT & RISK CONTROL", "cyan")
             await self._manage_positions(exchange)
 
-            # Phase 6.5: Process SL Updates (COORDINATOR)
-            enhanced_logger.display_table("🎯 Processing queued Stop Loss updates...", "yellow")
-            try:
-                results = await global_sl_coordinator.process_sl_updates(exchange)
-                if results:
-                    successful = sum(1 for r in results.values() if r)
-                    total = len(results)
-                    enhanced_logger.display_table(f"✅ SL Updates: {successful}/{total} successful", "green")
-                else:
-                    enhanced_logger.display_table("ℹ️ No pending SL updates", "cyan")
-            except Exception as sl_error:
-                logging.error(f"❌ SL coordinator error: {sl_error}")
-
             # Phase 7: Performance Analysis
             cycle_logger.log_phase(7, "PERFORMANCE ANALYSIS & REPORTING", "white")
             cycle_total_time = time.time() - cycle_start_time
@@ -230,11 +211,7 @@ class TradingEngine:
                 self.database_system_loaded,
             )
 
-            # Phase 8: Online Learning (optional)
-            if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
-                await self._handle_online_learning()
-
-            # Phase 9: Realtime Display
+            # Phase 8: Realtime Display
             cycle_logger.log_phase(9, "POSITION DISPLAY & PORTFOLIO OVERVIEW", "green")
             await self._update_realtime_display(exchange)
 
@@ -284,6 +261,31 @@ class TradingEngine:
             used_margin = session_summary.get('used_margin', 0)
             available_balance = session_summary.get('available_balance', 0)
             open_positions_count = session_summary.get('active_positions', 0)
+            
+            # ✅ FIX PROBLEMA 4: BALANCE DOUBLE-COUNTING VALIDATION
+            # Validate that available_balance calculation is correct
+            calculated_available = usdt_balance - used_margin
+            balance_diff = abs(available_balance - calculated_available)
+            
+            if balance_diff > 0.01:  # Tolerance: 1 cent
+                logging.error(
+                    f"❌ BALANCE MISMATCH DETECTED!\n"
+                    f"   Reported available: ${available_balance:.2f}\n"
+                    f"   Calculated (balance - used): ${calculated_available:.2f}\n"
+                    f"   Difference: ${balance_diff:.2f}\n"
+                    f"   Total balance: ${usdt_balance:.2f}\n"
+                    f"   Used margin: ${used_margin:.2f}\n"
+                    f"   Active positions: {open_positions_count}"
+                )
+                # Use calculated value as safe fallback
+                available_balance = max(0, calculated_available)
+                logging.warning(f"⚠️ Using calculated available balance: ${available_balance:.2f}")
+            else:
+                # Balance calculation is correct
+                logging.debug(
+                    f"✅ Balance validation passed: ${available_balance:.2f} available "
+                    f"(${usdt_balance:.2f} total - ${used_margin:.2f} used)"
+                )
         else:
             logging.warning("⚠️ Clean modules not available")
             return
@@ -481,18 +483,6 @@ class TradingEngine:
                     enhanced_logger.display_table(f"🛡️ {closed_unsafe} unsafe positions closed", "yellow")
             except Exception as safety_error:
                 logging.error(f"Position safety check error: {safety_error}")
-
-    async def _handle_online_learning(self):
-        from core.enhanced_logging_system import enhanced_logger, log_separator
-
-        try:
-            summary = global_online_learning_manager.get_learning_performance_summary()
-            if summary.get("total_trades", 0) > 0:
-                global_online_learning_manager.display_learning_dashboard()
-            else:
-                enhanced_logger.display_table("🧠 No completed trades yet for learning analysis", "yellow")
-        except Exception as e:
-            logging.warning(f"Learning dashboard error: {e}")
 
     async def _update_realtime_display(self, exchange):
         from core.enhanced_logging_system import enhanced_logger

@@ -24,14 +24,12 @@ from core.order_manager import global_order_manager
 from core.risk_calculator import global_risk_calculator, MarketData
 # STEP 1 FIX: Import ThreadSafePositionManager instead of SmartPositionManager
 from core.thread_safe_position_manager import global_thread_safe_position_manager, ThreadSafePosition as Position
-from core.trailing_stop_manager import TrailingStopManager
 from core.price_precision_handler import global_price_precision_handler
 
 # CRITICAL FIX: Import new unified managers
 try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager
     from core.unified_balance_manager import get_global_balance_manager
-    from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
     from core.smart_api_manager import global_smart_api_manager
     UNIFIED_MANAGERS_AVAILABLE = True
     logging.debug("🔧 Unified managers integration enabled in TradingOrchestrator")
@@ -39,10 +37,9 @@ except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
 
-# COORDINATORS: Import new coordinators for atomic operations (REQUIRED)
-from core.stop_loss_coordinator import global_sl_coordinator
+# COORDINATORS: Import position opening coordinator
 from core.position_opening_coordinator import global_position_opening_coordinator
-logging.info("🎯 Trading Coordinators loaded - Atomic operations REQUIRED")
+logging.info("🎯 Position Opening Coordinator loaded - Atomic operations active")
 
 
 class TradingResult:
@@ -97,14 +94,11 @@ class TradingOrchestrator:
         self.position_manager = global_thread_safe_position_manager
         logging.info("🔒 TradingOrchestrator using ThreadSafePositionManager ONLY")
         
-        self.trailing_manager = TrailingStopManager(self.order_manager, self.position_manager)
-        
         # Initialize unified managers
         if UNIFIED_MANAGERS_AVAILABLE:
             self.balance_manager = get_global_balance_manager()
-            self.sl_calculator = global_unified_stop_loss_calculator
             self.api_manager = global_smart_api_manager
-            logging.debug("🔧 TradingOrchestrator: All unified managers initialized")
+            logging.debug("🔧 TradingOrchestrator: Unified managers initialized (no SL calculator)")
 
     # --------------------------------------------------------------------- #
     #                      NEW TRADE (open + SL 6%)                         #
@@ -189,72 +183,7 @@ class TradingOrchestrator:
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
 
-            # 6) 🔧 FIXED: SMART STOP LOSS con nuovo precision handler
-            raw_sl = market_data.price * (1 - 0.06) if side == "buy" else market_data.price * (1 + 0.06)
-            sl_price = await _normalize_sl_price_new(exchange, symbol, side, market_data.price, raw_sl)
-
-            # Inizializza TrailingData per decidere il tipo di stop loss
-            trailing_data = self.trailing_manager.initialize_trailing_data(
-                symbol, side, market_data.price, market_data.atr
-            )
-            
-            # 🔧 SMART LOGIC: Stesso trattamento delle posizioni esistenti
-            current_price = await global_price_precision_handler.get_current_price(exchange, symbol)
-            
-            if self.trailing_manager.check_activation_conditions(trailing_data, current_price):
-                # NUOVO TRADE GIÀ IN PROFITTO → Usa trailing stop immediato
-                self.trailing_manager.activate_trailing(trailing_data, current_price, side, market_data.atr)
-                
-                trailing_sl = trailing_data.sl_corrente
-                logging.info(colored(f"🚀 {symbol}: New trade profitable → Using trailing stop", "cyan"))
-                
-                sl_result = await self.order_manager.set_trading_stop(exchange, symbol, trailing_sl, None)
-                if sl_result.success:
-                    logging.info(colored(f"✅ {symbol}: Trailing stop activated (${trailing_sl:.6f})", "green"))
-                    sl_order_id = sl_result.order_id
-                else:
-                    # CRITICAL FIX: More rigorous SL enforcement
-                    logging.warning(colored(f"❌ {symbol}: Trailing SL failed: {sl_result.error}", "red"))
-                    
-                    # Mandatory fallback to fixed SL - retry with better validation
-                    for retry in range(3):  # 3 retry attempts
-                        try:
-                            # Validate SL price before setting
-                            current_price_check = await global_price_precision_handler.get_current_price(exchange, symbol)
-                            
-                            # Ensure SL respects Bybit rules
-                            if side == "buy" and sl_price >= current_price_check:
-                                sl_price = current_price_check * 0.94  # Force 6% below current
-                            elif side == "sell" and sl_price <= current_price_check:
-                                sl_price = current_price_check * 1.06  # Force 6% above current
-                            
-                            sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
-                            if sl_result.success:
-                                logging.info(colored(f"✅ {symbol}: Fixed SL set on retry {retry+1} (${sl_price:.6f})", "green"))
-                                sl_order_id = sl_result.order_id
-                                break
-                            else:
-                                logging.warning(f"Retry {retry+1} failed: {sl_result.error}")
-                                if retry == 2:  # Last attempt
-                                    logging.error(colored(f"❌ CRITICAL: {symbol} has NO STOP LOSS after 3 attempts!", "red"))
-                                    sl_order_id = None
-                        except Exception as retry_error:
-                            logging.error(f"SL retry {retry+1} error: {retry_error}")
-                            sl_order_id = None
-            else:
-                # NUOVO TRADE NON IN PROFITTO → Stop fisso normale
-                sl_result = await self.order_manager.set_trading_stop(exchange, symbol, sl_price, None)
-                sl_order_id = sl_result.order_id if sl_result.success else None
-                if sl_result.success:
-                    if side == "buy":
-                        sl_pct = ((market_data.price - sl_price) / market_data.price) * 100
-                    else:
-                        sl_pct = ((sl_price - market_data.price) / market_data.price) * 100
-                    logging.info(colored(f"✅ {symbol}: Stop Loss set at ${sl_price:.6f} (-{sl_pct:.1f}% risk)", "green"))
-                else:
-                    logging.warning(colored(f"⚠️ Failed to set stop loss: {sl_result.error}", "yellow"))
-
-            # 7) STEP 1 FIX: Use ThreadSafe position creation with atomic operations
+            # 7) Create position in tracker (NO stop loss/trailing)
             position_usd_value = levels.margin * config.LEVERAGE  # USD notional value
             
             position_id = self.position_manager.thread_safe_create_position(
@@ -266,26 +195,11 @@ class TradingOrchestrator:
                 confidence=confidence
             )
             
-            # STEP 1 FIX: Use atomic updates instead of direct position access
-            if position_id:
-                # Store trailing data atomically with explicit trailing state
-                trailing_updates = {
-                    'trailing_data': trailing_data,
-                    'trailing_active': trailing_data.trailing_attivo,
-                    'best_price': trailing_data.best_price,
-                    'sl_corrente': trailing_data.sl_corrente
-                }
-                
-                # Log state for debugging
-                symbol_short = symbol.replace('/USDT:USDT', '')
-                logging.info(f"🔧 SAVING TRAILING STATE: {symbol_short} trailing_active={trailing_data.trailing_attivo}, sl_corrente={trailing_data.sl_corrente}")
-                
-                self.position_manager.atomic_update_position(position_id, trailing_updates)
+            logging.info(colored(f"✅ {symbol}: Position opened successfully (no stop loss)", "green"))
 
             return TradingResult(True, position_id, "", {
                 'main': market_result.order_id,
-                'stop_loss': sl_order_id,
-                'note': 'Fixed 6% SL + Trailing system active'
+                'note': 'Position opened without stop loss/trailing'
             })
 
         except Exception as e:
@@ -298,175 +212,35 @@ class TradingOrchestrator:
     # --------------------------------------------------------------------- #
     async def protect_existing_positions(self, exchange) -> Dict[str, TradingResult]:
         """
-        Sincronizza posizioni reali da Bybit, importa nel tracker e APPLICA SUBITO:
-          - Stop Loss iniziale = ±6% dal prezzo di entrata (≈ -60% del margine con leva 10)
-          - TrailingData inizializzato (fixed SL + trigger dinamico)
+        Sincronizza posizioni reali da Bybit e importa nel tracker (NO stop loss/trailing)
         """
         results: Dict[str, TradingResult] = {}
 
         try:
-            # 🔧 CLEANED: Log unico per sincronizzazione
             real_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
             active_positions = [p for p in real_positions if float(p.get('contracts', 0) or 0) != 0]
+            
             if not active_positions:
                 logging.info(colored("🆕 No existing positions on Bybit - starting fresh", "green"))
                 return {}
 
-            # 2) STEP 1 FIX: Use ThreadSafePositionManager for sync
+            # Sync with ThreadSafePositionManager
             newly_opened, _ = await self.position_manager.thread_safe_sync_with_bybit(exchange)
             
             if newly_opened:
-                logging.info(colored(f"🛡️ PROTECTING {len(newly_opened)} positions...", "yellow", attrs=['bold']))
+                logging.info(colored(f"📥 Synced {len(newly_opened)} positions from Bybit", "cyan"))
 
-            # 3) Applica protezione per ogni posizione (silenzioso)
-            protected_count = 0
-            already_protected_count = 0
-            trailing_count = 0
-            protection_details = []
-            
-            for i, position in enumerate(newly_opened, 1):
+            # Register synced positions
+            for position in newly_opened:
                 results[position.symbol] = TradingResult(
                     True,
                     position.position_id,
                     "",
-                    {'tracking_type': 'thread_safe_sync', 'note': 'Position synced via ThreadSafePositionManager'}
+                    {'tracking_type': 'bybit_sync', 'note': 'Position synced without protection'}
                 )
-
-                try:
-                    # Silent protection - no individual logs
-                    symbol_short = position.symbol.replace('/USDT:USDT', '')
-                    
-                    entry = float(position.entry_price)
-                    side = position.side.lower()
-
-                    raw_sl = entry * (1 - 0.06) if side == "buy" else entry * (1 + 0.06)
-                    sl_price = await _normalize_sl_price_new(exchange, position.symbol, side, entry, raw_sl)
-
-                    # (idempotente) leva + isolated
-                    try:
-                        await exchange.set_leverage(config.LEVERAGE, position.symbol)
-                        await exchange.set_margin_mode('isolated', position.symbol)
-                    except Exception as e:
-                        # Gestisci errori "non preoccupanti"
-                        if "leverage not modified" in str(e):
-                            logging.debug(f"📝 {position.symbol}: Leverage already set correctly")
-                        else:
-                            logging.warning(colored(f"⚠️ {position.symbol}: leverage/margin setup failed: {e}", "yellow"))
-
-                    # Inizializza TrailingData prima di decidere lo stop loss
-                    atr_value = getattr(position, "atr_value", entry * 0.02)  # fallback ATR 2%
-                    trailing_data = self.trailing_manager.initialize_trailing_data(
-                        position.symbol, side, entry, atr_value
-                    )
-                    position.trailing_data = trailing_data
-                    
-                    # 🔧 SMART LOGIC: Se già sopra trigger, usa stop trailing invece di fisso
-                    current_price = await global_price_precision_handler.get_current_price(exchange, position.symbol)
-                    
-                    if self.trailing_manager.check_activation_conditions(trailing_data, current_price):
-                        # POSIZIONE GIÀ IN PROFITTO → Attiva trailing e usa stop più stretto
-                        self.trailing_manager.activate_trailing(trailing_data, current_price, side, atr_value)
-                        
-                        # Calcola dettagli per log informativi
-                        if side == "buy":
-                            profit_pct = ((current_price - entry) / entry) * 100 * 10  # Con leva
-                            exit_pct = ((trailing_data.sl_corrente - entry) / entry) * 100 * 10  # Target exit
-                        else:
-                            profit_pct = ((entry - current_price) / entry) * 100 * 10  # Con leva
-                            exit_pct = ((entry - trailing_data.sl_corrente) / entry) * 100 * 10  # Target exit
-                        
-                        # Usa lo stop trailing invece del fisso 6%
-                        trailing_sl = trailing_data.sl_corrente
-                        logging.info(colored(f"🚀 {position.symbol}: Profitable +{profit_pct:.1f}% → Trailing stop active (exit target: +{exit_pct:.1f}%)", "cyan"))
-                        
-                        sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, trailing_sl, None)
-                        if sl_res.success:
-                            logging.info(colored(f"✅ {position.symbol}: Trailing SL on Bybit ${trailing_sl:.6f} → Profit protected above +{exit_pct:.1f}%", "green"))
-                        else:
-                            # Controlla se è un errore "non preoccupante" prima del fallback
-                            error_msg = str(sl_res.error or "").lower()
-                            if "api error 0: ok" in error_msg or "not modified" in error_msg:
-                                logging.info(colored(f"📝 {position.symbol}: Trailing stop set correctly → Exit at +{exit_pct:.1f}% minimum", "cyan"))
-                            else:
-                                # Vero fallimento → Fallback al stop fisso
-                                sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
-                                if sl_res.success:
-                                    logging.info(colored(f"📝 {position.symbol}: Using fixed SL protection (-60% max loss)", "cyan"))
-                                else:
-                                    logging.debug(f"⚡ {position.symbol}: SL management handled internally")
-                    else:
-                        # POSIZIONE NON ANCORA IN PROFITTO → Usa stop fisso normale
-                        # CRITICAL FIX: More rigorous SL enforcement for existing positions
-                        sl_res = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
-                        if sl_res.success:
-                            protected_count += 1
-                            logging.debug(f"✅ {symbol_short}: Stop loss protected")
-                        else:
-                            # 🔧 SMART ERROR HANDLING: Distinguish between real errors and "already protected"
-                            error_msg = str(sl_res.error or "").lower()
-                            
-                            # Check if it's error 34040 "not modified" = already protected
-                            if "34040" in error_msg and "not modified" in error_msg:
-                                already_protected_count += 1  # Count as already protected!
-                                logging.info(colored(f"✅ {symbol_short}: Already protected (stop loss exists)", "cyan"))
-                            else:
-                                # Real error - attempt retry with validation
-                                logging.warning(colored(f"⚠️ {symbol_short}: SL failed: {sl_res.error}", "yellow"))
-                                
-                                # Retry with validation for real errors only
-                                for retry in range(3):
-                                    try:
-                                        # Re-validate SL price
-                                        current_check = await global_price_precision_handler.get_current_price(exchange, position.symbol)
-                                        
-                                        # Ensure SL respects Bybit rules
-                                        if side == "buy" and sl_price >= current_check:
-                                            sl_price = current_check * 0.94  # Force 6% below current
-                                        elif side == "sell" and sl_price <= current_check:
-                                            sl_price = current_check * 1.06  # Force 6% above current
-                                        
-                                        retry_result = await self.order_manager.set_trading_stop(exchange, position.symbol, sl_price, None)
-                                        if retry_result.success:
-                                            protected_count += 1
-                                            logging.info(colored(f"✅ {symbol_short}: SL set on retry {retry+1} (${sl_price:.6f})", "green"))
-                                            break
-                                        elif "34040" in str(retry_result.error or "").lower() and "not modified" in str(retry_result.error or "").lower():
-                                            # Even retry found existing protection
-                                            already_protected_count += 1
-                                            logging.info(colored(f"✅ {symbol_short}: Already protected (found on retry {retry+1})", "cyan"))
-                                            break
-                                        else:
-                                            logging.warning(f"SL retry {retry+1} failed: {retry_result.error}")
-                                            if retry == 2:  # Last attempt
-                                                logging.error(colored(f"❌ {symbol_short}: Could not set stop loss after 3 attempts", "red"))
-                                    except Exception as retry_error:
-                                        logging.error(f"SL retry {retry+1} error: {retry_error}")
-
-                    # Conta trailing se attivato e raccogli dettagli
-                    if trailing_data.trailing_attivo:
-                        trailing_count += 1
-                        protection_details.append(f"{symbol_short}:TRAILING")
-                    else:
-                        protection_details.append(f"{symbol_short}:FIXED_SL")
-
-                except Exception as e:
-                    logging.debug(f"❌ Error protecting {position.symbol}: {e}")
-                    protection_details.append(f"{symbol_short}:ERROR")
-
-            # 🔧 CLEAN SUMMARY: Single line with all protection results
-            if newly_opened:
-                total_secure = protected_count + already_protected_count
-                summary_parts = []
                 
-                if protected_count > 0:
-                    summary_parts.append(f"{protected_count} new")
-                if already_protected_count > 0:
-                    summary_parts.append(f"{already_protected_count} existing")
-                if trailing_count > 0:
-                    summary_parts.append(f"{trailing_count} trailing")
-                
-                summary_text = " | ".join(summary_parts) if summary_parts else "none"
-                logging.info(colored(f"✅ PROTECTION COMPLETE: {total_secure}/{len(newly_opened)} secured ({summary_text})", "green"))
+                symbol_short = position.symbol.replace('/USDT:USDT', '')
+                logging.info(colored(f"✅ {symbol_short}: Position synced (no stop loss)", "green"))
             
             return results
 
@@ -480,60 +254,11 @@ class TradingOrchestrator:
     # --------------------------------------------------------------------- #
     async def update_trailing_positions(self, exchange) -> List[Position]:
         """
-        🔧 SIMPLIFIED: Solo sincronizzazione Bybit - TrailingMonitor fa il lavoro principale
+        REMOVED: Trailing logic eliminated - positions managed manually
         
-        STRATEGY: TrailingMonitor (30s) fa trailing logic, TradingOrchestrator (5min) fa solo sync
-        ELIMINA: Logica duplicata e conflitti di stato
+        This method is kept for compatibility but does nothing now.
         """
-        closed_positions: List[Position] = []
-
-        try:
-            trailing_positions = self.position_manager.get_trailing_positions()
-            if not trailing_positions:
-                return closed_positions
-
-            logging.debug(f"🔄 TradingOrchestrator sync: {len(trailing_positions)} trailing positions")
-
-            # STEP 1 FIX: Use atomic operations for price/PnL updates (no direct position access)
-            for position in trailing_positions:
-                try:
-                    ticker = await exchange.fetch_ticker(position.symbol)
-                    current_price = ticker.get('last', 0)
-                    
-                    if current_price > 0:
-                        # STEP 1 FIX: Use atomic price/PnL update instead of direct access
-                        success = self.position_manager.atomic_update_price_and_pnl(position.position_id, current_price)
-                        if not success:
-                            logging.warning(f"⚠️ Failed to update price for {position.symbol}")
-                            continue
-                        
-                        # Initialize trailing_data if missing (atomic update)
-                        if not hasattr(position, 'trailing_data') or position.trailing_data is None:
-                            atr_value = current_price * 0.02  # fallback ATR
-                            trailing_data = self.trailing_manager.initialize_trailing_data(
-                                position.symbol, position.side, position.entry_price, atr_value
-                            )
-                            
-                            # STEP 1 FIX: Use atomic update for trailing_data
-                            self.position_manager.atomic_update_position(position.position_id, {
-                                'trailing_data': trailing_data
-                            })
-                            logging.debug(f"🔧 Initialized trailing_data for {position.symbol}")
-                            
-                except Exception as e:
-                    logging.debug(f"Error updating price for {position.symbol}: {e}")
-
-            # Note: ThreadSafePositionManager auto-saves during atomic operations
-            # No manual save needed
-
-            # Nota: Le chiusure trailing sono gestite dal TrailingMonitor (30s)
-            # Questo metodo non fa più uscite per evitare conflitti
-
-            return closed_positions
-
-        except Exception as e:
-            logging.error(f"Error in trailing positions sync: {e}")
-            return closed_positions
+        return []
 
     # --------------------------------------------------------------------- #
     #                            SUMMARY / CHECKS                           #

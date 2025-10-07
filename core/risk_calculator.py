@@ -96,21 +96,88 @@ class RiskCalculator:
         self.tp_max_profit = TP_MAX_PROFIT_PCT
         self.tp_min_profit = TP_MIN_PROFIT_PCT
         
-    def calculate_intelligent_position_size(self, confidence: float, atr_pct: float, 
-                                           adx: float = 0.0) -> float:
+    def calculate_dynamic_position_sizes(self, available_balance: float) -> Tuple[float, float, float]:
         """
-        🎯 INTELLIGENT 3-TIER POSITION SIZING
+        🎯 DYNAMIC: Calcola position sizes in base al balance disponibile
+        
+        GARANTISCE: Sempre almeno 8 posizioni aggressive possibili
+        SCALA: Automaticamente con crescita/decrescita balance
+        
+        Args:
+            available_balance: Balance USDT disponibile per trading
+            
+        Returns:
+            Tuple[float, float, float]: (conservative, moderate, aggressive)
+        """
+        try:
+            from config import (
+                POSITION_SIZING_TARGET_POSITIONS,
+                POSITION_SIZING_RATIO_CONSERVATIVE,
+                POSITION_SIZING_RATIO_MODERATE,
+                POSITION_SIZING_RATIO_AGGRESSIVE,
+                POSITION_SIZE_MIN_ABSOLUTE,
+                POSITION_SIZE_MAX_ABSOLUTE
+            )
+            
+            # 1. Calcola aggressive size (base per gli altri)
+            # Dividi balance per target positions per garantire almeno N posizioni
+            aggressive = available_balance / POSITION_SIZING_TARGET_POSITIONS
+            
+            # 2. Calcola gli altri tier mantenendo i ratios
+            moderate = aggressive * POSITION_SIZING_RATIO_MODERATE
+            conservative = aggressive * POSITION_SIZING_RATIO_CONSERVATIVE
+            
+            # 3. Applica limiti di sicurezza
+            conservative = max(POSITION_SIZE_MIN_ABSOLUTE, 
+                              min(POSITION_SIZE_MAX_ABSOLUTE, conservative))
+            moderate = max(POSITION_SIZE_MIN_ABSOLUTE, 
+                          min(POSITION_SIZE_MAX_ABSOLUTE, moderate))
+            aggressive = max(POSITION_SIZE_MIN_ABSOLUTE, 
+                            min(POSITION_SIZE_MAX_ABSOLUTE, aggressive))
+            
+            # 4. Log per debugging
+            logging.debug(
+                f"💰 Dynamic Sizing: Balance ${available_balance:.2f} → "
+                f"C: ${conservative:.2f}, M: ${moderate:.2f}, A: ${aggressive:.2f}"
+            )
+            
+            return conservative, moderate, aggressive
+            
+        except Exception as e:
+            logging.error(f"Dynamic position sizing failed: {e}")
+            # Fallback a valori fissi da config
+            return (self.position_conservative, 
+                    self.position_moderate, 
+                    self.position_aggressive)
+    
+    def calculate_intelligent_position_size(self, confidence: float, atr_pct: float, 
+                                           adx: float = 0.0, 
+                                           available_balance: float = 1000.0) -> float:
+        """
+        🎯 INTELLIGENT 3-TIER con DYNAMIC SCALING
         
         Determina intelligentemente la size della posizione basandosi su:
         - Confidence del segnale ML
         - Volatilità del mercato (ATR)
         - Forza del trend (ADX)
+        - Balance disponibile (DYNAMIC)
+        
+        Args:
+            confidence: ML confidence (0-1)
+            atr_pct: ATR as percentage
+            adx: Trend strength (ADX indicator)
+            available_balance: Balance disponibile per scaling dinamico
         
         Returns:
-            float: 50.0, 75.0, or 100.0 USD
+            float: Position size dinamica in USD
         """
         try:
-            # Score factors (0-3 points)
+            # 1. DYNAMIC: Calcola sizes basate su balance attuale
+            conservative, moderate, aggressive = self.calculate_dynamic_position_sizes(
+                available_balance
+            )
+            
+            # 2. Score factors (0-3 points)
             score = 0
             
             # Factor 1: ML Confidence (0-1 point)
@@ -144,23 +211,22 @@ class RiskCalculator:
             else:
                 trend_tier = "WEAK"
             
-            # Determine position size based on total score
+            # 3. Seleziona tier in base allo score (DYNAMIC sizes)
             if score >= 2.5:
-                # AGGRESSIVE: High confidence + low volatility + strong trend
-                position_size = self.position_aggressive
+                position_size = aggressive
                 tier = "AGGRESSIVE"
             elif score >= 1.5:
-                # MODERATE: Medium conditions
-                position_size = self.position_moderate
+                position_size = moderate
                 tier = "MODERATE"
             else:
-                # CONSERVATIVE: Uncertain conditions
-                position_size = self.position_conservative
+                position_size = conservative
                 tier = "CONSERVATIVE"
             
+            # 4. Log aggiornato con dynamic values
             logging.info(
-                f"💰 POSITION SIZING: ${position_size:.0f} USD ({tier})\n"
+                f"💰 POSITION SIZING: ${position_size:.2f} USD ({tier})\n"
                 f"   📊 Score: {score:.1f}/3.0\n"
+                f"   💵 Balance-Scaled: C=${conservative:.0f}, M=${moderate:.0f}, A=${aggressive:.0f}\n"
                 f"   🎯 Confidence: {confidence:.1%} ({confidence_tier})\n"
                 f"   📉 Volatility: {atr_pct:.2f}% ({volatility_tier})\n"
                 f"   📈 Trend ADX: {adx:.1f} ({trend_tier})"
@@ -176,22 +242,22 @@ class RiskCalculator:
                                 volatility: float = 0.0, balance: float = 200.0,
                                 adx: float = 0.0) -> float:
         """
-        Calculate dynamic margin using intelligent 3-tier system
+        Calculate dynamic margin using intelligent 3-tier system with balance scaling
         
         Args:
             atr_pct: ATR as percentage of price
             confidence: ML signal confidence (0-1)
             volatility: Market volatility (legacy, not used)
-            balance: Account balance (for safety checks)
+            balance: Account balance (for dynamic scaling and safety checks)
             adx: Trend strength (ADX indicator)
             
         Returns:
-            float: Dynamic margin amount (50/75/100 USD)
+            float: Dynamic margin amount (scales with balance)
         """
         try:
-            # Use intelligent 3-tier position sizing
+            # Use intelligent 3-tier position sizing with dynamic balance scaling
             position_size = self.calculate_intelligent_position_size(
-                confidence, atr_pct, adx
+                confidence, atr_pct, adx, available_balance=balance
             )
             
             # Balance safety check
@@ -208,39 +274,6 @@ class RiskCalculator:
         except Exception as e:
             logging.error(f"Error calculating dynamic margin: {e}")
             return self.position_conservative  # Safe fallback
-    
-    def calculate_stop_loss_price(self, entry_price: float, side: str, atr: float,
-                                 volatility: float = 0.0) -> float:
-        """
-        STEP 2 FIX: Delegate to UnifiedStopLossCalculator (eliminate hardcoded calculations)
-        
-        Args:
-            entry_price: Position entry price
-            side: Position side ('buy' or 'sell')
-            atr: Average True Range (used for validation only)
-            volatility: Market volatility (used for validation only)
-            
-        Returns:
-            float: Stop loss price from unified calculator
-        """
-        try:
-            # STEP 2 FIX: Use UnifiedStopLossCalculator instead of hardcoded calculations
-            from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
-            
-            # Get unified stop loss calculation
-            unified_sl = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
-                entry_price, side, f"Risk_Calculator_Request"
-            )
-            
-            logging.debug(f"🛡️ UNIFIED SL: Entry ${entry_price:.6f} | Side {side} | Unified SL ${unified_sl:.6f}")
-            
-            return unified_sl
-            
-        except Exception as e:
-            logging.error(f"Error with unified SL calculation: {e}")
-            # STEP 2 FIX: Emergency fallback uses config
-            sl_pct = self.sl_fallback  # From config
-            return entry_price * (1 - sl_pct if side.lower() == 'buy' else 1 + sl_pct)
     
     def calculate_take_profit_price(self, entry_price: float, side: str, 
                                    stop_loss: float, ratio: float = None) -> float:
@@ -311,9 +344,10 @@ class RiskCalculator:
             notional_value = margin * LEVERAGE
             position_size = notional_value / market_data.price
             
-            # 3. Calculate stop loss
-            stop_loss = self.calculate_stop_loss_price(
-                market_data.price, side, market_data.atr, market_data.volatility
+            # 3. Calculate stop loss (UNIFIED)
+            from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
+            stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
+                market_data.price, side, "risk_calculator"
             )
             
             # 4. Calculate take profit

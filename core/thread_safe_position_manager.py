@@ -12,10 +12,10 @@ CRITICAL FIX: Eliminazione race conditions tra multiple thread
 GARANTISCE: Zero race conditions, state consistency, file integrity
 """
 
-import threading
-import logging
 import json
 import asyncio
+import threading
+import logging
 import sys
 import os
 from datetime import datetime
@@ -30,16 +30,7 @@ if sys.platform == 'win32':
 else:
     import fcntl
 
-# ONLINE LEARNING INTEGRATION: Import learning manager for automatic feedback
-try:
-    from core.online_learning_manager import global_online_learning_manager
-    ONLINE_LEARNING_AVAILABLE = bool(global_online_learning_manager)
-    if ONLINE_LEARNING_AVAILABLE:
-        logging.debug("🔒 ThreadSafePositionManager: Online Learning integration enabled")
-except ImportError:
-    ONLINE_LEARNING_AVAILABLE = False
-    global_online_learning_manager = None
-    logging.debug("🔒 ThreadSafePositionManager: Online Learning not available")
+# Removed: Online Learning / Post-mortem system (not functioning)
 
 @dataclass
 class ThreadSafePosition:
@@ -62,13 +53,7 @@ class ThreadSafePosition:
     unrealized_pnl_usd: float = 0.0
     max_favorable_pnl: float = 0.0
     
-    # Trailing system state (protected by lock)
-    trailing_active: bool = False
-    best_price: Optional[float] = None
-    sl_corrente: Optional[float] = None
-    
-    # CRITICAL FIX: Add trailing_data field for TrailingMonitor compatibility
-    trailing_data: Optional[Any] = None
+    # No trailing system - simplified position tracking
     
     # Metadata
     confidence: float = 0.7
@@ -205,43 +190,6 @@ class ThreadSafePositionManager:
             logging.error(f"🔒 Atomic price/PnL update failed: {e}")
             return False
     
-    def atomic_update_trailing_state(self, position_id: str, trailing_data: Dict) -> bool:
-        """
-        🔒 ATOMIC: Aggiorna stato trailing (operazione critica)
-        
-        Args:
-            position_id: ID posizione
-            trailing_data: Dati trailing da aggiornare
-                {
-                    'trailing_active': bool,
-                    'best_price': float,
-                    'sl_corrente': float,
-                    'trailing_trigger': float
-                }
-        """
-        try:
-            with self._lock:
-                if position_id not in self._open_positions:
-                    return False
-                
-                position = self._open_positions[position_id]
-                
-                # Update trailing state atomically
-                if 'trailing_active' in trailing_data:
-                    position.trailing_active = trailing_data['trailing_active']
-                if 'best_price' in trailing_data:
-                    position.best_price = trailing_data['best_price']
-                if 'sl_corrente' in trailing_data:
-                    position.sl_corrente = trailing_data['sl_corrente']
-                if 'trailing_trigger' in trailing_data:
-                    position.trailing_trigger = trailing_data['trailing_trigger']
-                
-                logging.debug(f"🔒 Atomic trailing update: {position.symbol} trailing={position.trailing_active}")
-                return True
-                
-        except Exception as e:
-            logging.error(f"🔒 Atomic trailing update failed: {e}")
-            return False
     
     # ========================================
     # SAFE READ OPERATIONS (Read-only, Deep Copy)
@@ -452,76 +400,6 @@ class ThreadSafePositionManager:
                 position.unrealized_pnl_pct = pnl_pct
                 position.unrealized_pnl_usd = pnl_usd
                 position.current_price = exit_price
-                
-                # 🧠 ONLINE LEARNING: Notify about position closure (CENTRAL POINT)
-                if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
-                    try:
-                        # Map close reasons for learning system
-                        learning_reason = close_reason
-                        if close_reason in ["TRAILING_FAST", "TRAILING"]:
-                            learning_reason = "TRAILING_STOP"
-                        elif close_reason in ["MANUAL", "STOP_LOSS"]:
-                            learning_reason = close_reason
-                        
-                        # 🎯 FIX #1: INTELLIGENT MANUAL CLOSURE TRACKING
-                        should_track = False
-                        track_reason = learning_reason
-                        
-                        if close_reason == "MANUAL":
-                            # Case 1: Manual + Negative → SEMPRE genera post-mortem
-                            if pnl_pct < 0:
-                                should_track = True
-                                track_reason = "MANUAL_LOSS"
-                                logging.info(colored(
-                                    f"📊 Manual closure in LOSS: {position.symbol.replace('/USDT:USDT', '')} "
-                                    f"({pnl_pct:.2f}%) → Post-mortem will be generated",
-                                    "yellow"
-                                ))
-                            
-                            # Case 2: Manual + Positive MA "early close" (< max favorable PnL)
-                            elif pnl_pct > 0 and position.max_favorable_pnl > 0:
-                                # Calcola quanto ha lasciato sul tavolo
-                                pnl_left_on_table = position.max_favorable_pnl - pnl_pct
-                                
-                                # Se ha chiuso con almeno 1% in meno del max, è "early"
-                                if pnl_left_on_table >= 1.0:
-                                    should_track = True
-                                    track_reason = "MANUAL_EARLY_CLOSE"
-                                    logging.info(colored(
-                                        f"📊 Manual EARLY close: {position.symbol.replace('/USDT:USDT', '')} "
-                                        f"at +{pnl_pct:.2f}% (max was +{position.max_favorable_pnl:.2f}%) "
-                                        f"→ Left {pnl_left_on_table:.2f}% on table",
-                                        "cyan"
-                                    ))
-                                else:
-                                    # Chiusura manuale positiva vicina al max → OK, no post-mortem
-                                    logging.info(colored(
-                                        f"✅ Manual close near peak: {position.symbol.replace('/USDT:USDT', '')} "
-                                        f"+{pnl_pct:.2f}% (max +{position.max_favorable_pnl:.2f}%) → Good exit",
-                                        "green"
-                                    ))
-                            
-                            else:
-                                # Chiusura manuale positiva senza tracking max_favorable → assume OK
-                                logging.info(colored(
-                                    f"✅ Manual close in profit: {position.symbol.replace('/USDT:USDT', '')} "
-                                    f"+{pnl_pct:.2f}% → No analysis needed",
-                                    "green"
-                                ))
-                        
-                        else:
-                            # Chiusure automatiche (trailing, SL, etc) → sempre traccia
-                            should_track = True
-                        
-                        # Track con learning manager
-                        if should_track:
-                            global_online_learning_manager.track_trade_closing(
-                                position.symbol, exit_price, pnl_usd, pnl_pct, track_reason
-                            )
-                            logging.debug(f"🧠 Learning notified: {position.symbol.replace('/USDT:USDT', '')} closed via {track_reason} ({pnl_pct:+.2f}%)")
-                        
-                    except Exception as learning_error:
-                        logging.warning(f"🔒 Learning notification error: {learning_error}")
                 
                 # Move to closed positions
                 self._closed_positions[position_id] = position
@@ -755,16 +633,6 @@ class ThreadSafePositionManager:
                             
                             position.unrealized_pnl_pct = pnl_pct
                             position.unrealized_pnl_usd = pnl_usd
-                        
-                        # 🧠 ONLINE LEARNING: Notify about external closure (BYBIT SYNC)
-                        if ONLINE_LEARNING_AVAILABLE and global_online_learning_manager:
-                            try:
-                                global_online_learning_manager.track_trade_closing(
-                                    position.symbol, position.current_price, pnl_usd, pnl_pct, "EXTERNAL_CLOSURE"
-                                )
-                                logging.debug(f"🧠 Learning notified: {position.symbol.replace('/USDT:USDT', '')} external closure ({pnl_pct:+.2f}%)")
-                            except Exception as learning_error:
-                                logging.warning(f"🔒 Learning notification error: {learning_error}")
                         
                         # Move to closed positions
                         self._closed_positions[position.position_id] = position
@@ -1058,6 +926,10 @@ class ThreadSafePositionManager:
                 
                 # Load positions and convert to dataclass
                 for pos_id, pos_data in data.get('open_positions', {}).items():
+                    # Remove old trailing_data if present
+                    if 'trailing_data' in pos_data:
+                        pos_data.pop('trailing_data', None)
+                    
                     position = ThreadSafePosition(**pos_data)
                     # Migrate to new logic if needed
                     self._migrate_position_to_new_logic_unsafe(position)
@@ -1065,6 +937,17 @@ class ThreadSafePositionManager:
                 
                 # Load closed positions
                 for pos_id, pos_data in data.get('closed_positions', {}).items():
+                    # BUG FIX: Deserialize trailing_data for closed positions too
+                    if 'trailing_data' in pos_data and pos_data['trailing_data'] is not None:
+                        try:
+                            from core.trailing_stop_manager import TrailingData
+                            trailing_dict = pos_data['trailing_data']
+                            pos_data['trailing_data'] = TrailingData.from_dict(trailing_dict)
+                            logging.debug(f"✅ Deserialized trailing_data for closed {pos_id}")
+                        except Exception as trailing_error:
+                            logging.warning(f"⚠️ Failed to deserialize trailing_data for closed {pos_id}: {trailing_error}")
+                            pos_data['trailing_data'] = None
+                    
                     position = ThreadSafePosition(**pos_data)
                     self._closed_positions[pos_id] = position
                 

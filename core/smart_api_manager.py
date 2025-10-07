@@ -53,26 +53,35 @@ class SmartAPIManager:
     """
     
     def __init__(self):
+        # Import config constants
+        from config import (
+            API_CACHE_POSITIONS_TTL,
+            API_CACHE_TICKERS_TTL,
+            API_CACHE_BATCH_TTL,
+            API_RATE_LIMIT_MAX_CALLS,
+            API_RATE_LIMIT_WINDOW
+        )
+        
         # THREAD SAFETY
         self._lock = threading.RLock()
         
         # CACHE STORAGE
         self._positions_cache = None
         self._positions_cache_time = 0
-        self._positions_ttl = 30  # 30 seconds TTL for positions
+        self._positions_ttl = API_CACHE_POSITIONS_TTL
         
         self._tickers_cache = {}  # symbol -> ticker_data
         self._tickers_cache_time = {}  # symbol -> timestamp
-        self._tickers_ttl = 15  # 15 seconds TTL for tickers
+        self._tickers_ttl = API_CACHE_TICKERS_TTL
         
         self._batch_ticker_cache = {}  # batch results
         self._batch_cache_time = 0
-        self._batch_ttl = 20  # 20 seconds TTL for batch tickers
+        self._batch_ttl = API_CACHE_BATCH_TTL
         
         # RATE LIMITING
         self._api_calls_log = []  # List of timestamps
-        self._max_calls_per_minute = 100  # Conservative limit
-        self._rate_limit_window = 60  # 60 seconds window
+        self._max_calls_per_minute = API_RATE_LIMIT_MAX_CALLS
+        self._rate_limit_window = API_RATE_LIMIT_WINDOW
         
         # PERFORMANCE TRACKING
         self._stats = {}  # endpoint -> APICallStats

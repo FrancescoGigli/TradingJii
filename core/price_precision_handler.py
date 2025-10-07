@@ -152,14 +152,17 @@ class PricePrecisionHandler:
     async def normalize_stop_loss_price(self, exchange, symbol: str, side: str, 
                                       entry_price: float, raw_sl: float) -> Tuple[float, bool]:
         """
-        🔧 CORE FIX: Normalizza stop loss per rispettare regole Bybit e tick size
+        🔧 PRECISION FIX: Normalizza stop loss mantenendo esattamente 6% dopo arrotondamento
+        
+        Algoritmo iterativo che compensa l'effetto dell'arrotondamento per garantire
+        che lo stop loss finale sia sempre vicino al 6% target.
         
         Args:
             exchange: Bybit exchange instance
             symbol: Trading symbol
             side: Direzione posizione ('buy' o 'sell')
             entry_price: Prezzo di entrata
-            raw_sl: Stop loss calcolato grezzo
+            raw_sl: Stop loss calcolato grezzo (6%)
             
         Returns:
             Tuple[float, bool]: (stop_loss_normalizzato, successo)
@@ -176,32 +179,66 @@ class PricePrecisionHandler:
                 logging.error(f"❌ Invalid current price for {symbol}: {current_price}")
                 return raw_sl, False
             
-            # 3. Normalizza al tick size
-            if side.lower() == 'buy':
-                # LONG: Stop loss deve essere < prezzo corrente
-                # Arrotonda verso il basso per essere più conservativo
-                normalized_sl = self.round_to_tick_size(raw_sl, tick_size, round_down=True)
-                
-                # Verifica regola Bybit: SL < current_price
-                if normalized_sl >= current_price:
-                    # Forza SL a essere almeno 1 tick sotto il prezzo corrente
-                    normalized_sl = current_price - tick_size
-                    normalized_sl = self.round_to_tick_size(normalized_sl, tick_size, round_down=True)
-                    logging.warning(f"⚠️ {symbol} LONG SL adjusted: {raw_sl:.6f} → {normalized_sl:.6f} (current: {current_price:.6f})")
+            # 3. TARGET: 6% esatto
+            target_percentage = 0.06
+            tolerance = 0.001  # ±0.1% tolleranza
+            max_iterations = 10
             
-            else:
-                # SHORT: Stop loss deve essere > prezzo corrente  
-                # Arrotonda verso l'alto per essere più conservativo
-                normalized_sl = self.round_to_tick_size(raw_sl, tick_size, round_down=False)
-                
-                # Verifica regola Bybit: SL > current_price
-                if normalized_sl <= current_price:
-                    # Forza SL a essere almeno 1 tick sopra il prezzo corrente
-                    normalized_sl = current_price + tick_size
-                    normalized_sl = self.round_to_tick_size(normalized_sl, tick_size, round_down=False)
-                    logging.warning(f"⚠️ {symbol} SHORT SL adjusted: {raw_sl:.6f} → {normalized_sl:.6f} (current: {current_price:.6f})")
+            # 4. ALGORITMO ITERATIVO per compensare arrotondamento
+            best_sl = raw_sl
+            best_deviation = float('inf')
             
-            # 4. Validazioni finali
+            for i in range(max_iterations):
+                # Prova questo SL candidato
+                if side.lower() == 'buy':
+                    # LONG: Arrotonda verso il basso
+                    candidate_sl = self.round_to_tick_size(raw_sl, tick_size, round_down=True)
+                    
+                    # Verifica regola Bybit: SL < current_price
+                    if candidate_sl >= current_price:
+                        candidate_sl = current_price - tick_size
+                        candidate_sl = self.round_to_tick_size(candidate_sl, tick_size, round_down=True)
+                else:
+                    # SHORT: Arrotonda verso l'alto
+                    candidate_sl = self.round_to_tick_size(raw_sl, tick_size, round_down=False)
+                    
+                    # Verifica regola Bybit: SL > current_price
+                    if candidate_sl <= current_price:
+                        candidate_sl = current_price + tick_size
+                        candidate_sl = self.round_to_tick_size(candidate_sl, tick_size, round_down=False)
+                
+                # Calcola percentuale effettiva dopo arrotondamento
+                actual_percentage = abs((candidate_sl - entry_price) / entry_price)
+                deviation = abs(actual_percentage - target_percentage)
+                
+                # Tieni traccia del migliore
+                if deviation < best_deviation:
+                    best_sl = candidate_sl
+                    best_deviation = deviation
+                
+                # Se abbastanza vicino al target, ferma iterazione
+                if deviation <= tolerance:
+                    logging.debug(f"✅ {symbol} SL perfect match at iteration {i+1}: {actual_percentage*100:.3f}%")
+                    break
+                
+                # Aggiusta raw_sl per il prossimo tentativo
+                if actual_percentage < target_percentage:
+                    # SL troppo vicino → allontana
+                    if side.lower() == 'buy':
+                        raw_sl -= tick_size * 0.5
+                    else:
+                        raw_sl += tick_size * 0.5
+                else:
+                    # SL troppo lontano → avvicina
+                    if side.lower() == 'buy':
+                        raw_sl += tick_size * 0.5
+                    else:
+                        raw_sl -= tick_size * 0.5
+            
+            normalized_sl = best_sl
+            final_percentage = abs((normalized_sl - entry_price) / entry_price) * 100
+            
+            # 5. Validazioni finali
             min_price = precision_info['min_price']
             max_price = precision_info['max_price']
             
@@ -212,9 +249,12 @@ class PricePrecisionHandler:
                 normalized_sl = max_price
                 logging.warning(f"⚠️ {symbol} SL adjusted to max price: {normalized_sl}")
             
-            # 5. Log finale
-            if abs(normalized_sl - raw_sl) > tick_size:
-                logging.info(f"🎯 {symbol} SL normalized: {raw_sl:.6f} → {normalized_sl:.6f} (tick: {tick_size})")
+            # 6. Log dettagliato con percentuale finale
+            symbol_short = symbol.replace('/USDT:USDT', '')
+            if best_deviation > tolerance:
+                logging.info(f"🎯 {symbol_short} SL: ${entry_price:.6f} → ${normalized_sl:.6f} ({final_percentage:.2f}% vs 6.00% target)")
+            else:
+                logging.debug(f"✅ {symbol_short} SL perfect: ${normalized_sl:.6f} ({final_percentage:.3f}%)")
             
             return normalized_sl, True
             
@@ -246,9 +286,12 @@ class PricePrecisionHandler:
             
             # 2. CRITICAL FIX: Ensure size respects amount_step (like tick size for amounts)
             if amount_step > 0:
-                # Round to nearest amount_step
-                step_multiplier = round(normalized_size / amount_step)
-                normalized_size = step_multiplier * amount_step
+                # Round to nearest amount_step using floor division
+                from decimal import Decimal, ROUND_DOWN
+                size_decimal = Decimal(str(normalized_size))
+                step_decimal = Decimal(str(amount_step))
+                step_multiplier = (size_decimal / step_decimal).quantize(Decimal('1'), rounding=ROUND_DOWN)
+                normalized_size = float(step_multiplier * step_decimal)
                 # Round again to avoid floating point errors
                 normalized_size = round(normalized_size, amount_precision)
             

@@ -10,7 +10,7 @@ import json
 from config import (
     LEVERAGE, EXCLUDED_SYMBOLS,
     TOP_ANALYSIS_CRYPTO, DEMO_BALANCE, MAX_CONCURRENT_POSITIONS,
-    MARGIN_BASE_USDT
+    MARGIN_BASE
 )
 import config
 
@@ -749,13 +749,13 @@ async def calculate_fallback_position_size(symbol, current_price, usdt_balance):
     """
     try:
         # Use configured margin directly (respect user setting)
-        margin_to_use = MARGIN_BASE_USDT
+        margin_to_use = MARGIN_BASE
         
         # Safety check: don't use more than 20% of total balance
         max_safe_margin = usdt_balance * 0.2  # 20% safety limit
         if margin_to_use > max_safe_margin:
             margin_to_use = max_safe_margin
-            logging.warning(colored(f"💡 Margin reduced from ${MARGIN_BASE_USDT} to ${margin_to_use:.2f} (20% of balance limit)", "yellow"))
+            logging.warning(colored(f"💡 Margin reduced from ${MARGIN_BASE} to ${margin_to_use:.2f} (20% of balance limit)", "yellow"))
         
         # Use full configured leverage
         notional_value = margin_to_use * LEVERAGE

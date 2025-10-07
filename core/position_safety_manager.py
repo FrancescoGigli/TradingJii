@@ -29,8 +29,10 @@ class PositionSafetyManager:
     """
     
     def __init__(self):
-        self.min_position_usd = 200.0  # Minimum $200 notional value
-        self.min_im_usd = 20.0        # Minimum $20 initial margin
+        # DYNAMIC SIZING COMPATIBLE: Lower minimums to match new position sizing system
+        # With 10x leverage: $100 notional = $10 margin (acceptable for dynamic system)
+        self.min_position_usd = 100.0  # Minimum $100 notional value (down from $200)
+        self.min_im_usd = 10.0         # Minimum $10 initial margin (down from $20)
         self.max_positions_without_sl = 0  # ZERO tolerance for positions without SL
         
     async def check_and_close_unsafe_positions(self, exchange, position_manager):

@@ -41,8 +41,6 @@ from config import (
     get_timesteps_for_timeframe,
     DEMO_MODE,
     DEMO_BALANCE,
-    TRAILING_MONITOR_ENABLED,
-    TRAILING_MONITOR_INTERVAL,
 )
 from logging_config import *
 
@@ -50,7 +48,6 @@ from logging_config import *
 try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager
     from core.smart_api_manager import global_smart_api_manager
-    from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
 
     UNIFIED_MANAGERS_AVAILABLE = True
     logging.debug("🔧 Unified managers available for initialization")
@@ -61,11 +58,6 @@ except ImportError as e:
 # Bot modules
 from bot_config import ConfigManager
 from trading import TradingEngine
-
-# Trailing monitor
-from core.trailing_monitor import TrailingMonitor
-from core.trailing_stop_manager import TrailingStopManager
-from core.order_manager import global_order_manager
 
 # Realtime display
 from core.realtime_display import initialize_global_realtime_display
@@ -86,52 +78,111 @@ async def initialize_exchange():
     logging.info(colored("🚀 Initializing Bybit exchange connection...", "cyan"))
     async_exchange = ccxt_async.bybit(exchange_config)
 
-    # Robust time synchronization with retry logic
-    max_sync_attempts = 3
+    # Import time sync configuration
+    from config import (
+        TIME_SYNC_MAX_RETRIES,
+        TIME_SYNC_RETRY_DELAY,
+        TIME_SYNC_NORMAL_RECV_WINDOW,
+        MANUAL_TIME_OFFSET
+    )
+
+    # Phase 1: Pre-authentication time synchronization
+    # This MUST happen before any authenticated API calls (like load_markets)
     sync_success = False
+    final_time_diff = 0
     
-    for attempt in range(1, max_sync_attempts + 1):
+    logging.info(colored("⏰ Phase 1: Pre-authentication time sync", "cyan"))
+    
+    for attempt in range(1, TIME_SYNC_MAX_RETRIES + 1):
         try:
-            logging.info(f"⏰ Time sync attempt {attempt}/{max_sync_attempts}...")
+            logging.info(f"⏰ Sync attempt {attempt}/{TIME_SYNC_MAX_RETRIES}...")
             
-            # Load markets first (required for proper initialization)
-            await async_exchange.load_markets()
-            
-            # Synchronize time difference with server
-            await async_exchange.load_time_difference()
-            
-            # Verify synchronization
+            # Step 1: Fetch server time using public API (no authentication required)
             server_time = await async_exchange.fetch_time()
             local_time = async_exchange.milliseconds()
-            time_diff = abs(server_time - local_time)
             
-            # Check if sync is within acceptable range (5 seconds)
-            if time_diff < 5000:
-                logging.info(colored(f"✅ Time sync successful: diff={time_diff}ms", "green"))
+            # Step 2: Calculate time difference
+            time_diff = server_time - local_time
+            
+            logging.info(f"📊 Time analysis:")
+            logging.info(f"   Local time:  {local_time} ms")
+            logging.info(f"   Server time: {server_time} ms")
+            logging.info(f"   Difference:  {time_diff} ms ({time_diff/1000:.3f} seconds)")
+            
+            # Step 3: Apply manual offset if configured
+            if MANUAL_TIME_OFFSET is not None:
+                logging.info(f"🔧 Applying manual time offset: {MANUAL_TIME_OFFSET} ms")
+                time_diff += MANUAL_TIME_OFFSET
+            
+            # Step 4: Store the time difference in exchange options
+            async_exchange.options['timeDifference'] = time_diff
+            final_time_diff = time_diff
+            
+            # Step 5: Verify the sync by fetching time again
+            await asyncio.sleep(0.5)  # Small delay to account for network latency
+            verify_server_time = await async_exchange.fetch_time()
+            verify_local_time = async_exchange.milliseconds()
+            verify_adjusted_time = verify_local_time + time_diff
+            verify_diff = abs(verify_server_time - verify_adjusted_time)
+            
+            logging.info(f"✅ Verification: adjusted time diff = {verify_diff} ms")
+            
+            # Accept if difference is less than 2 seconds after adjustment
+            if verify_diff < 2000:
+                logging.info(colored(f"✅ Time sync successful! Offset applied: {time_diff} ms", "green"))
                 sync_success = True
                 break
             else:
-                logging.warning(f"⚠️ Time difference too large: {time_diff}ms, retrying...")
-                await asyncio.sleep(2)  # Wait before retry
-                
+                logging.warning(f"⚠️ Verification failed: adjusted diff too large ({verify_diff} ms)")
+                if attempt < TIME_SYNC_MAX_RETRIES:
+                    delay = TIME_SYNC_RETRY_DELAY * attempt  # Exponential backoff
+                    logging.info(f"⏳ Waiting {delay}s before retry...")
+                    await asyncio.sleep(delay)
+                    
         except Exception as e:
-            logging.warning(f"⚠️ Time sync attempt {attempt} failed: {e}")
-            if attempt < max_sync_attempts:
-                await asyncio.sleep(2)  # Wait before retry
-            else:
-                logging.error(colored(f"❌ Time sync failed after {max_sync_attempts} attempts", "red"))
+            logging.error(f"❌ Sync attempt {attempt} failed: {e}")
+            if attempt < TIME_SYNC_MAX_RETRIES:
+                delay = TIME_SYNC_RETRY_DELAY * attempt  # Exponential backoff
+                logging.info(f"⏳ Waiting {delay}s before retry...")
+                await asyncio.sleep(delay)
     
     if not sync_success:
-        logging.warning(colored("⚠️ Proceeding with timestamp sync issues - may cause API errors", "yellow"))
+        error_msg = f"Time synchronization failed after {TIME_SYNC_MAX_RETRIES} attempts"
+        logging.error(colored(f"❌ {error_msg}", "red"))
+        logging.error(colored("💡 Troubleshooting tips:", "yellow"))
+        logging.error("   1. Check your Windows time sync: Settings > Time & Language > Date & Time")
+        logging.error("   2. Enable 'Set time automatically' and sync now")
+        logging.error("   3. Restart the bot after fixing time sync")
+        logging.error("   4. If issue persists, set MANUAL_TIME_OFFSET in config.py")
+        raise RuntimeError(error_msg)
 
-    # Test API connection
+    # Phase 2: Reduce recv_window for tighter security in normal operations
+    logging.info(colored("⏰ Phase 2: Optimizing recv_window for normal operations", "cyan"))
+    async_exchange.options['recvWindow'] = TIME_SYNC_NORMAL_RECV_WINDOW
+    logging.info(f"✅ recv_window reduced to {TIME_SYNC_NORMAL_RECV_WINDOW} ms for enhanced security")
+
+    # Phase 3: Load markets (now safe with synchronized time)
+    logging.info(colored("⏰ Phase 3: Loading markets with synchronized time", "cyan"))
     try:
-        await async_exchange.fetch_balance()
-        logging.info(colored("🎯 BYBIT CONNECTION: API test successful", "green"))
+        await async_exchange.load_markets()
+        logging.info(colored("✅ Markets loaded successfully", "green"))
     except Exception as e:
-        logging.error(colored(f"❌ Connection test failed: {e}", "red"))
-        raise RuntimeError(f"Failed to connect to Bybit: {e}")
+        logging.error(colored(f"❌ Failed to load markets: {e}", "red"))
+        raise RuntimeError(f"Failed to load markets after time sync: {e}")
 
+    # Phase 4: Test authenticated API connection
+    logging.info(colored("⏰ Phase 4: Testing authenticated API access", "cyan"))
+    try:
+        balance = await async_exchange.fetch_balance()
+        logging.info(colored("✅ Authenticated API test successful", "green"))
+        logging.info(f"📊 Account balance fetched: {len(balance.get('info', {}))} currencies")
+    except Exception as e:
+        logging.error(colored(f"❌ Authenticated API test failed: {e}", "red"))
+        raise RuntimeError(f"Failed to authenticate with Bybit: {e}")
+
+    logging.info(colored("🎯 BYBIT CONNECTION: All phases completed successfully", "green", attrs=["bold"]))
+    logging.info(f"⚙️  Final time offset: {final_time_diff} ms ({final_time_diff/1000:.3f}s)")
+    
     return async_exchange
 
 
@@ -221,53 +272,16 @@ async def main():
         # ML models
         xgb_models, xgb_scalers = await initialize_models(config_manager, top_symbols_training)
 
-        # 🧠 CRITICAL FIX #6: Initialize Online Learning Manager for post-mortem analysis
-        from core.online_learning_manager import initialize_online_learning_manager
-        try:
-            # Initialize with None RL agent (not used in this bot version)
-            global_learning_manager = initialize_online_learning_manager(rl_agent=None)
-            if global_learning_manager is None:
-                logging.error(colored("❌ CRITICAL: Online Learning Manager failed to initialize!", "red", attrs=["bold"]))
-                raise RuntimeError("Online Learning Manager initialization failed - post-mortem analysis unavailable")
-            logging.info(colored("🧠 Online Learning Manager initialized successfully", "green"))
-        except Exception as learning_init_error:
-            logging.error(colored(f"❌ CRITICAL: Failed to initialize Online Learning Manager: {learning_init_error}", "red", attrs=["bold"]))
-            raise RuntimeError(f"Online Learning Manager required for post-mortem analysis: {learning_init_error}")
-        
-        # ⚠️ CRITICAL FIX #9: Initialize Pattern Warning System for preventive checks
-        from core.pattern_warning_system import initialize_pattern_warning_system
-        try:
-            global_pattern_warning = initialize_pattern_warning_system(global_learning_manager)
-            if global_pattern_warning is None:
-                logging.warning(colored("⚠️ Pattern Warning System failed to initialize - preventive checks disabled", "yellow"))
-            else:
-                logging.info(colored("⚠️ Pattern Warning System initialized successfully", "green"))
-        except Exception as warning_init_error:
-            logging.warning(colored(f"⚠️ Pattern Warning System initialization failed: {warning_init_error}", "yellow"))
-            logging.warning(colored("Continuing without preventive warnings", "yellow"))
-
         # Fresh session
         await trading_engine.initialize_session(async_exchange)
 
         # Balance sync removed for cleaner startup
         logging.debug("🔧 Balance sync disabled - using direct balance queries when needed")
 
-        # Initialize trailing monitor for dynamic stop loss updates
-        trailing_manager = TrailingStopManager(global_order_manager, trading_engine.position_manager)
-        trailing_monitor = TrailingMonitor(
-            trading_engine.position_manager, 
-            trailing_manager, 
-            global_order_manager
-        )
-        
-        # Start trailing monitor for real-time stop loss updates
-        await trailing_monitor.start_monitoring(async_exchange)
-        logging.info("⚡ Trailing monitor ENABLED - Real-time stop loss updates active")
-
         # Static realtime display
         initialize_global_realtime_display(
             trading_engine.position_manager if trading_engine.clean_modules_available else None,
-            trailing_monitor,
+            None,  # No trailing monitor
         )
         logging.debug(colored("📊 Realtime display initialized", "cyan"))
 
@@ -276,19 +290,13 @@ async def main():
         await trading_engine.run_continuous_trading(async_exchange, xgb_models, xgb_scalers)
 
     except KeyboardInterrupt:
-        logging.info("🛑 Interrupted by user")
+        logging.info("� Interrupted by user")
     except Exception as e:
         logging.error(f"❌ Fatal error: {e}", exc_info=True)
         await asyncio.sleep(30)
     finally:
         if "async_exchange" in locals() and async_exchange:
             await async_exchange.close()
-        if "trailing_monitor" in locals() and trailing_monitor:
-            try:
-                await trailing_monitor.stop_monitoring()
-                logging.info("✅ Trailing monitor stopped gracefully")
-            except Exception as stop_error:
-                logging.error(f"❌ Error stopping trailing monitor: {stop_error}")
         logging.info("Program terminated.")
 
 
