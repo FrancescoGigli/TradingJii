@@ -282,6 +282,8 @@ class PricePrecisionHandler:
             amount_step = precision_info.get('amount_step', 0.001)
             
             # 1. Arrotonda alla precisione dell'amount
+            # CRITICAL FIX: Ensure amount_precision is an integer
+            amount_precision = int(amount_precision) if amount_precision else 6
             normalized_size = round(size, amount_precision)
             
             # 2. CRITICAL FIX: Ensure size respects amount_step (like tick size for amounts)

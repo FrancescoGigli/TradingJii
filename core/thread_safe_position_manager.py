@@ -326,18 +326,10 @@ class ThreadSafePositionManager:
                 # Generate unique position ID
                 position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
                 
-                # STEP 2 FIX: Use UnifiedStopLossCalculator instead of hardcoded calculations
-                try:
-                    from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
-                    stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
-                        entry_price, side, symbol
-                    )
-                except Exception as e:
-                    logging.warning(f"🔒 Unified SL failed for {symbol}: {e}")
-                    # Emergency fallback with unified constants
-                    stop_loss = entry_price * (0.94 if side.lower() == 'buy' else 1.06)
+                # Simple stop loss calculation (SL system removed)
+                stop_loss = entry_price * (0.94 if side.lower() == 'buy' else 1.06)
                 
-                # Calculate trailing trigger (keep this logic as it's specific to position management)
+                # Calculate trailing trigger
                 if side.lower() == 'buy':
                     trailing_trigger = entry_price * 1.006 * 1.010  # +1% over breakeven
                 else:
@@ -681,18 +673,10 @@ class ThreadSafePositionManager:
         entry_price = bybit_data['entry_price']
         side = bybit_data['side']
         
-        # STEP 2 FIX: Use UnifiedStopLossCalculator instead of hardcoded calculations
-        try:
-            from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
-            stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
-                entry_price, side, symbol
-            )
-        except Exception as e:
-            logging.warning(f"🔒 Bybit sync unified SL failed for {symbol}: {e}")
-            # Emergency fallback with unified constants
-            stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
+        # Simple stop loss calculation (SL system removed)
+        stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
         
-        # Calculate trailing trigger (position management specific)
+        # Calculate trailing trigger
         if side == 'buy':
             trailing_trigger = entry_price * 1.006 * 1.010  # +1% over breakeven
         else:
@@ -741,46 +725,16 @@ class ThreadSafePositionManager:
         CRITICAL FIX: OS-level file locking per prevenire corruzione JSON
         """
         try:
-            # Convert to serializable format with trailing_data handling
+            # Convert to serializable format (simplified - no legacy trailing_data)
             open_positions_dict = {}
             for pos_id, position in self._open_positions.items():
                 pos_dict = asdict(position)
-                
-                # Handle trailing_data serialization if it exists
-                if hasattr(position, 'trailing_data') and position.trailing_data is not None:
-                    try:
-                        if hasattr(position.trailing_data, 'to_dict'):
-                            pos_dict['trailing_data'] = position.trailing_data.to_dict()
-                        elif hasattr(position.trailing_data, '__dict__'):
-                            # Convert object to dictionary recursively
-                            pos_dict['trailing_data'] = self._serialize_object_to_dict(position.trailing_data)
-                        else:
-                            # Remove non-serializable trailing_data
-                            logging.debug(f"🔒 Removing non-serializable trailing_data for {pos_id}")
-                            pos_dict['trailing_data'] = None
-                    except Exception as trailing_serial_error:
-                        logging.warning(f"🔒 Failed to serialize trailing_data for {pos_id}: {trailing_serial_error}")
-                        pos_dict['trailing_data'] = None
-                
                 open_positions_dict[pos_id] = pos_dict
             
-            # Handle closed positions with same serialization logic
+            # Handle closed positions
             closed_positions_dict = {}
             for pos_id, position in self._closed_positions.items():
                 pos_dict = asdict(position)
-                
-                # Handle trailing_data in closed positions too
-                if hasattr(position, 'trailing_data') and position.trailing_data is not None:
-                    try:
-                        if hasattr(position.trailing_data, 'to_dict'):
-                            pos_dict['trailing_data'] = position.trailing_data.to_dict()
-                        elif hasattr(position.trailing_data, '__dict__'):
-                            pos_dict['trailing_data'] = self._serialize_object_to_dict(position.trailing_data)
-                        else:
-                            pos_dict['trailing_data'] = None
-                    except Exception:
-                        pos_dict['trailing_data'] = None
-                
                 closed_positions_dict[pos_id] = pos_dict
             
             data = {
@@ -937,16 +891,9 @@ class ThreadSafePositionManager:
                 
                 # Load closed positions
                 for pos_id, pos_data in data.get('closed_positions', {}).items():
-                    # BUG FIX: Deserialize trailing_data for closed positions too
-                    if 'trailing_data' in pos_data and pos_data['trailing_data'] is not None:
-                        try:
-                            from core.trailing_stop_manager import TrailingData
-                            trailing_dict = pos_data['trailing_data']
-                            pos_data['trailing_data'] = TrailingData.from_dict(trailing_dict)
-                            logging.debug(f"✅ Deserialized trailing_data for closed {pos_id}")
-                        except Exception as trailing_error:
-                            logging.warning(f"⚠️ Failed to deserialize trailing_data for closed {pos_id}: {trailing_error}")
-                            pos_data['trailing_data'] = None
+                    # Remove old trailing_data if present (system removed)
+                    if 'trailing_data' in pos_data:
+                        pos_data.pop('trailing_data', None)
                     
                     position = ThreadSafePosition(**pos_data)
                     self._closed_positions[pos_id] = position
@@ -1005,18 +952,10 @@ class ThreadSafePositionManager:
             entry_price = position.entry_price
             side = position.side
             
-            # STEP 2 FIX: Use UnifiedStopLossCalculator for migration
-            try:
-                from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
-                position.stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
-                    entry_price, side, position.symbol
-                )
-            except Exception as e:
-                logging.warning(f"🔒 Migration unified SL failed for {position.symbol}: {e}")
-                # Emergency fallback with unified constants
-                position.stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
+            # Simple stop loss calculation (SL system removed)
+            position.stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
             
-            # Calculate trailing trigger (position management specific)
+            # Calculate trailing trigger
             if side == 'buy':
                 position.trailing_trigger = entry_price * 1.006 * 1.010  # +1% over breakeven
             else:
@@ -1081,6 +1020,93 @@ class ThreadSafePositionManager:
         except Exception as e:
             logging.error(f"🔒 Performance stats failed: {e}")
             return {'error': str(e)}
+    
+    async def check_and_close_unsafe_positions(self, exchange):
+        """
+        🛡️ MIGRATED from position_safety_manager.py
+        
+        Controlla e chiude automaticamente posizioni non sicure:
+        - Posizioni troppo piccole (< $100 notional o < $10 IM)
+        - Posizioni senza stop loss (zero tolerance)
+        
+        Args:
+            exchange: Bybit exchange instance
+            
+        Returns:
+            int: Number of positions closed for safety
+        """
+        # Safety thresholds
+        MIN_POSITION_USD = 100.0  # Minimum $100 notional value
+        MIN_IM_USD = 10.0         # Minimum $10 initial margin
+        
+        closed_count = 0
+        
+        try:
+            # Get real positions from Bybit
+            bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
+            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
+            
+            for position in active_positions:
+                try:
+                    symbol = position.get('symbol')
+                    contracts = abs(float(position.get('contracts', 0)))
+                    entry_price = float(position.get('entryPrice', 0))
+                    leverage = float(position.get('leverage', 10))
+                    
+                    # Calculate position metrics
+                    position_usd = contracts * entry_price
+                    initial_margin = position_usd / leverage
+                    
+                    # Check if position is too small for safe trading
+                    if position_usd < MIN_POSITION_USD or initial_margin < MIN_IM_USD:
+                        symbol_short = symbol.replace('/USDT:USDT', '')
+                        
+                        logging.warning(colored(
+                            f"⚠️ UNSAFE POSITION DETECTED: {symbol_short} "
+                            f"(${position_usd:.2f} notional, ${initial_margin:.2f} IM)", 
+                            "red", attrs=['bold']
+                        ))
+                        
+                        # Close the unsafe position
+                        side = 'sell' if contracts > 0 else 'buy'  # Opposite side to close
+                        close_size = abs(contracts)
+                        
+                        # Place closing market order
+                        if side == 'sell':
+                            order = await exchange.create_market_sell_order(symbol, close_size)
+                        else:
+                            order = await exchange.create_market_buy_order(symbol, close_size)
+                        
+                        if order and order.get('id'):
+                            logging.info(f"✅ Unsafe position closed: {symbol} | Order: {order['id']}")
+                            
+                            exit_price = float(order.get('average', 0) or order.get('price', 0))
+                            
+                            # Update tracked position if exists
+                            if self.has_position_for_symbol(symbol) and exit_price > 0:
+                                for pos_id, pos in list(self._open_positions.items()):
+                                    if pos.symbol == symbol:
+                                        self.close_position_manual(pos_id, exit_price, "SAFETY_CLOSURE")
+                                        break
+                        
+                        closed_count += 1
+                        logging.info(colored(
+                            f"🔒 SAFETY CLOSURE: {symbol_short} closed for insufficient size", 
+                            "yellow", attrs=['bold']
+                        ))
+                
+                except Exception as pos_error:
+                    logging.error(f"Error checking position safety: {pos_error}")
+                    continue
+            
+            if closed_count > 0:
+                logging.info(colored(f"🛡️ SAFETY MANAGER: Closed {closed_count} unsafe positions", "cyan"))
+            
+            return closed_count
+            
+        except Exception as e:
+            logging.error(f"Error in position safety check: {e}")
+            return 0
 
 
 # Global thread-safe instance

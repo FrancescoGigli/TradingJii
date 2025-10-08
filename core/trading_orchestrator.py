@@ -37,9 +37,7 @@ except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
 
-# COORDINATORS: Import position opening coordinator
-from core.position_opening_coordinator import global_position_opening_coordinator
-logging.info("🎯 Position Opening Coordinator loaded - Atomic operations active")
+# COORDINATORS: Removed unused position_opening_coordinator (part of code simplification)
 
 
 class TradingResult:

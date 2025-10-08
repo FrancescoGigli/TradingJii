@@ -344,11 +344,12 @@ class RiskCalculator:
             notional_value = margin * LEVERAGE
             position_size = notional_value / market_data.price
             
-            # 3. Calculate stop loss (UNIFIED)
-            from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
-            stop_loss = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
-                market_data.price, side, "risk_calculator"
-            )
+            # 3. Calculate stop loss (simplified - no SL system)
+            # Placeholder values since SL system was removed
+            if side.lower() == 'buy':
+                stop_loss = market_data.price * 0.94  # -6%
+            else:
+                stop_loss = market_data.price * 1.06  # +6%
             
             # 4. Calculate take profit
             take_profit = self.calculate_take_profit_price(market_data.price, side, stop_loss)
@@ -380,19 +381,13 @@ class RiskCalculator:
             fallback_margin = self.base_margin  # Use the new higher base (40.0)
             fallback_notional = fallback_margin * LEVERAGE
             
-            # STEP 2 FIX: Use unified calculator even in fallback
-            try:
-                from core.unified_stop_loss_calculator import global_unified_stop_loss_calculator
-                fallback_sl = global_unified_stop_loss_calculator.calculate_unified_stop_loss(
-                    market_data.price, side, "Risk_Calculator_Fallback"
-                )
-            except:
-                fallback_sl = market_data.price * (0.94 if side.lower() == 'buy' else 1.06)
+            # Simple fallback SL (no SL system)
+            fallback_sl = market_data.price * (0.94 if side.lower() == 'buy' else 1.06)
             
             return PositionLevels(
                 margin=fallback_margin,
                 position_size=fallback_notional / market_data.price,
-                stop_loss=fallback_sl,  # STEP 2 FIX: Use unified calculator
+                stop_loss=fallback_sl,
                 take_profit=market_data.price * (1.10 if side.lower() == 'buy' else 0.90),
                 risk_pct=6.0,
                 reward_pct=10.0,
@@ -433,6 +428,73 @@ class RiskCalculator:
         except Exception as e:
             logging.error(f"Portfolio validation error: {e}")
             return False, f"Validation error: {e}"
+
+    def calculate_portfolio_based_margins(self, signals: list, available_balance: float) -> list:
+        """
+        🆕 NUOVO SISTEMA: Portfolio-based position sizing
+        
+        Calcola margin per top N segnali usando sistema a pesi fissi:
+        - Prende top 5 segnali (ordinati per confidence)
+        - Assegna pesi: [1.5, 1.3, 1.0, 0.8, 0.7]
+        - Distribuisce balance proporzionalmente
+        - Usa quasi tutto il balance disponibile (98%)
+        
+        Args:
+            signals: Lista segnali ordinati per confidence (desc)
+            available_balance: Balance USDT disponibile
+            
+        Returns:
+            list: Lista di margin amounts per ogni segnale
+        """
+        try:
+            from config import (
+                MAX_CONCURRENT_POSITIONS,
+                POSITION_SIZING_WEIGHTS,
+                PORTFOLIO_BALANCE_USAGE
+            )
+            
+            # 1. Prendi top N segnali (max 5)
+            n_signals = min(len(signals), MAX_CONCURRENT_POSITIONS)
+            top_signals = signals[:n_signals]
+            
+            # 2. Usa i primi N pesi
+            weights = POSITION_SIZING_WEIGHTS[:n_signals]
+            total_weight = sum(weights)
+            
+            # 3. Balance da usare (98% per lasciare buffer)
+            usable_balance = available_balance * PORTFOLIO_BALANCE_USAGE
+            
+            # 4. Calcola margin per ognuno
+            margins = []
+            for i in range(n_signals):
+                proportion = weights[i] / total_weight
+                margin = usable_balance * proportion
+                margins.append(margin)
+                
+                logging.debug(
+                    f"📊 Signal {i+1}/{n_signals}: "
+                    f"weight={weights[i]:.1f}, "
+                    f"proportion={proportion:.1%}, "
+                    f"margin=${margin:.2f}"
+                )
+            
+            # 5. Log summary
+            total_margin = sum(margins)
+            logging.info(
+                f"💰 PORTFOLIO SIZING: {n_signals} positions\n"
+                f"   Balance: ${available_balance:.2f}\n"
+                f"   Usable: ${usable_balance:.2f} ({PORTFOLIO_BALANCE_USAGE:.0%})\n"
+                f"   Allocated: ${total_margin:.2f}\n"
+                f"   Range: ${min(margins):.2f} - ${max(margins):.2f}"
+            )
+            
+            return margins
+            
+        except Exception as e:
+            logging.error(f"Portfolio-based margin calculation failed: {e}")
+            # Fallback: divide equally
+            fallback_margin = (available_balance * 0.95) / max(1, len(signals[:5]))
+            return [fallback_margin] * min(len(signals), 5)
 
 # Global risk calculator instance
 global_risk_calculator = RiskCalculator()

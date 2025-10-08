@@ -92,8 +92,8 @@ class RLTrainingManager:
         # Load existing model if available
         self.load_model()
         
-        # Execution threshold (tunable) - REDUCED for better capital utilization
-        self.execution_threshold = 0.40  # Reduced from 0.5 to open more positions
+        # Execution threshold (tunable) - FURTHER REDUCED for better capital utilization
+        self.execution_threshold = 0.30  # Reduced from 0.40 to 0.30 to open more positions
         
         # Silenced: logging.info("🤖 RL Signal Filter initialized")
     
@@ -183,10 +183,20 @@ class RLTrainingManager:
             # Decision based on threshold
             should_execute = execution_prob >= self.execution_threshold
             
-            # ENHANCED LOGGING: Log decision with reasons
+            # ENHANCED LOGGING: Log decision with detailed reasons
             verdict = "APPROVED" if should_execute else "REJECTED"
             primary_reason = decision_details.get('primary_reason', 'Unknown reason')
-            logging.debug(f"🤖 RL Decision for {symbol}: {verdict} ({execution_prob:.1%}) - {primary_reason}")
+            
+            # Always log rejections at INFO level to track why signals are rejected
+            if not should_execute:
+                factors = decision_details.get('factors', {})
+                issues = decision_details.get('issues', [])
+                logging.info(f"🤖 RL {verdict} for {symbol.replace('/USDT:USDT', '')}: {execution_prob:.1%} < {self.execution_threshold:.1%}")
+                logging.info(f"   Primary reason: {primary_reason}")
+                if len(issues) > 1:
+                    logging.info(f"   All issues: {', '.join(issues[:3])}")  # Show top 3 issues
+            else:
+                logging.debug(f"🤖 RL Decision for {symbol}: {verdict} ({execution_prob:.1%}) - {primary_reason}")
             
             return should_execute, execution_prob, decision_details
             
@@ -236,7 +246,7 @@ class RLTrainingManager:
             
             # 1. Signal Strength Analysis
             signal_confidence = signal_data.get('confidence', 0.0)
-            signal_threshold = 0.60  # Minimum signal confidence (reduced for better capital utilization)
+            signal_threshold = 0.50  # Minimum signal confidence (reduced from 0.60 to 0.50)
             
             factors['signal_strength'] = {
                 'value': f"{signal_confidence:.1%}",
@@ -251,7 +261,7 @@ class RLTrainingManager:
             
             # 2. Market Volatility Analysis
             volatility = market_context.get('volatility', 0.02)
-            volatility_threshold = 0.05  # 5% max volatility
+            volatility_threshold = 0.08  # 8% max volatility (increased from 5%)
             volatility_pct = volatility * 100
             
             factors['market_volatility'] = {
@@ -267,7 +277,7 @@ class RLTrainingManager:
             
             # 3. Market Trend Analysis
             trend_strength = market_context.get('trend_strength', 25.0)
-            trend_threshold = 20.0  # Minimum ADX for trend
+            trend_threshold = 15.0  # Minimum ADX for trend (reduced from 20.0)
             
             factors['trend_strength'] = {
                 'value': f"{trend_strength:.1f}",
@@ -580,11 +590,5 @@ def build_market_context(symbol: str, dataframes: Dict) -> Dict:
 # Global RL agent instance
 global_rl_agent = RLTrainingManager()
 
-# Initialize online learning manager with RL agent
-try:
-    from core.online_learning_manager import initialize_online_learning_manager
-    global_online_learning_manager = initialize_online_learning_manager(global_rl_agent)
-    logging.info(colored("🔗 RL Agent connected to Online Learning Manager", "green"))
-except ImportError:
-    logging.warning("⚠️ Online Learning Manager not available")
-    global_online_learning_manager = None
+# REMOVED: Online Learning system eliminated for logic revision
+global_online_learning_manager = None

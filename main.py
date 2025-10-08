@@ -280,8 +280,7 @@ async def main():
 
         # Static realtime display
         initialize_global_realtime_display(
-            trading_engine.position_manager if trading_engine.clean_modules_available else None,
-            None,  # No trailing monitor
+            trading_engine.position_manager if trading_engine.clean_modules_available else None
         )
         logging.debug(colored("📊 Realtime display initialized", "cyan"))
 

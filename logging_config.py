@@ -60,13 +60,10 @@ logging.basicConfig(
 noisy_modules = [
     "core.thread_safe_position_manager",   # altrimenti logga ogni init/load
     "core.smart_api_manager",              # logga ogni setup
-    "core.unified_stop_loss_calculator",   # log debug ridondanti
-    "core.trailing_monitor",               # troppo verboso se lasciato a INFO
+    # Removed: unified_stop_loss_calculator, trailing_monitor (deleted modules)
     "core.order_manager",                  # stampa ogni chiamata API
     "trade_manager"                        # log molto frequenti
 ]
 
 for module in noisy_modules:
     logging.getLogger(module).setLevel(logging.WARNING)
-
-

@@ -81,12 +81,6 @@ class FreshStartManager:
             if self.options.get('clear_rl_model', False):
                 self._clear_rl_model()
             
-            if self.options.get('clear_decisions', False):
-                self._clear_decisions()
-            
-            if self.options.get('clear_postmortem', False):
-                self._clear_postmortem()
-            
             # Step 3: Summary
             self._log_summary()
             
@@ -234,62 +228,6 @@ class FreshStartManager:
             logging.error(colored(f"  ❌ Failed to delete RL model: {e}", "red"))
             self.stats['errors'] += 1
     
-    def _clear_decisions(self):
-        """Clear decision files"""
-        try:
-            dir_path = Path("trade_decisions")
-            
-            if dir_path.exists():
-                files = list(dir_path.glob("*.json"))
-                
-                if files:
-                    # Backup directory
-                    if self.options.get('log_detailed_cleanup', True):
-                        self._backup_directory(dir_path)
-                    
-                    # Delete files
-                    for file in files:
-                        file.unlink()
-                        self.stats['files_deleted'] += 1
-                    
-                    logging.info(colored(f"  ✅ {len(files)} decision files deleted", "green"))
-                else:
-                    logging.info(colored("  ⏭️ trade_decisions empty (already clean)", "cyan"))
-            else:
-                logging.info(colored("  ⏭️ trade_decisions not found (already clean)", "cyan"))
-                
-        except Exception as e:
-            logging.error(colored(f"  ❌ Failed to delete decisions: {e}", "red"))
-            self.stats['errors'] += 1
-    
-    def _clear_postmortem(self):
-        """Clear post-mortem files"""
-        try:
-            dir_path = Path("trade_postmortem")
-            
-            if dir_path.exists():
-                files = list(dir_path.glob("*.json"))
-                
-                if files:
-                    # Backup directory
-                    if self.options.get('log_detailed_cleanup', True):
-                        self._backup_directory(dir_path)
-                    
-                    # Delete files
-                    for file in files:
-                        file.unlink()
-                        self.stats['files_deleted'] += 1
-                    
-                    logging.info(colored(f"  ✅ {len(files)} post-mortem files deleted", "green"))
-                else:
-                    logging.info(colored("  ⏭️ trade_postmortem empty (already clean)", "cyan"))
-            else:
-                logging.info(colored("  ⏭️ trade_postmortem not found (already clean)", "cyan"))
-                
-        except Exception as e:
-            logging.error(colored(f"  ❌ Failed to delete post-mortem: {e}", "red"))
-            self.stats['errors'] += 1
-    
     def _backup_file(self, file_path: Path):
         """Backup a file before deletion"""
         try:
@@ -379,8 +317,6 @@ async def execute_fresh_start(exchange=None, options: Dict = None) -> bool:
             'clear_position_json': True,
             'clear_learning_state': False,
             'clear_rl_model': False,
-            'clear_decisions': False,
-            'clear_postmortem': False,
             'log_detailed_cleanup': True
         }
     

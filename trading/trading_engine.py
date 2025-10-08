@@ -26,14 +26,7 @@ except ImportError:
     global_decision_explainer = None
 
 # Removed: Online Learning / Post-mortem system (not functioning)
-
-# Import Position Safety Manager
-try:
-    from core.position_safety_manager import global_position_safety_manager
-    POSITION_SAFETY_AVAILABLE = True
-except ImportError:
-    POSITION_SAFETY_AVAILABLE = False
-    global_position_safety_manager = None
+# Removed: Position Safety Manager (migrated to thread_safe_position_manager)
 
 # Thread-safe position manager (mandatory)
 try:
@@ -46,9 +39,8 @@ except ImportError:
     logging.error("❌ CRITICAL: ThreadSafePositionManager not available — cannot proceed safely")
     raise ImportError("CRITICAL: ThreadSafePositionManager required for unified position management")
 
-# Trading Coordinators (mandatory)
-from core.position_opening_coordinator import global_position_opening_coordinator
-logging.info("🎯 Position Opening Coordinator loaded - Atomic operations active")
+# Trading Coordinators removed: position_opening_coordinator was unused (never called)
+# Eliminated as part of code simplification - all position logic in thread_safe_position_manager
 
 
 class TradingEngine:
@@ -300,17 +292,27 @@ class TradingEngine:
         # Filter out symbols excluded from trading (BTC/ETH kept for training only)
         tradeable_signals = [s for s in all_signals if s["symbol"] not in config.EXCLUDED_FROM_TRADING]
         
-        if len(all_signals) != len(tradeable_signals):
-            excluded_count = len(all_signals) - len(tradeable_signals)
-            logging.info(colored(f"🚫 Filtered {excluded_count} excluded symbols (training only)", "yellow"))
-        
         # Sort by confidence (highest first) - Priority-based execution
         tradeable_signals.sort(key=lambda x: x["confidence"], reverse=True)
         logging.info(colored(f"📊 Sorted {len(tradeable_signals)} signals by confidence (priority execution)", "cyan"))
         
-        # Apply position limits
+        if len(all_signals) != len(tradeable_signals):
+            excluded_count = len(all_signals) - len(tradeable_signals)
+            logging.info(colored(f"🚫 Filtered {excluded_count} excluded symbols (training only)", "yellow"))
+        
+        # Apply position limits (max 5 based on new system)
         max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
         signals_to_execute = tradeable_signals[: min(max_positions, len(tradeable_signals))]
+        
+        # 🆕 NUOVO SISTEMA: Portfolio-based sizing
+        # Calcola margin per i segnali selezionati usando pesi fissi
+        if signals_to_execute and self.clean_modules_available:
+            portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
+                signals_to_execute, available_balance
+            )
+            logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins", "cyan"))
+        else:
+            portfolio_margins = []
         
         if not signals_to_execute:
             logging.info(colored("⚠️ No slots for new positions", "yellow"))
@@ -376,9 +378,34 @@ class TradingEngine:
                 volatility = latest_candle.get("volatility", 0.0)
 
                 market_data = self.MarketData(price=current_price, atr=atr, volatility=volatility)
-                levels = self.global_risk_calculator.calculate_position_levels(
-                    market_data, signal["signal_name"].lower(), signal["confidence"], available_balance
-                )
+                
+                # 🆕 NUOVO: Usa margin precalcolato da portfolio sizing (se disponibile)
+                if portfolio_margins and i-1 < len(portfolio_margins):
+                    # Usa il margin precalcolato dal sistema a pesi
+                    target_margin = portfolio_margins[i-1]
+                    logging.debug(f"💰 Using portfolio-based margin for {symbol_short}: ${target_margin:.2f}")
+                    
+                    # Calcola position size manualmente con margin precalcolato
+                    notional_value = target_margin * config.LEVERAGE
+                    position_size = notional_value / current_price
+                    
+                    # Crea PositionLevels con margin precalcolato (SL/TP non usati)
+                    from core.risk_calculator import PositionLevels
+                    levels = PositionLevels(
+                        margin=target_margin,
+                        position_size=position_size,
+                        stop_loss=0,  # Non usato
+                        take_profit=0,  # Non usato
+                        risk_pct=0,
+                        reward_pct=0,
+                        risk_reward_ratio=0
+                    )
+                else:
+                    # Fallback: usa vecchio sistema se portfolio_margins non disponibile
+                    levels = self.global_risk_calculator.calculate_position_levels(
+                        market_data, signal["signal_name"].lower(), signal["confidence"], available_balance
+                    )
+                    logging.debug(f"⚠️ Using fallback margin calculation for {symbol_short}")
                 
                 # Portfolio margin check with beautiful card display
                 if levels.margin > available_balance:
@@ -473,12 +500,10 @@ class TradingEngine:
             except Exception as e:
                 logging.warning(f"Position sync error: {e}")
 
-        # Safety manager
-        if POSITION_SAFETY_AVAILABLE and not config.DEMO_MODE:
+        # Safety manager - MIGRATED to position_manager
+        if not config.DEMO_MODE:
             try:
-                closed_unsafe = await global_position_safety_manager.check_and_close_unsafe_positions(
-                    exchange, self.position_manager
-                )
+                closed_unsafe = await self.position_manager.check_and_close_unsafe_positions(exchange)
                 if closed_unsafe > 0:
                     enhanced_logger.display_table(f"🛡️ {closed_unsafe} unsafe positions closed", "yellow")
             except Exception as safety_error:
@@ -489,10 +514,8 @@ class TradingEngine:
 
         if not hasattr(self, "realtime_display") or self.realtime_display is None:
             try:
-                trailing_monitor = getattr(self, "trailing_monitor", None)
                 self.realtime_display = initialize_global_realtime_display(
-                    self.position_manager if self.clean_modules_available else None,
-                    trailing_monitor,
+                    self.position_manager if self.clean_modules_available else None
                 )
                 enhanced_logger.display_table("📊 Realtime display initialized", "cyan")
             except Exception as init_error:

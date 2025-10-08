@@ -71,9 +71,8 @@ def utcnow_ms() -> int:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class RealTimePositionDisplay:
-    def __init__(self, position_manager=None, trailing_monitor=None):
+    def __init__(self, position_manager=None):
         self.position_manager = position_manager
-        self.trailing_monitor = trailing_monitor
 
         # Stato corrente
         self._cur_open_map: Dict[str, Dict] = {}
@@ -493,7 +492,7 @@ class RealTimePositionDisplay:
 # Global instance
 global_realtime_display = None
 
-def initialize_global_realtime_display(position_manager=None, trailing_monitor=None):
+def initialize_global_realtime_display(position_manager=None):
     global global_realtime_display
-    global_realtime_display = RealTimePositionDisplay(position_manager, trailing_monitor)
+    global_realtime_display = RealTimePositionDisplay(position_manager)
     return global_realtime_display

@@ -273,8 +273,16 @@ def display_execution_card(trade_num, total_trades, symbol, signal_data, levels=
             padding = card_width - len(position_line) - 1
             logging.info(position_line + " " * max(0, padding) + "│")
             
-            # Protection line
-            protection_line = f"│ 🛡️ Protection: Stop -6.0% (${levels.stop_loss:.6f}) | TP +8.0% (${levels.take_profit:.6f})"
+            # Protection line - show appropriate message based on SL/TP status
+            if levels.stop_loss > 0 and levels.take_profit > 0:
+                protection_line = f"│ 🛡️ Protection: Stop -6.0% (${levels.stop_loss:.6f}) | TP +8.0% (${levels.take_profit:.6f})"
+            elif levels.stop_loss > 0:
+                protection_line = f"│ 🛡️ Protection: Stop -6.0% (${levels.stop_loss:.6f}) | TP: Pending"
+            elif levels.take_profit > 0:
+                protection_line = f"│ 🛡️ Protection: Stop: Pending | TP +8.0% (${levels.take_profit:.6f})"
+            else:
+                protection_line = f"│ 🛡️ Protection: Stop & TP will be set after position opens"
+            
             padding = card_width - len(protection_line) - 1
             logging.info(protection_line + " " * max(0, padding) + "│")
         

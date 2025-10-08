@@ -117,6 +117,20 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # Tra 2-4% = volatilità media
 
 # ==============================================================================
+# 🛡️ STOP LOSS & TAKE PROFIT CONFIGURATION
+# ==============================================================================
+# Stop Loss settings
+SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss
+SL_PRICE_PCT_FALLBACK = 0.06        # 6% fallback if ATR not available
+SL_MIN_DISTANCE_PCT = 0.02          # Minimum 2% distance from entry
+SL_MAX_DISTANCE_PCT = 0.10          # Maximum 10% distance from entry
+
+# Take Profit settings
+TP_RISK_REWARD_RATIO = 2.0          # 2:1 reward:risk ratio
+TP_MAX_PROFIT_PCT = 0.15            # Maximum 15% profit target
+TP_MIN_PROFIT_PCT = 0.03            # Minimum 3% profit target
+
+# ==============================================================================
 # 📡 SMART API MANAGER CACHE CONFIG
 # ==============================================================================
 # Configurazione cache intelligente per riduzione API calls
@@ -307,9 +321,22 @@ TIMEFRAME_WEIGHTS = {
 }
 
 # ----------------------------------------------------------------------
-# Position Limits
+# Position Limits & Sizing Strategy
 # ----------------------------------------------------------------------
-MAX_CONCURRENT_POSITIONS = 20  
+# NUOVO SISTEMA: Portfolio-based dynamic sizing
+# - Max 5 posizioni per volta
+# - Usa tutto il balance disponibile
+# - Più margin ai segnali migliori (ordinati per confidence)
+
+MAX_CONCURRENT_POSITIONS = 5  # Reduced from 20 to 5
+
+# Pesi per position sizing (da posizione 1 a 5)
+# Posizione 1 = migliore confidence, riceve più margin
+# Posizione 5 = peggiore confidence, riceve meno margin
+POSITION_SIZING_WEIGHTS = [1.5, 1.3, 1.0, 0.8, 0.7]
+
+# Percentuale del balance da usare (default 98% per lasciare buffer)
+PORTFOLIO_BALANCE_USAGE = 0.98
 
 # ==============================================================================
 # 🧹 FRESH START MODE
@@ -328,50 +355,32 @@ FRESH_START_OPTIONS = {
     'close_all_positions': True,      # Chiudi tutte le posizioni su Bybit
     'clear_position_json': True,      # Cancella thread_safe_positions.json
     'clear_learning_state': False,    # Mantieni learning history (raccomandato)
-    'clear_rl_model': True,           # Reset RL agent (threshold 0.40!)
-    'clear_decisions': False,         # Mantieni decision files per analisi
-    'clear_postmortem': False,        # Mantieni post-mortem files per analisi
+    'clear_rl_model': False,          # MANTIENI RL agent addestrato (NON cancellare!)
     'log_detailed_cleanup': True      # Log dettagliato operazioni di cleanup
 }
 
 # Esempi di configurazione per diversi scenari:
 #
-# SCENARIO 1: Testing Fix (reset threshold RL)
+# SCENARIO 1: Trading Normale (raccomandato)
+# FRESH_START_MODE = False  # Protegge posizioni esistenti e modello RL
+#
+# SCENARIO 2: Chiusura Posizioni (senza reset modelli)
 # FRESH_START_MODE = True
 # FRESH_START_OPTIONS = {
 #     'close_all_positions': True,
 #     'clear_position_json': True,
-#     'clear_learning_state': False,  # Mantieni history
-#     'clear_rl_model': True,         # Reset threshold vecchi!
-#     'clear_decisions': False,
-#     'clear_postmortem': False,
+#     'clear_learning_state': False,  # Mantieni history!
+#     'clear_rl_model': False,        # Mantieni modello addestrato!
 #     'log_detailed_cleanup': True
 # }
 #
-# SCENARIO 2: Trading Normale (default)
-# FRESH_START_MODE = False  # Protegge posizioni esistenti
-#
-# SCENARIO 3: Pulizia Settimanale
+# SCENARIO 3: Reset TOTALE (solo per debugging)
 # FRESH_START_MODE = True
 # FRESH_START_OPTIONS = {
 #     'close_all_positions': True,
 #     'clear_position_json': True,
-#     'clear_learning_state': False,  # Mantieni learning!
-#     'clear_rl_model': False,
-#     'clear_decisions': True,        # Pulisci files vecchi
-#     'clear_postmortem': True,
-#     'log_detailed_cleanup': True
-# }
-#
-# SCENARIO 4: Reset TOTALE (debugging)
-# FRESH_START_MODE = True
-# FRESH_START_OPTIONS = {  # Tutto True = tabula rasa completa
-#     'close_all_positions': True,
-#     'clear_position_json': True,
-#     'clear_learning_state': True,
-#     'clear_rl_model': True,
-#     'clear_decisions': True,
-#     'clear_postmortem': True,
+#     'clear_learning_state': True,   # Reset learning
+#     'clear_rl_model': True,         # Reset RL (attenzione!)
 #     'log_detailed_cleanup': True
 # }
 
