@@ -132,22 +132,30 @@ class FreshStartManager:
                     if abs(contracts) == 0:
                         continue
                     
-                    # Determine side to close
-                    close_side = 'sell' if contracts > 0 else 'buy'
+                    # FIXED: Determine correct closing side
+                    # LONG position (contracts > 0) → close with SELL
+                    # SHORT position (contracts < 0) → close with BUY
+                    is_long = contracts > 0
+                    close_side = 'sell' if is_long else 'buy'
+                    close_amount = abs(contracts)
                     
-                    # Close position at market
+                    symbol_short = symbol.replace('/USDT:USDT', '')
+                    side_display = "LONG" if is_long else "SHORT"
+                    
+                    logging.debug(f"  🔄 Closing {symbol_short} {side_display}: {close_side.upper()} {close_amount:.4f}")
+                    
+                    # FIXED: Close position with correct Bybit v5 params
                     await exchange.create_order(
                         symbol=symbol,
                         type='market',
                         side=close_side,
-                        amount=abs(contracts),
+                        amount=close_amount,
                         params={
-                            'reduceOnly': True,
-                            'positionIdx': 0  # One-way mode
+                            'reduce_only': True,  # Bybit v5 uses reduce_only (underscore)
+                            'position_idx': 0     # Bybit v5 uses position_idx (underscore)
                         }
                     )
                     
-                    symbol_short = symbol.replace('/USDT:USDT', '')
                     logging.info(colored(f"  ✅ {symbol_short} closed", "green"))
                     self.stats['positions_closed'] += 1
                     
@@ -156,7 +164,17 @@ class FreshStartManager:
                     
                 except Exception as close_error:
                     symbol_short = pos.get('symbol', 'Unknown').replace('/USDT:USDT', '')
-                    logging.error(colored(f"  ❌ Failed to close {symbol_short}: {close_error}", "red"))
+                    error_msg = str(close_error)
+                    
+                    # More informative error messages
+                    if "same side" in error_msg.lower():
+                        logging.error(colored(
+                            f"  ❌ Failed to close {symbol_short}: Wrong side or already closing",
+                            "red"
+                        ))
+                    else:
+                        logging.error(colored(f"  ❌ Failed to close {symbol_short}: {error_msg}", "red"))
+                    
                     self.stats['errors'] += 1
             
             logging.info(colored(f"✅ Closed {self.stats['positions_closed']} positions", "green"))

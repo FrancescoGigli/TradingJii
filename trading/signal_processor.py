@@ -255,19 +255,8 @@ class SignalProcessor:
                         risk_manager_available=True
                     )
                 
-                # 🕐 COUNTDOWN: 3 secondi tra una moneta e l'altra (esclusa l'ultima)
-                if i < len(prediction_items):  # Non aspettare dopo l'ultima moneta
-                    symbol_short = symbol.replace('/USDT:USDT', '')
-                    logging.info(colored(f"⏳ Waiting 3 seconds before next analysis... ({i}/{len(prediction_items)})", "magenta"))
-                    await asyncio.sleep(3)
-                
             except Exception as e:
                 logging.error(f"Error in decision analysis for {symbol}: {e}")
-                
-                # 🕐 COUNTDOWN anche in caso di errore (esclusa l'ultima)
-                if i < len(prediction_items):
-                    logging.info(colored(f"⏳ Waiting 3 seconds before next analysis... ({i}/{len(prediction_items)})", "magenta"))
-                    await asyncio.sleep(3)
                 continue
         
         enhanced_logger.display_table("=" * 80, "cyan")

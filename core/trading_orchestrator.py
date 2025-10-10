@@ -101,13 +101,16 @@ class TradingOrchestrator:
     # --------------------------------------------------------------------- #
     #                      NEW TRADE (open + SL 6%)                         #
     # --------------------------------------------------------------------- #
-    async def execute_new_trade(self, exchange, signal_data: Dict, market_data: MarketData, balance: float) -> TradingResult:
+    async def execute_new_trade(self, exchange, signal_data: Dict, market_data: MarketData, balance: float, margin_override: float = None) -> TradingResult:
         """
         Esegue un nuovo trade completo di protezione iniziale:
         - imposta leva e margine isolato
         - piazza market order
         - applica SL iniziale = ±6% sul prezzo (≈60% del margine con leva 10)
         - registra la posizione per il trailing
+        
+        Args:
+            margin_override: Se fornito, usa questo margin invece di calcolarlo (portfolio sizing)
         """
         try:
             symbol = signal_data['symbol']
@@ -133,8 +136,28 @@ class TradingOrchestrator:
             except Exception as bybit_check_error:
                 logging.warning(f"Could not verify Bybit positions for {symbol}: {bybit_check_error}")
 
-            # 1) Calcolo livelli (size/margin/SL/TP)
-            levels = self.risk_calculator.calculate_position_levels(market_data, side, confidence, balance)
+            # 1) 🆕 PORTFOLIO SIZING: Usa margin precalcolato se fornito
+            if margin_override is not None:
+                # Portfolio sizing: usa margin fornito
+                notional_value = margin_override * config.LEVERAGE
+                position_size = notional_value / market_data.price
+                
+                # Crea PositionLevels con margin override
+                from core.risk_calculator import PositionLevels
+                levels = PositionLevels(
+                    margin=margin_override,
+                    position_size=position_size,
+                    stop_loss=0,  # Calcolato dopo
+                    take_profit=0,  # Non usato
+                    risk_pct=0,
+                    reward_pct=0,
+                    risk_reward_ratio=0
+                )
+                logging.info(colored(f"💰 Using PORTFOLIO SIZING: ${margin_override:.2f} margin (precalculated)", "cyan"))
+            else:
+                # Fallback: calcolo classico
+                levels = self.risk_calculator.calculate_position_levels(market_data, side, confidence, balance)
+                logging.debug(f"⚠️ Using fallback margin calculation: ${levels.margin:.2f}")
 
             # 2) Portfolio check
             existing_margins = [pos.position_size / pos.leverage for pos in self.position_manager.get_active_positions()]
@@ -181,7 +204,45 @@ class TradingOrchestrator:
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
 
-            # 7) Create position in tracker (NO stop loss/trailing)
+            # 7) Calculate and apply FIXED Stop Loss (-5%)
+            stop_loss_price = self.risk_calculator.calculate_stop_loss_fixed(
+                market_data.price, side
+            )
+            
+            # Normalize SL price for Bybit precision
+            normalized_sl = await _normalize_sl_price_new(
+                exchange, symbol, side, market_data.price, stop_loss_price
+            )
+            
+            # Apply SL on Bybit (NO take profit)
+            sl_result = await self.order_manager.set_trading_stop(
+                exchange, symbol, 
+                stop_loss=normalized_sl,
+                take_profit=None  # NO TP as requested
+            )
+            
+            if sl_result.success:
+                # Calculate REAL margin loss percentage from ACTUAL normalized SL
+                price_change_pct = abs((normalized_sl - market_data.price) / market_data.price) * 100
+                margin_loss_pct = price_change_pct * config.LEVERAGE
+                
+                logging.info(colored(
+                    f"🛡️ {symbol}: Stop Loss set at ${normalized_sl:.6f}", "green"
+                ))
+                logging.info(colored(
+                    f"   📊 Rischio REALE: {price_change_pct:.2f}% prezzo × {config.LEVERAGE}x leva = "
+                    f"-{margin_loss_pct:.1f}% MARGIN", "yellow"
+                ))
+                logging.debug(colored(
+                    f"   ℹ️ Target era -5% prezzo (-50% margin), applicato -{price_change_pct:.2f}% "
+                    f"(Bybit precision adjustment)", "cyan"
+                ))
+            else:
+                logging.warning(colored(
+                    f"⚠️ {symbol}: Stop Loss failed to set: {sl_result.error}", "yellow"
+                ))
+            
+            # 8) Create position in tracker (SL già applicato su Bybit)
             position_usd_value = levels.margin * config.LEVERAGE  # USD notional value
             
             position_id = self.position_manager.thread_safe_create_position(
@@ -191,13 +252,17 @@ class TradingOrchestrator:
                 position_size=position_usd_value,  # USD value
                 leverage=config.LEVERAGE,
                 confidence=confidence
+                # Note: SL già applicato su Bybit, non serve passarlo al tracker
             )
             
-            logging.info(colored(f"✅ {symbol}: Position opened successfully (no stop loss)", "green"))
+            logging.info(colored(
+                f"✅ {symbol}: Position opened with fixed SL protection", "green"
+            ))
 
             return TradingResult(True, position_id, "", {
                 'main': market_result.order_id,
-                'note': 'Position opened without stop loss/trailing'
+                'stop_loss': 'set' if sl_result.success else 'failed',
+                'sl_price': normalized_sl
             })
 
         except Exception as e:
@@ -210,7 +275,7 @@ class TradingOrchestrator:
     # --------------------------------------------------------------------- #
     async def protect_existing_positions(self, exchange) -> Dict[str, TradingResult]:
         """
-        Sincronizza posizioni reali da Bybit e importa nel tracker (NO stop loss/trailing)
+        Sincronizza posizioni reali da Bybit e applica Stop Loss -5% se mancante
         """
         results: Dict[str, TradingResult] = {}
 
@@ -227,18 +292,61 @@ class TradingOrchestrator:
             
             if newly_opened:
                 logging.info(colored(f"📥 Synced {len(newly_opened)} positions from Bybit", "cyan"))
+                logging.info(colored(f"🛡️ Applying Stop Loss protection to synced positions...", "yellow"))
 
-            # Register synced positions
+            # Apply SL protection to synced positions
             for position in newly_opened:
-                results[position.symbol] = TradingResult(
-                    True,
-                    position.position_id,
-                    "",
-                    {'tracking_type': 'bybit_sync', 'note': 'Position synced without protection'}
-                )
-                
-                symbol_short = position.symbol.replace('/USDT:USDT', '')
-                logging.info(colored(f"✅ {symbol_short}: Position synced (no stop loss)", "green"))
+                try:
+                    symbol = position.symbol
+                    symbol_short = symbol.replace('/USDT:USDT', '')
+                    
+                    # Calculate SL -5% from entry price
+                    stop_loss_price = self.risk_calculator.calculate_stop_loss_fixed(
+                        position.entry_price, position.side
+                    )
+                    
+                    # Normalize SL price
+                    normalized_sl = await _normalize_sl_price_new(
+                        exchange, symbol, position.side, 
+                        position.entry_price, stop_loss_price
+                    )
+                    
+                    # Apply SL on Bybit
+                    sl_result = await self.order_manager.set_trading_stop(
+                        exchange, symbol,
+                        stop_loss=normalized_sl,
+                        take_profit=None
+                    )
+                    
+                    if sl_result.success:
+                        logging.info(colored(
+                            f"✅ {symbol_short}: Stop Loss set at ${normalized_sl:.6f} (-5%)",
+                            "green"
+                        ))
+                        results[symbol] = TradingResult(
+                            True, position.position_id, "",
+                            {'tracking_type': 'bybit_sync', 'sl_applied': True, 'sl_price': normalized_sl}
+                        )
+                    else:
+                        logging.warning(colored(
+                            f"⚠️ {symbol_short}: Failed to set SL: {sl_result.error}",
+                            "yellow"
+                        ))
+                        results[symbol] = TradingResult(
+                            True, position.position_id, "",
+                            {'tracking_type': 'bybit_sync', 'sl_applied': False, 'error': sl_result.error}
+                        )
+                    
+                except Exception as pos_error:
+                    symbol_short = position.symbol.replace('/USDT:USDT', '')
+                    logging.error(colored(
+                        f"❌ {symbol_short}: Error applying SL: {pos_error}",
+                        "red"
+                    ))
+                    results[position.symbol] = TradingResult(
+                        True, position.position_id, str(pos_error),
+                        {'tracking_type': 'bybit_sync', 'sl_applied': False}
+                    )
             
             return results
 

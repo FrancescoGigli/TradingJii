@@ -226,11 +226,11 @@ async def get_real_balance(exchange):
             # Clean balance display - no verbose logging
             logging.info(f"💰 Total Wallet Balance: ${usdt_balance:.2f} (Unified Account)")
             logging.info("============================================================")
-            logging.info("✅ LIVE MODE BALANCE RECOVERY SUCCESS")
-            logging.info("💳 Account Type: Bybit Unified Account") 
-            logging.info(f"💰 USDT ONLY: ${usdt_balance:.2f} USD")
-            logging.info(f"🔑 Source: {found_key}")
-            logging.info(f"🚀 Ready for live trading with ${usdt_balance:.2f}")
+            logging.info(">>> LIVE MODE BALANCE RECOVERY SUCCESS")
+            logging.info(">>> Account Type: Bybit Unified Account")
+            logging.info(f">>> USDT ONLY: ${usdt_balance:.2f} USD")
+            logging.info(f">>> Source: {found_key}")
+            logging.info(f">>> Ready for live trading with ${usdt_balance:.2f}")
             logging.info("============================================================")
         
         return usdt_balance

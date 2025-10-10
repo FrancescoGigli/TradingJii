@@ -15,6 +15,7 @@ GARANTISCE: Calcoli accurati e configurabili
 import logging
 from typing import Tuple, Dict, Optional
 from dataclasses import dataclass
+from termcolor import colored
 from config import (
     LEVERAGE,
     # Dynamic Position Sizing
@@ -275,6 +276,46 @@ class RiskCalculator:
             logging.error(f"Error calculating dynamic margin: {e}")
             return self.position_conservative  # Safe fallback
     
+    def calculate_stop_loss_fixed(self, entry_price: float, side: str) -> float:
+        """
+        🛡️ FIXED STOP LOSS: -5% contro posizione
+        
+        Calcola stop loss fisso al 5% dal prezzo di entrata:
+        - LONG: SL = entry × 0.95 (-5%)
+        - SHORT: SL = entry × 1.05 (+5%)
+        
+        Con leva 10x: -5% prezzo = -50% margin
+        
+        Args:
+            entry_price: Prezzo di entrata posizione
+            side: Direzione posizione ('buy'/'long' o 'sell'/'short')
+            
+        Returns:
+            float: Prezzo stop loss
+        """
+        try:
+            from config import SL_FIXED_PCT
+            
+            if side.lower() in ['buy', 'long']:
+                # LONG: Stop loss sotto entry (-5%)
+                stop_loss = entry_price * (1 - SL_FIXED_PCT)
+            else:  # SELL/SHORT
+                # SHORT: Stop loss sopra entry (+5%)
+                stop_loss = entry_price * (1 + SL_FIXED_PCT)
+            
+            logging.debug(
+                f"🛡️ Fixed SL: Entry ${entry_price:.6f} | "
+                f"Side {side.upper()} | SL ${stop_loss:.6f} "
+                f"({'-' if side.lower() in ['buy', 'long'] else '+'}5%)"
+            )
+            
+            return stop_loss
+            
+        except Exception as e:
+            logging.error(f"Error calculating fixed stop loss: {e}")
+            # Safe fallback
+            return entry_price * (0.95 if side.lower() in ['buy', 'long'] else 1.05)
+    
     def calculate_take_profit_price(self, entry_price: float, side: str, 
                                    stop_loss: float, ratio: float = None) -> float:
         """
@@ -324,6 +365,9 @@ class RiskCalculator:
         """
         Calculate complete position levels (margin, size, SL, TP)
         
+        NOTE: Margin will be overridden by portfolio-based sizing in trading_engine
+        This is just for fallback calculations
+        
         Args:
             market_data: Market data (price, ATR, volatility)
             side: Position side
@@ -334,7 +378,7 @@ class RiskCalculator:
             PositionLevels: Complete position setup data
         """
         try:
-            # 1. Calculate dynamic margin with ADX for intelligent position sizing
+            # 1. Calculate dynamic margin (will be overridden by portfolio sizing)
             atr_pct = (market_data.atr / market_data.price) * 100
             margin = self.calculate_dynamic_margin(
                 atr_pct, confidence, market_data.volatility, balance, market_data.adx
@@ -344,18 +388,14 @@ class RiskCalculator:
             notional_value = margin * LEVERAGE
             position_size = notional_value / market_data.price
             
-            # 3. Calculate stop loss (simplified - no SL system)
-            # Placeholder values since SL system was removed
-            if side.lower() == 'buy':
-                stop_loss = market_data.price * 0.94  # -6%
-            else:
-                stop_loss = market_data.price * 1.06  # +6%
+            # 3. FIX: Use correct stop loss function (-5% = -50% margin with 10x)
+            stop_loss = self.calculate_stop_loss_fixed(market_data.price, side)
             
             # 4. Calculate take profit
             take_profit = self.calculate_take_profit_price(market_data.price, side, stop_loss)
             
-            # 5. Calculate percentages
-            if side.lower() == 'buy':
+            # 5. Calculate percentages with CORRECT -5% SL
+            if side.lower() in ['buy', 'long']:
                 risk_pct = ((market_data.price - stop_loss) / market_data.price) * 100
                 reward_pct = ((take_profit - market_data.price) / market_data.price) * 100
             else:
@@ -377,21 +417,21 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error calculating position levels: {e}")
-            # CRITICAL FIX: Return safe fallback levels with higher margin
-            fallback_margin = self.base_margin  # Use the new higher base (40.0)
+            # CRITICAL FIX: Fallback with correct -5% SL
+            fallback_margin = self.base_margin
             fallback_notional = fallback_margin * LEVERAGE
             
-            # Simple fallback SL (no SL system)
-            fallback_sl = market_data.price * (0.94 if side.lower() == 'buy' else 1.06)
+            # Use correct -5% SL function
+            fallback_sl = self.calculate_stop_loss_fixed(market_data.price, side)
             
             return PositionLevels(
                 margin=fallback_margin,
                 position_size=fallback_notional / market_data.price,
                 stop_loss=fallback_sl,
-                take_profit=market_data.price * (1.10 if side.lower() == 'buy' else 0.90),
-                risk_pct=6.0,
+                take_profit=market_data.price * (1.10 if side.lower() in ['buy', 'long'] else 0.90),
+                risk_pct=5.0,  # Correct: 5% price with -5% SL
                 reward_pct=10.0,
-                risk_reward_ratio=1.67
+                risk_reward_ratio=2.0
             )
     
     def validate_portfolio_margin(self, existing_margins: list, new_margin: float, 
@@ -429,71 +469,91 @@ class RiskCalculator:
             logging.error(f"Portfolio validation error: {e}")
             return False, f"Validation error: {e}"
 
-    def calculate_portfolio_based_margins(self, signals: list, available_balance: float) -> list:
+    def calculate_portfolio_based_margins(self, signals: list, available_balance: float, total_wallet: float = None) -> list:
         """
-        🆕 NUOVO SISTEMA: Portfolio-based position sizing
+        🆕 CONFIDENCE-PROPORTIONAL SIZING
         
-        Calcola margin per top N segnali usando sistema a pesi fissi:
-        - Prende top 5 segnali (ordinati per confidence)
-        - Assegna pesi: [1.5, 1.3, 1.0, 0.8, 0.7]
-        - Distribuisce balance proporzionalmente
-        - Usa quasi tutto il balance disponibile (98%)
+        Sistema semplice e fair:
+        - base_size = wallet / 5
+        - margin[i] = base_size × confidence[i]
+        
+        Esempio con wallet $624:
+        - Signal 1 (100% conf) → $124.80 × 1.00 = $124.80
+        - Signal 2 (100% conf) → $124.80 × 1.00 = $124.80
+        - Signal 3 (100% conf) → $124.80 × 1.00 = $124.80
+        - Signal 4 (100% conf) → $124.80 × 1.00 = $124.80
+        - Signal 5 (74% conf)  → $124.80 × 0.74 = $92.35
+        TOTALE: $591.55 (94.8% del wallet)
         
         Args:
             signals: Lista segnali ordinati per confidence (desc)
-            available_balance: Balance USDT disponibile
+            available_balance: Balance disponibile (per auto-scaling)
+            total_wallet: Wallet TOTALE (preferito per sizing)
             
         Returns:
             list: Lista di margin amounts per ogni segnale
         """
         try:
-            from config import (
-                MAX_CONCURRENT_POSITIONS,
-                POSITION_SIZING_WEIGHTS,
-                PORTFOLIO_BALANCE_USAGE
-            )
+            from config import MAX_CONCURRENT_POSITIONS
             
             # 1. Prendi top N segnali (max 5)
             n_signals = min(len(signals), MAX_CONCURRENT_POSITIONS)
             top_signals = signals[:n_signals]
             
-            # 2. Usa i primi N pesi
-            weights = POSITION_SIZING_WEIGHTS[:n_signals]
-            total_weight = sum(weights)
+            # 2. Usa WALLET TOTALE per sizing
+            wallet_for_sizing = total_wallet if total_wallet is not None else available_balance
             
-            # 3. Balance da usare (98% per lasciare buffer)
-            usable_balance = available_balance * PORTFOLIO_BALANCE_USAGE
+            # 3. CALCOLO SEMPLICE: base size ÷ N positions
+            base_size = wallet_for_sizing / MAX_CONCURRENT_POSITIONS
             
-            # 4. Calcola margin per ognuno
+            # 4. Margin proporzionale alla confidence
             margins = []
-            for i in range(n_signals):
-                proportion = weights[i] / total_weight
-                margin = usable_balance * proportion
+            for i, signal in enumerate(top_signals):
+                confidence = signal.get('confidence', 0.7)  # 0.742 = 74.2%
+                margin = base_size * confidence
                 margins.append(margin)
                 
                 logging.debug(
-                    f"📊 Signal {i+1}/{n_signals}: "
-                    f"weight={weights[i]:.1f}, "
-                    f"proportion={proportion:.1%}, "
-                    f"margin=${margin:.2f}"
+                    f"📊 Signal {i+1}/{n_signals}: {signal.get('symbol', 'N/A')} "
+                    f"conf={confidence:.1%} → margin=${margin:.2f}"
                 )
             
-            # 5. Log summary
-            total_margin = sum(margins)
+            total_requested = sum(margins)
+            
+            # 5. AUTO-SCALING se necessario
+            if total_requested > available_balance:
+                scaling_factor = available_balance / total_requested
+                scaled_margins = [m * scaling_factor for m in margins]
+                total_scaled = sum(scaled_margins)
+                
+                logging.info(colored(
+                    f"📊 AUTO-SCALING APPLIED:\n"
+                    f"   Requested: ${total_requested:.2f}\n"
+                    f"   Available: ${available_balance:.2f}\n"
+                    f"   Scaling: {scaling_factor:.1%}\n"
+                    f"   Final: ${total_scaled:.2f}",
+                    "cyan"
+                ))
+                
+                margins = scaled_margins
+                total_requested = total_scaled
+            
+            # 6. Log summary
+            wallet_usage = (total_requested / wallet_for_sizing) * 100
             logging.info(
-                f"💰 PORTFOLIO SIZING: {n_signals} positions\n"
-                f"   Balance: ${available_balance:.2f}\n"
-                f"   Usable: ${usable_balance:.2f} ({PORTFOLIO_BALANCE_USAGE:.0%})\n"
-                f"   Allocated: ${total_margin:.2f}\n"
+                f"💰 CONFIDENCE-PROPORTIONAL SIZING:\n"
+                f"   Total Wallet: ${wallet_for_sizing:.2f}\n"
+                f"   Base Size: ${base_size:.2f} per position\n"
+                f"   {n_signals} positions: ${total_requested:.2f} ({wallet_usage:.1f}%)\n"
                 f"   Range: ${min(margins):.2f} - ${max(margins):.2f}"
             )
             
             return margins
             
         except Exception as e:
-            logging.error(f"Portfolio-based margin calculation failed: {e}")
-            # Fallback: divide equally
-            fallback_margin = (available_balance * 0.95) / max(1, len(signals[:5]))
+            logging.error(f"Confidence-proportional sizing failed: {e}")
+            # Fallback: equal distribution
+            fallback_margin = available_balance / max(1, len(signals[:5]))
             return [fallback_margin] * min(len(signals), 5)
 
 # Global risk calculator instance

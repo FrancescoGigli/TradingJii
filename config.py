@@ -54,7 +54,7 @@ if not API_KEY or not API_SECRET:
 TIME_SYNC_MAX_RETRIES = 5              # Maximum sync attempts before giving up
 TIME_SYNC_RETRY_DELAY = 3              # Seconds between retry attempts
 TIME_SYNC_INITIAL_RECV_WINDOW = 60000  # 60 seconds for initial sync (more tolerant)
-TIME_SYNC_NORMAL_RECV_WINDOW = 20000   # 20 seconds for normal operations (tighter)
+TIME_SYNC_NORMAL_RECV_WINDOW = 60000   # INCREASED: 60 seconds for normal operations (prevents desync)
 MANUAL_TIME_OFFSET = None              # Optional manual offset in milliseconds (None = auto)
 
 exchange_config = {
@@ -63,7 +63,7 @@ exchange_config = {
     "enableRateLimit": True,
     "options": {
         "adjustForTimeDifference": True,  # Enable automatic time adjustment
-        "recvWindow": TIME_SYNC_INITIAL_RECV_WINDOW,  # Start with larger window
+        "recvWindow": TIME_SYNC_NORMAL_RECV_WINDOW,  # Use consistent window (60s)
         "timeDifference": 0,  # Will be auto-adjusted by ccxt
     },
 }
@@ -120,15 +120,47 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # 🛡️ STOP LOSS & TAKE PROFIT CONFIGURATION
 # ==============================================================================
 # Stop Loss settings
-SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss
+SL_USE_FIXED = True                  # Use fixed percentage SL (True) or ATR-based (False)
+SL_FIXED_PCT = 0.05                  # Fixed 5% stop loss against position
+SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss (if not using fixed)
 SL_PRICE_PCT_FALLBACK = 0.06        # 6% fallback if ATR not available
 SL_MIN_DISTANCE_PCT = 0.02          # Minimum 2% distance from entry
 SL_MAX_DISTANCE_PCT = 0.10          # Maximum 10% distance from entry
 
-# Take Profit settings
+# Take Profit settings (NOT USED - positions managed by trailing only)
+TP_ENABLED = False                   # Take profit disabled (using trailing stop instead)
 TP_RISK_REWARD_RATIO = 2.0          # 2:1 reward:risk ratio
 TP_MAX_PROFIT_PCT = 0.15            # Maximum 15% profit target
 TP_MIN_PROFIT_PCT = 0.03            # Minimum 3% profit target
+
+# ==============================================================================
+# 🎪 TRAILING STOP CONFIGURATION (OPTIMIZED)
+# ==============================================================================
+# Dynamic trailing stop that follows price at fixed distance
+
+# Master switch
+TRAILING_ENABLED = True              # Enable trailing stop system
+
+# Activation trigger
+TRAILING_TRIGGER_PCT = 0.01          # Activate at +1% price movement (+10% with 10x leverage)
+
+# Protection strategy (NEW SYSTEM)
+TRAILING_DISTANCE_PCT = 0.10         # Keep SL at -10% from CURRENT price (not max profit)
+TRAILING_DISTANCE_OPTIMAL = 0.08     # Optimal position: -8% from current price
+TRAILING_DISTANCE_UPDATE = 0.10      # Update threshold: when SL reaches -10% from current
+
+# Update settings (optimized for performance)
+TRAILING_UPDATE_INTERVAL = 60        # Check every 60 seconds (balanced performance)
+TRAILING_MIN_CHANGE_PCT = 0.01       # Only update SL if change >1% (reduce API calls)
+
+# Performance optimizations
+TRAILING_SILENT_MODE = True          # Minimal logging (only important events)
+TRAILING_USE_BATCH_FETCH = True      # Batch fetch prices for multiple positions
+TRAILING_USE_CACHE = True            # Leverage SmartAPIManager cache (70-90% hit rate)
+
+# Safety limits
+TRAILING_MAX_POSITIONS = 20          # Max positions to monitor simultaneously
+TRAILING_MIN_PROFIT_TO_ACTIVATE = 0.005  # Minimum 0.5% profit before activation check
 
 # ==============================================================================
 # 📡 SMART API MANAGER CACHE CONFIG

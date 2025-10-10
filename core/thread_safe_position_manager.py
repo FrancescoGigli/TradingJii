@@ -33,6 +33,18 @@ else:
 # Removed: Online Learning / Post-mortem system (not functioning)
 
 @dataclass
+class TrailingStopData:
+    """Trailing stop tracking data for position protection"""
+    enabled: bool = False
+    trigger_price: float = 0.0
+    trigger_pct: float = 0.01  # +1% default trigger
+    protection_pct: float = 0.50  # Protect 50% of max profit
+    max_favorable_price: float = 0.0
+    current_stop_loss: float = 0.0
+    last_update_time: float = 0.0
+    activation_time: Optional[str] = None
+
+@dataclass
 class ThreadSafePosition:
     """Position data structure ottimizzata per thread safety"""
     position_id: str
@@ -53,7 +65,8 @@ class ThreadSafePosition:
     unrealized_pnl_usd: float = 0.0
     max_favorable_pnl: float = 0.0
     
-    # No trailing system - simplified position tracking
+    # Trailing stop system (OPTIMIZED)
+    trailing_data: Optional[TrailingStopData] = None
     
     # Metadata
     confidence: float = 0.7
@@ -82,14 +95,12 @@ class ThreadSafePositionManager:
     - Performance ottimizzate (minimal lock time)
     """
     
-    def __init__(self, storage_file: str = "thread_safe_positions.json"):
-        self.storage_file = storage_file
-        
+    def __init__(self):
         # THREAD SAFETY: RLock per operations annidate
         self._lock = threading.RLock()  # Reentrant per nested calls
         self._read_lock = threading.RLock()  # Separato per read operations
         
-        # Position storage
+        # Position storage (IN-MEMORY ONLY - NO PERSISTENCE)
         self._open_positions: Dict[str, ThreadSafePosition] = {}
         self._closed_positions: Dict[str, ThreadSafePosition] = {}
         
@@ -102,8 +113,7 @@ class ThreadSafePositionManager:
         self._operation_count = 0
         self._lock_contention_count = 0
         
-        # Load existing data
-        self.load_positions()
+        logging.info("🔒 ThreadSafePositionManager: IN-MEMORY MODE (no persistence)")
         
 
     
@@ -352,9 +362,9 @@ class ThreadSafePositionManager:
                 )
                 
                 self._open_positions[position_id] = position
-                self._save_positions_unsafe()  # Already in lock
+                # NO SAVE - IN-MEMORY ONLY
                 
-                logging.info(f"🔒 Thread-safe position created with unified SL: {position_id}")
+                logging.info(f"🔒 Thread-safe position created (in-memory): {position_id}")
                 return position_id
                 
         except Exception as e:
@@ -720,10 +730,13 @@ class ThreadSafePositionManager:
     
     def _save_positions_unsafe(self):
         """
-        UNSAFE: Save positions (use only when already in lock)
+        🚫 DISABLED: No persistence - In-memory only mode
         
-        CRITICAL FIX: OS-level file locking per prevenire corruzione JSON
+        All position data stays in RAM. Restarting bot = fresh start.
         """
+        return  # NO SAVE - System disabled
+        
+        # OLD CODE KEPT FOR REFERENCE (disabled)
         try:
             # Convert to serializable format (simplified - no legacy trailing_data)
             open_positions_dict = {}
@@ -872,7 +885,15 @@ class ThreadSafePositionManager:
     # ========================================
     
     def load_positions(self):
-        """Load positions from storage with thread safety and corruption recovery"""
+        """
+        🚫 DISABLED: No persistence - In-memory only mode
+        
+        Skips loading from file. All positions start fresh.
+        """
+        logging.info("🔒 Load disabled - starting fresh in-memory session")
+        return  # NO LOAD - System disabled
+        
+        # OLD CODE KEPT FOR REFERENCE (disabled)
         try:
             with self._lock:
                 with open(self.storage_file, 'r') as f:
@@ -1020,6 +1041,239 @@ class ThreadSafePositionManager:
         except Exception as e:
             logging.error(f"🔒 Performance stats failed: {e}")
             return {'error': str(e)}
+    
+    async def update_trailing_stops(self, exchange) -> int:
+        """
+        🎪 TRAILING STOP SYSTEM (OPTIMIZED)
+        
+        Aggiorna trailing stops per posizioni in profit con sistema dinamico 50%.
+        Chiamato ogni 60s dal trading engine monitoring loop.
+        
+        Performance Optimizations:
+        - Batch price fetching con SmartAPIManager cache
+        - Silent mode logging (solo eventi importanti)
+        - Update SL solo se cambio >1%
+        
+        Args:
+            exchange: Bybit exchange instance
+            
+        Returns:
+            int: Numero posizioni con trailing aggiornato
+        """
+        from config import (
+            TRAILING_ENABLED,
+            TRAILING_TRIGGER_PCT,
+            TRAILING_SILENT_MODE,
+            TRAILING_USE_BATCH_FETCH,
+            TRAILING_USE_CACHE
+        )
+        
+        if not TRAILING_ENABLED:
+            return 0
+        
+        try:
+            # Get active positions (thread-safe)
+            active_positions = self.safe_get_all_active_positions()
+            
+            if not active_positions:
+                return 0
+            
+            # Batch fetch prices (optimized)
+            symbols = [pos.symbol for pos in active_positions]
+            
+            if TRAILING_USE_BATCH_FETCH and TRAILING_USE_CACHE:
+                # Use SmartAPIManager for cache-optimized batch fetch
+                from core.smart_api_manager import global_smart_api_manager
+                tickers_data = await global_smart_api_manager.fetch_multiple_tickers_batch(
+                    exchange, symbols
+                )
+            else:
+                # Fallback: sequential fetch
+                tickers_data = {}
+                for symbol in symbols:
+                    try:
+                        ticker = await exchange.fetch_ticker(symbol)
+                        tickers_data[symbol] = ticker
+                    except Exception as e:
+                        logging.debug(f"Ticker fetch failed for {symbol}: {e}")
+            
+            updates_count = 0
+            activations_count = 0
+            
+            # Process each position
+            for position in active_positions:
+                try:
+                    # Get current price from batch
+                    ticker = tickers_data.get(position.symbol)
+                    if not ticker or 'last' not in ticker:
+                        continue
+                    
+                    current_price = float(ticker['last'])
+                    
+                    # Calculate current profit %
+                    if position.side in ['buy', 'long']:
+                        profit_pct = (current_price - position.entry_price) / position.entry_price
+                    else:
+                        profit_pct = (position.entry_price - current_price) / position.entry_price
+                    
+                    # Initialize trailing_data if not present
+                    if position.trailing_data is None:
+                        position.trailing_data = TrailingStopData(
+                            trigger_pct=TRAILING_TRIGGER_PCT
+                        )
+                    
+                    trailing = position.trailing_data
+                    
+                    # DEBUG: Log position state
+                    symbol_short = position.symbol.replace('/USDT:USDT', '')
+                    logging.debug(
+                        f"[Trailing Debug] {symbol_short}: profit={profit_pct:.2%}, "
+                        f"enabled={trailing.enabled}, max_fav={trailing.max_favorable_price:.6f}, "
+                        f"current={current_price:.6f}, sl={position.stop_loss:.6f}"
+                    )
+                    
+                    # Check if should activate trailing
+                    if not trailing.enabled:
+                        if profit_pct >= TRAILING_TRIGGER_PCT:
+                            # ACTIVATE TRAILING
+                            with self._lock:
+                                if position.position_id in self._open_positions:
+                                    pos_ref = self._open_positions[position.position_id]
+                                    if pos_ref.trailing_data is None:
+                                        pos_ref.trailing_data = TrailingStopData()
+                                    
+                                    pos_ref.trailing_data.enabled = True
+                                    pos_ref.trailing_data.max_favorable_price = current_price
+                                    pos_ref.trailing_data.activation_time = datetime.now().isoformat()
+                                    pos_ref.trailing_data.last_update_time = 0  # Force first update
+                                    
+                                    activations_count += 1
+                                    
+                                    # ALWAYS log activation (critical event)
+                                    logging.info(colored(
+                                        f"🎪 TRAILING ACTIVATED: {symbol_short} @ {profit_pct:.2%} profit "
+                                        f"(price ${current_price:.6f})",
+                                        "magenta", attrs=['bold']
+                                    ))
+                        else:
+                            # Log why not activated yet
+                            logging.debug(
+                                f"[Trailing] {symbol_short}: Waiting for activation "
+                                f"({profit_pct:.2%} < {TRAILING_TRIGGER_PCT:.2%})"
+                            )
+                        continue
+                    
+                    # NEW SYSTEM: SL always at -10% from CURRENT price (not max profit)
+                    # Optimized with -8%/-10% system to reduce API calls
+                    
+                    from config import TRAILING_DISTANCE_OPTIMAL, TRAILING_DISTANCE_UPDATE
+                    
+                    # Calculate optimal SL position (-8% from current)
+                    if position.side in ['buy', 'long']:
+                        optimal_sl = current_price * (1 - TRAILING_DISTANCE_OPTIMAL)  # -8%
+                        trigger_threshold = current_price * (1 - TRAILING_DISTANCE_UPDATE)  # -10%
+                    else:  # SHORT
+                        optimal_sl = current_price * (1 + TRAILING_DISTANCE_OPTIMAL)  # +8%
+                        trigger_threshold = current_price * (1 + TRAILING_DISTANCE_UPDATE)  # +10%
+                    
+                    # Decision logic: Update only if current SL is worse than -10% threshold
+                    should_update = False
+                    update_reason = ""
+                    
+                    if position.stop_loss == 0:
+                        # No SL set yet - always update
+                        should_update = True
+                        update_reason = "initial_sl"
+                        new_sl = optimal_sl
+                    else:
+                        # Check if current SL is too far (worse than -10% threshold)
+                        if position.side in ['buy', 'long']:
+                            # For LONG: SL is too far if it's below trigger_threshold
+                            if position.stop_loss < trigger_threshold:
+                                should_update = True
+                                update_reason = f"sl_too_far (${position.stop_loss:.6f} < ${trigger_threshold:.6f})"
+                                new_sl = optimal_sl
+                        else:  # SHORT
+                            # For SHORT: SL is too far if it's above trigger_threshold
+                            if position.stop_loss > trigger_threshold:
+                                should_update = True
+                                update_reason = f"sl_too_far (${position.stop_loss:.6f} > ${trigger_threshold:.6f})"
+                                new_sl = optimal_sl
+                    
+                    # Additional check: Never move SL against position
+                    if should_update:
+                        if position.side in ['buy', 'long']:
+                            # For LONG: never lower SL
+                            if new_sl < position.stop_loss and position.stop_loss > 0:
+                                should_update = False
+                                logging.debug(f"[Trailing] {symbol_short}: Skip - would lower SL")
+                        else:  # SHORT
+                            # For SHORT: never raise SL
+                            if new_sl > position.stop_loss and position.stop_loss > 0:
+                                should_update = False
+                                logging.debug(f"[Trailing] {symbol_short}: Skip - would raise SL")
+                    
+                    if should_update:
+                        # Update SL on Bybit
+                        from core.order_manager import global_order_manager
+                        
+                        result = await global_order_manager.set_trading_stop(
+                            exchange, position.symbol,
+                            stop_loss=new_sl,
+                            take_profit=None
+                        )
+                        
+                        if result.success:
+                            # Update in tracker atomically
+                            with self._lock:
+                                if position.position_id in self._open_positions:
+                                    pos_ref = self._open_positions[position.position_id]
+                                    pos_ref.stop_loss = new_sl
+                                    
+                                    if pos_ref.trailing_data:
+                                        pos_ref.trailing_data.current_stop_loss = new_sl
+                                        pos_ref.trailing_data.last_update_time = datetime.now().timestamp()
+                                    
+                                    self._save_positions_unsafe()
+                            
+                            updates_count += 1
+                            
+                            # Calculate distance from current price for logging
+                            distance_pct = abs((new_sl - current_price) / current_price) * 100
+                            
+                            # Calculate profit protected from entry
+                            if position.side in ['buy', 'long']:
+                                profit_protected = ((new_sl - position.entry_price) / position.entry_price) * 100
+                            else:
+                                profit_protected = ((position.entry_price - new_sl) / position.entry_price) * 100
+                            
+                            logging.info(colored(
+                                f"🎪 Trailing updated: {symbol_short} "
+                                f"SL ${position.stop_loss:.6f} → ${new_sl:.6f} "
+                                f"({update_reason}) | Distance: -{distance_pct:.1f}% | "
+                                f"Profit protected: +{max(0, profit_protected):.1f}%",
+                                "magenta"
+                            ))
+                
+                except Exception as pos_error:
+                    logging.error(f"Trailing update error for {position.symbol}: {pos_error}")
+                    continue
+            
+            # Summary log (only if changes occurred or not silent)
+            if updates_count > 0 or activations_count > 0:
+                if TRAILING_SILENT_MODE:
+                    logging.info(
+                        f"[Trailing] {activations_count} activated, "
+                        f"{updates_count} updated ({len(active_positions)} total)"
+                    )
+                else:
+                    logging.info(f"🎪 Trailing cycle: {activations_count} activations, {updates_count} updates")
+            
+            return updates_count + activations_count
+            
+        except Exception as e:
+            logging.error(f"Trailing stops update failed: {e}")
+            return 0
     
     async def check_and_close_unsafe_positions(self, exchange):
         """

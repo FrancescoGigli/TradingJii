@@ -304,13 +304,13 @@ class TradingEngine:
         max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
         signals_to_execute = tradeable_signals[: min(max_positions, len(tradeable_signals))]
         
-        # 🆕 NUOVO SISTEMA: Portfolio-based sizing
+        # 🆕 NUOVO SISTEMA: Portfolio-based sizing (basato su WALLET TOTALE)
         # Calcola margin per i segnali selezionati usando pesi fissi
         if signals_to_execute and self.clean_modules_available:
             portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
-                signals_to_execute, available_balance
+                signals_to_execute, available_balance, total_wallet=usdt_balance
             )
-            logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins", "cyan"))
+            logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins (based on total wallet)", "cyan"))
         else:
             portfolio_margins = []
         
@@ -433,8 +433,14 @@ class TradingEngine:
                 # Show executing card
                 display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "EXECUTING")
                 
-                # Execute the trade
-                result = await self.global_trading_orchestrator.execute_new_trade(exchange, signal, market_data, available_balance)
+                # 🆕 Execute the trade with PORTFOLIO MARGIN
+                # Pass precalculated margin from portfolio sizing
+                margin_to_use = portfolio_margins[i-1] if (portfolio_margins and i-1 < len(portfolio_margins)) else None
+                
+                result = await self.global_trading_orchestrator.execute_new_trade(
+                    exchange, signal, market_data, available_balance, 
+                    margin_override=margin_to_use
+                )
                 
                 if result.success:
                     # Success card
@@ -499,6 +505,29 @@ class TradingEngine:
                 await self.position_manager.sync_with_bybit(exchange)
             except Exception as e:
                 logging.warning(f"Position sync error: {e}")
+
+        # 🎪 TRAILING STOP MANAGEMENT (every 60s)
+        if not config.DEMO_MODE and config.TRAILING_ENABLED:
+            try:
+                # Initialize timestamp tracker if not exists
+                if not hasattr(self, '_last_trailing_update'):
+                    self._last_trailing_update = 0
+                
+                current_time = time.time()
+                time_since_last_update = current_time - self._last_trailing_update
+                
+                # Update trailing stops every 60s
+                if time_since_last_update >= config.TRAILING_UPDATE_INTERVAL:
+                    updates_count = await self.position_manager.update_trailing_stops(exchange)
+                    self._last_trailing_update = current_time
+                    
+                    if updates_count > 0 and not config.TRAILING_SILENT_MODE:
+                        enhanced_logger.display_table(
+                            f"🎪 Trailing stops updated: {updates_count} positions", 
+                            "cyan"
+                        )
+            except Exception as trailing_error:
+                logging.error(f"Trailing stops update error: {trailing_error}")
 
         # Safety manager - MIGRATED to position_manager
         if not config.DEMO_MODE:
