@@ -150,7 +150,7 @@ TRAILING_DISTANCE_OPTIMAL = 0.08     # Optimal position: -8% from current price
 TRAILING_DISTANCE_UPDATE = 0.10      # Update threshold: when SL reaches -10% from current
 
 # Update settings (optimized for performance)
-TRAILING_UPDATE_INTERVAL = 60        # Check every 60 seconds (balanced performance)
+TRAILING_UPDATE_INTERVAL = 30        # Check every 30 seconds (more responsive)
 TRAILING_MIN_CHANGE_PCT = 0.01       # Only update SL if change >1% (reduce API calls)
 
 # Performance optimizations
@@ -356,16 +356,16 @@ TIMEFRAME_WEIGHTS = {
 # Position Limits & Sizing Strategy
 # ----------------------------------------------------------------------
 # NUOVO SISTEMA: Portfolio-based dynamic sizing
-# - Max 5 posizioni per volta
+# - Max 10 posizioni per volta (balance diviso per 10)
 # - Usa tutto il balance disponibile
 # - Più margin ai segnali migliori (ordinati per confidence)
 
-MAX_CONCURRENT_POSITIONS = 5  # Reduced from 20 to 5
+MAX_CONCURRENT_POSITIONS = 10  # INCREASED: 10 positions for safer risk distribution
 
-# Pesi per position sizing (da posizione 1 a 5)
+# Pesi per position sizing (da posizione 1 a 10)
 # Posizione 1 = migliore confidence, riceve più margin
-# Posizione 5 = peggiore confidence, riceve meno margin
-POSITION_SIZING_WEIGHTS = [1.5, 1.3, 1.0, 0.8, 0.7]
+# Posizione 10 = peggiore confidence, riceve meno margin
+POSITION_SIZING_WEIGHTS = [1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]
 
 # Percentuale del balance da usare (default 98% per lasciare buffer)
 PORTFOLIO_BALANCE_USAGE = 0.98
@@ -380,7 +380,7 @@ PORTFOLIO_BALANCE_USAGE = 0.98
 # - Ripartire da zero senza posizioni esistenti
 
 # Master switch
-FRESH_START_MODE = True  # True = chiudi tutto e ripulisci all'avvio
+FRESH_START_MODE = False  # False = NON chiudere posizioni all'avvio (raccomandato)
 
 # Opzioni granulari (cosa resettare)
 FRESH_START_OPTIONS = {

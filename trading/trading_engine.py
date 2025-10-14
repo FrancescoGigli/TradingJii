@@ -25,6 +25,14 @@ except ImportError:
     DECISION_EXPLAINER_AVAILABLE = False
     global_decision_explainer = None
 
+# Import trade decision logger
+try:
+    from core.trade_decision_logger import global_trade_decision_logger
+    TRADE_DECISION_LOGGER_AVAILABLE = True
+except ImportError:
+    TRADE_DECISION_LOGGER_AVAILABLE = False
+    global_trade_decision_logger = None
+
 # Removed: Online Learning / Post-mortem system (not functioning)
 # Removed: Position Safety Manager (migrated to thread_safe_position_manager)
 
@@ -38,6 +46,17 @@ except ImportError:
     global_thread_safe_position_manager = None
     logging.error("❌ CRITICAL: ThreadSafePositionManager not available — cannot proceed safely")
     raise ImportError("CRITICAL: ThreadSafePositionManager required for unified position management")
+
+# Import new integrated systems
+try:
+    from core.session_statistics import global_session_statistics
+    from core.trading_dashboard import TradingDashboard
+    from core.integrated_trailing_monitor import run_integrated_trailing_monitor
+    INTEGRATED_SYSTEMS_AVAILABLE = True
+    logging.debug("📊 Integrated systems (stats, dashboard, trailing) loaded")
+except ImportError as e:
+    INTEGRATED_SYSTEMS_AVAILABLE = False
+    logging.warning(f"⚠️ Integrated systems not available: {e}")
 
 # Trading Coordinators removed: position_opening_coordinator was unused (never called)
 # Eliminated as part of code simplification - all position logic in thread_safe_position_manager
@@ -59,6 +78,16 @@ class TradingEngine:
         # Optional components
         self.database_system_loaded = self._init_database_system()
         self.clean_modules_available = self._init_clean_modules()
+        
+        # Initialize integrated systems (stats + dashboard + trailing)
+        if INTEGRATED_SYSTEMS_AVAILABLE and self.clean_modules_available:
+            self.session_stats = global_session_statistics
+            self.dashboard = TradingDashboard(self.position_manager, self.session_stats)
+            logging.info("📊 Integrated systems initialized (stats, dashboard, trailing)")
+        else:
+            self.session_stats = None
+            self.dashboard = None
+            logging.warning("⚠️ Integrated systems not available - using basic mode")
 
     def _init_database_system(self):
         """Initialize database system if available"""
@@ -449,6 +478,54 @@ class TradingEngine:
                     total_margin_used += levels.margin
                     available_balance -= levels.margin
                     consecutive_insufficient_balance = 0  # FIX 3: Reset counter on success
+                    
+                    # 📊 LOG DECISION TO DATABASE
+                    if TRADE_DECISION_LOGGER_AVAILABLE:
+                        try:
+                            # Prepare market context
+                            market_context = {
+                                'volatility': volatility,
+                                'rsi_position': latest_candle.get('rsi_fast', 50.0),
+                                'trend_strength': latest_candle.get('adx', 25.0),
+                                'volume_surge': 1.0  # TODO: Calculate actual volume surge
+                            }
+                            
+                            # Prepare position details
+                            position_details = {
+                                'entry_price': current_price,
+                                'position_size': levels.position_size,
+                                'margin': levels.margin,
+                                'stop_loss': levels.stop_loss,
+                                'leverage': config.LEVERAGE
+                            }
+                            
+                            # Prepare portfolio state
+                            portfolio_state = {
+                                'available_balance': available_balance,
+                                'active_positions': open_positions_count
+                            }
+                            
+                            # Prepare market snapshots from dataframes
+                            market_snapshots = {}
+                            for tf in ['15m', '30m', '1h']:
+                                if tf in signal.get('dataframes', {}) and signal['dataframes'][tf] is not None:
+                                    df_tf = signal['dataframes'][tf]
+                                    if len(df_tf) > 0:
+                                        market_snapshots[tf] = df_tf.iloc[-1]
+                            
+                            # Log decision
+                            decision_id = global_trade_decision_logger.log_opening_decision(
+                                signal_data=signal,
+                                market_context=market_context,
+                                position_details=position_details,
+                                portfolio_state=portfolio_state,
+                                market_snapshots=market_snapshots if market_snapshots else None
+                            )
+                            
+                            if decision_id:
+                                logging.debug(f"📊 Trade decision logged with ID: {decision_id}")
+                        except Exception as log_error:
+                            logging.warning(f"⚠️ Failed to log decision: {log_error}")
                 else:
                     # Failed card  
                     display_execution_card(i, len(signals_to_execute), symbol, signal, levels, "FAILED", result.error)
@@ -529,6 +606,15 @@ class TradingEngine:
             except Exception as trailing_error:
                 logging.error(f"Trailing stops update error: {trailing_error}")
 
+        # 🔧 AUTO-FIX STOP LOSSES (every cycle)
+        if not config.DEMO_MODE:
+            try:
+                fixed_sl_count = await self.position_manager.check_and_fix_stop_losses(exchange)
+                if fixed_sl_count > 0:
+                    enhanced_logger.display_table(f"🔧 {fixed_sl_count} stop losses auto-corrected", "green")
+            except Exception as fix_error:
+                logging.error(f"SL auto-fix error: {fix_error}")
+        
         # Safety manager - MIGRATED to position_manager
         if not config.DEMO_MODE:
             try:
@@ -559,15 +645,70 @@ class TradingEngine:
                 logging.error(f"❌ Snapshot display failed: {e}")
 
     async def run_continuous_trading(self, exchange, xgb_models, xgb_scalers):
+        """
+        Run continuous trading with integrated systems (trailing monitor + dashboard)
+        
+        Parallel tasks:
+        - Trading cycle (every 15 min)
+        - Trailing monitor (every 30s)
+        - Dashboard display (every 30s)
+        """
+        
+        # Initialize session balance for statistics
+        if self.session_stats:
+            if not config.DEMO_MODE:
+                real_balance = await get_real_balance(exchange)
+                if real_balance and real_balance > 0:
+                    self.session_stats.initialize_balance(real_balance)
+                    logging.info(f"📊 Session stats initialized with ${real_balance:.2f}")
+            else:
+                self.session_stats.initialize_balance(config.DEMO_BALANCE)
+                logging.info(f"📊 Session stats initialized with ${config.DEMO_BALANCE:.2f} (DEMO)")
+        
+        # Check if integrated systems are available
+        if INTEGRATED_SYSTEMS_AVAILABLE and self.dashboard and self.session_stats:
+            logging.info(colored("🚀 Starting with INTEGRATED SYSTEMS (Trading + Trailing + Dashboard)", "green", attrs=['bold']))
+            
+            # Create parallel tasks
+            trading_task = asyncio.create_task(self._trading_loop(exchange, xgb_models, xgb_scalers))
+            trailing_task = asyncio.create_task(
+                run_integrated_trailing_monitor(exchange, self.position_manager, self.session_stats)
+            )
+            dashboard_task = asyncio.create_task(
+                self.dashboard.run_live_dashboard(exchange, update_interval=30)
+            )
+            
+            try:
+                # Run all tasks in parallel
+                await asyncio.gather(trading_task, trailing_task, dashboard_task)
+            except KeyboardInterrupt:
+                logging.info("⛔ Trading stopped by user")
+                # Cancel all tasks gracefully
+                trading_task.cancel()
+                trailing_task.cancel()
+                dashboard_task.cancel()
+                try:
+                    await asyncio.gather(trading_task, trailing_task, dashboard_task, return_exceptions=True)
+                except:
+                    pass
+            except Exception as e:
+                logging.error(f"❌ Error in integrated trading system: {e}", exc_info=True)
+        else:
+            # Fallback: Basic mode without dashboard
+            logging.warning("⚠️ Running in BASIC MODE (no integrated systems)")
+            await self._trading_loop(exchange, xgb_models, xgb_scalers)
+    
+    async def _trading_loop(self, exchange, xgb_models, xgb_scalers):
+        """Internal trading loop (runs every 15 min)"""
         while True:
             try:
                 await self.run_trading_cycle(exchange, xgb_models, xgb_scalers)
                 await self._wait_with_countdown(config.TRADE_CYCLE_INTERVAL)
             except KeyboardInterrupt:
-                logging.info("� Trading stopped by user")
+                logging.info("⛔ Trading loop stopped")
                 break
             except Exception as e:
-                logging.error(f"❌ Error in trading loop: {e}", exc_info=True)
+                logging.error(f"❌ Error in trading cycle: {e}", exc_info=True)
                 await asyncio.sleep(60)
 
     async def _wait_with_countdown(self, total_seconds: int):

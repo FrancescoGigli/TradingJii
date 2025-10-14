@@ -12,19 +12,22 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 import os
+import signal
 import numpy as np
 import warnings
 import asyncio
 import logging
+import sys
 from termcolor import colored
+from PyQt6.QtWidgets import QApplication
+from qasync import QEventLoop
 
 # Suppress runtime warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="ta")
 np.seterr(divide="ignore", invalid="ignore")
 
-# Fix Windows loop policy
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# NOTE: Windows loop policy NOT set when using qasync
+# qasync QEventLoop handles Windows compatibility automatically
 
 # Core imports
 import ccxt.async_support as ccxt_async
@@ -76,7 +79,19 @@ async def initialize_exchange():
         return None
 
     logging.info(colored("🚀 Initializing Bybit exchange connection...", "cyan"))
-    async_exchange = ccxt_async.bybit(exchange_config)
+    
+    # Configure aiohttp to use ThreadedResolver (no aiodns dependency)
+    # aiodns is incompatible with qasync QEventLoop on Windows
+    import aiohttp
+    from aiohttp.resolver import ThreadedResolver
+    
+    resolver = ThreadedResolver()
+    connector = aiohttp.TCPConnector(resolver=resolver, use_dns_cache=False)
+    session = aiohttp.ClientSession(connector=connector)
+    
+    # Create exchange with custom session
+    exchange_config_with_session = {**exchange_config, 'session': session}
+    async_exchange = ccxt_async.bybit(exchange_config_with_session)
 
     # Import time sync configuration
     from config import (
@@ -300,4 +315,17 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Create QApplication for PyQt6 dashboard
+    app = QApplication(sys.argv)
+    
+    # Create qasync event loop
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # Run main with qasync integration
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logging.info("👋 Interrupted by user")
+    finally:
+        loop.close()

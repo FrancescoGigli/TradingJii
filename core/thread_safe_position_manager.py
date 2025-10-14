@@ -100,9 +100,12 @@ class ThreadSafePositionManager:
         self._lock = threading.RLock()  # Reentrant per nested calls
         self._read_lock = threading.RLock()  # Separato per read operations
         
-        # Position storage (IN-MEMORY ONLY - NO PERSISTENCE)
+        # Position storage (WITH FILE PERSISTENCE)
         self._open_positions: Dict[str, ThreadSafePosition] = {}
         self._closed_positions: Dict[str, ThreadSafePosition] = {}
+        
+        # Storage file
+        self.storage_file = "thread_safe_positions.json"
         
         # Balance tracking (thread-safe)
         self._session_balance = 1000.0
@@ -113,7 +116,10 @@ class ThreadSafePositionManager:
         self._operation_count = 0
         self._lock_contention_count = 0
         
-        logging.info("🔒 ThreadSafePositionManager: IN-MEMORY MODE (no persistence)")
+        # Load existing positions from file
+        self.load_positions()
+        
+        logging.info("🔒 ThreadSafePositionManager: FILE PERSISTENCE MODE (saving to disk)")
         
 
     
@@ -411,6 +417,21 @@ class ThreadSafePositionManager:
                 self._session_balance += pnl_usd
                 
                 self._save_positions_unsafe()  # Already in lock
+                
+                # 📊 UPDATE TRADE DECISION IN DATABASE
+                try:
+                    from core.trade_decision_logger import global_trade_decision_logger
+                    global_trade_decision_logger.update_closing_decision(
+                        symbol=position.symbol,
+                        entry_time=position.entry_time,
+                        exit_price=exit_price,
+                        close_reason=close_reason,
+                        pnl_pct=pnl_pct,
+                        pnl_usd=pnl_usd,
+                        exit_snapshots=None  # TODO: Add exit snapshots if needed
+                    )
+                except Exception as log_error:
+                    logging.debug(f"⚠️ Failed to update decision on close: {log_error}")
                 
                 logging.info(f"🔒 Thread-safe position closed: {position.symbol} {close_reason} PnL: {pnl_pct:+.2f}%")
                 return True
@@ -730,13 +751,10 @@ class ThreadSafePositionManager:
     
     def _save_positions_unsafe(self):
         """
-        🚫 DISABLED: No persistence - In-memory only mode
+        💾 SAVE POSITIONS: Save positions to file with OS-level locking
         
-        All position data stays in RAM. Restarting bot = fresh start.
+        Thread-safe persistence to disk.
         """
-        return  # NO SAVE - System disabled
-        
-        # OLD CODE KEPT FOR REFERENCE (disabled)
         try:
             # Convert to serializable format (simplified - no legacy trailing_data)
             open_positions_dict = {}
@@ -886,14 +904,11 @@ class ThreadSafePositionManager:
     
     def load_positions(self):
         """
-        🚫 DISABLED: No persistence - In-memory only mode
+        💾 LOAD POSITIONS: Load positions from file with error handling
         
-        Skips loading from file. All positions start fresh.
+        Loads saved positions from disk. If file is corrupted, creates backup
+        and starts fresh.
         """
-        logging.info("🔒 Load disabled - starting fresh in-memory session")
-        return  # NO LOAD - System disabled
-        
-        # OLD CODE KEPT FOR REFERENCE (disabled)
         try:
             with self._lock:
                 with open(self.storage_file, 'r') as f:
@@ -1044,15 +1059,19 @@ class ThreadSafePositionManager:
     
     async def update_trailing_stops(self, exchange) -> int:
         """
-        🎪 TRAILING STOP SYSTEM (OPTIMIZED)
+        🎪 TRAILING STOP SYSTEM (FIXED)
         
-        Aggiorna trailing stops per posizioni in profit con sistema dinamico 50%.
+        FIX: Removed 'continue' after activation - now properly evaluates SL update
+        immediately after activation.
+        
+        Aggiorna trailing stops per posizioni in profit con sistema dinamico -8%/-10%.
         Chiamato ogni 60s dal trading engine monitoring loop.
         
-        Performance Optimizations:
+        Optimizations:
         - Batch price fetching con SmartAPIManager cache
         - Silent mode logging (solo eventi importanti)
-        - Update SL solo se cambio >1%
+        - Update SL solo se scende sotto -10% threshold
+        - Arrotondamento tick-only (no logica -5%)
         
         Args:
             exchange: Bybit exchange instance
@@ -1065,13 +1084,19 @@ class ThreadSafePositionManager:
             TRAILING_TRIGGER_PCT,
             TRAILING_SILENT_MODE,
             TRAILING_USE_BATCH_FETCH,
-            TRAILING_USE_CACHE
+            TRAILING_USE_CACHE,
+            TRAILING_DISTANCE_OPTIMAL,
+            TRAILING_DISTANCE_UPDATE
         )
         
         if not TRAILING_ENABLED:
             return 0
         
         try:
+            import math
+            from core.price_precision_handler import global_price_precision_handler
+            from core.order_manager import global_order_manager
+            
             # Get active positions (thread-safe)
             active_positions = self.safe_get_all_active_positions()
             
@@ -1109,8 +1134,9 @@ class ThreadSafePositionManager:
                         continue
                     
                     current_price = float(ticker['last'])
+                    symbol_short = position.symbol.replace('/USDT:USDT', '')
                     
-                    # Calculate current profit %
+                    # Calculate current profit % (price-based, not ROE)
                     if position.side in ['buy', 'long']:
                         profit_pct = (current_price - position.entry_price) / position.entry_price
                     else:
@@ -1123,14 +1149,15 @@ class ThreadSafePositionManager:
                         )
                     
                     trailing = position.trailing_data
+                    just_activated = False
                     
-                    # DEBUG: Log position state
-                    symbol_short = position.symbol.replace('/USDT:USDT', '')
-                    logging.debug(
-                        f"[Trailing Debug] {symbol_short}: profit={profit_pct:.2%}, "
-                        f"enabled={trailing.enabled}, max_fav={trailing.max_favorable_price:.6f}, "
-                        f"current={current_price:.6f}, sl={position.stop_loss:.6f}"
-                    )
+                    # DEBUG: Log position state (if not silent)
+                    if not TRAILING_SILENT_MODE:
+                        logging.debug(
+                            f"[Trailing Debug] {symbol_short}: profit={profit_pct:.2%}, "
+                            f"enabled={trailing.enabled}, current=${current_price:.6f}, "
+                            f"sl=${position.stop_loss:.6f}"
+                        )
                     
                     # Check if should activate trailing
                     if not trailing.enabled:
@@ -1145,9 +1172,10 @@ class ThreadSafePositionManager:
                                     pos_ref.trailing_data.enabled = True
                                     pos_ref.trailing_data.max_favorable_price = current_price
                                     pos_ref.trailing_data.activation_time = datetime.now().isoformat()
-                                    pos_ref.trailing_data.last_update_time = 0  # Force first update
+                                    pos_ref.trailing_data.last_update_time = 0  # Force update check
                                     
                                     activations_count += 1
+                                    just_activated = True
                                     
                                     # ALWAYS log activation (critical event)
                                     logging.info(colored(
@@ -1156,19 +1184,20 @@ class ThreadSafePositionManager:
                                         "magenta", attrs=['bold']
                                     ))
                         else:
-                            # Log why not activated yet
-                            logging.debug(
-                                f"[Trailing] {symbol_short}: Waiting for activation "
-                                f"({profit_pct:.2%} < {TRAILING_TRIGGER_PCT:.2%})"
-                            )
-                        continue
+                            # Not activated yet - skip to next position
+                            if not TRAILING_SILENT_MODE:
+                                logging.debug(
+                                    f"[Trailing] {symbol_short}: Waiting for activation "
+                                    f"({profit_pct:.2%} < {TRAILING_TRIGGER_PCT:.2%})"
+                                )
+                            continue  # Skip to next position - trailing not active yet
                     
-                    # NEW SYSTEM: SL always at -10% from CURRENT price (not max profit)
-                    # Optimized with -8%/-10% system to reduce API calls
+                    # ========================================
+                    # TRAILING IS NOW ACTIVE - CHECK FOR UPDATE
+                    # (Reaches here if trailing.enabled=True OR just_activated=True)
+                    # ========================================
                     
-                    from config import TRAILING_DISTANCE_OPTIMAL, TRAILING_DISTANCE_UPDATE
-                    
-                    # Calculate optimal SL position (-8% from current)
+                    # Calculate optimal SL position (-8%) and trigger threshold (-10%)
                     if position.side in ['buy', 'long']:
                         optimal_sl = current_price * (1 - TRAILING_DISTANCE_OPTIMAL)  # -8%
                         trigger_threshold = current_price * (1 - TRAILING_DISTANCE_UPDATE)  # -10%
@@ -1177,10 +1206,18 @@ class ThreadSafePositionManager:
                         trigger_threshold = current_price * (1 + TRAILING_DISTANCE_UPDATE)  # +10%
                     
                     # Decision logic: Update only if current SL is worse than -10% threshold
+                    # OR if just activated (first update after activation)
                     should_update = False
                     update_reason = ""
+                    new_sl = 0.0
                     
-                    if position.stop_loss == 0:
+                    if just_activated:
+                        # FORCE UPDATE: Just activated, move SL immediately to optimal position
+                        should_update = True
+                        update_reason = "just_activated"
+                        new_sl = optimal_sl
+                        logging.debug(f"[Trailing] {symbol_short}: Just activated - forcing first SL update")
+                    elif position.stop_loss == 0:
                         # No SL set yet - always update
                         should_update = True
                         update_reason = "initial_sl"
@@ -1191,36 +1228,65 @@ class ThreadSafePositionManager:
                             # For LONG: SL is too far if it's below trigger_threshold
                             if position.stop_loss < trigger_threshold:
                                 should_update = True
-                                update_reason = f"sl_too_far (${position.stop_loss:.6f} < ${trigger_threshold:.6f})"
+                                update_reason = "sl_too_far"
                                 new_sl = optimal_sl
                         else:  # SHORT
                             # For SHORT: SL is too far if it's above trigger_threshold
                             if position.stop_loss > trigger_threshold:
                                 should_update = True
-                                update_reason = f"sl_too_far (${position.stop_loss:.6f} > ${trigger_threshold:.6f})"
+                                update_reason = "sl_too_far"
                                 new_sl = optimal_sl
                     
-                    # Additional check: Never move SL against position
-                    if should_update:
+                    # Safety check: Never move SL against position (EXCEPT on first activation)
+                    if should_update and new_sl > 0 and not just_activated:
                         if position.side in ['buy', 'long']:
-                            # For LONG: never lower SL
+                            # For LONG: never lower SL (except first activation)
                             if new_sl < position.stop_loss and position.stop_loss > 0:
                                 should_update = False
                                 logging.debug(f"[Trailing] {symbol_short}: Skip - would lower SL")
                         else:  # SHORT
-                            # For SHORT: never raise SL
+                            # For SHORT: never raise SL (except first activation)
                             if new_sl > position.stop_loss and position.stop_loss > 0:
                                 should_update = False
                                 logging.debug(f"[Trailing] {symbol_short}: Skip - would raise SL")
                     
-                    if should_update:
-                        # Update SL on Bybit
-                        from core.order_manager import global_order_manager
+                    # Normalize new_sl to tick size (tick-only rounding, no -5% logic)
+                    if should_update and new_sl > 0:
+                        tick_info = await global_price_precision_handler.get_symbol_precision(
+                            exchange, position.symbol
+                        )
+                        tick_size = float(tick_info.get("tick_size", 0.01))
                         
+                        # Round to tick size in safe direction
+                        if position.side in ['buy', 'long']:
+                            # LONG: round DOWN (more conservative)
+                            new_sl = math.floor(new_sl / tick_size) * tick_size
+                        else:
+                            # SHORT: round UP (more conservative)
+                            new_sl = math.ceil(new_sl / tick_size) * tick_size
+                        
+                        # Skip if change is less than 1 tick
+                        if tick_size > 0 and abs(new_sl - position.stop_loss) < tick_size:
+                            should_update = False
+                            logging.debug(f"[Trailing] {symbol_short}: Skip - change < 1 tick")
+                    
+                    # DEBUG: Log decision
+                    if not TRAILING_SILENT_MODE and trailing.enabled:
+                        logging.debug(
+                            f"[Trailing Decision] {symbol_short}: "
+                            f"current_sl=${position.stop_loss:.6f}, "
+                            f"optimal=${optimal_sl:.6f}, threshold=${trigger_threshold:.6f}, "
+                            f"should_update={should_update}"
+                        )
+                    
+                    # Apply update to Bybit if needed
+                    if should_update and new_sl > 0:
+                        # Update SL on Bybit with correct position_idx for LONG/SHORT
                         result = await global_order_manager.set_trading_stop(
                             exchange, position.symbol,
                             stop_loss=new_sl,
-                            take_profit=None
+                            take_profit=None,
+                            side=position.side  # CRITICAL: Pass side for correct position_idx
                         )
                         
                         if result.success:
@@ -1228,6 +1294,7 @@ class ThreadSafePositionManager:
                             with self._lock:
                                 if position.position_id in self._open_positions:
                                     pos_ref = self._open_positions[position.position_id]
+                                    old_sl = pos_ref.stop_loss
                                     pos_ref.stop_loss = new_sl
                                     
                                     if pos_ref.trailing_data:
@@ -1238,7 +1305,7 @@ class ThreadSafePositionManager:
                             
                             updates_count += 1
                             
-                            # Calculate distance from current price for logging
+                            # Calculate metrics for logging
                             distance_pct = abs((new_sl - current_price) / current_price) * 100
                             
                             # Calculate profit protected from entry
@@ -1247,16 +1314,23 @@ class ThreadSafePositionManager:
                             else:
                                 profit_protected = ((position.entry_price - new_sl) / position.entry_price) * 100
                             
+                            # Log update
                             logging.info(colored(
                                 f"🎪 Trailing updated: {symbol_short} "
-                                f"SL ${position.stop_loss:.6f} → ${new_sl:.6f} "
-                                f"({update_reason}) | Distance: -{distance_pct:.1f}% | "
-                                f"Profit protected: +{max(0, profit_protected):.1f}%",
+                                f"SL ${old_sl:.6f} → ${new_sl:.6f} "
+                                f"({update_reason}) | Distance from current: -{distance_pct:.1f}% | "
+                                f"Profit protected from entry: {profit_protected:+.2f}%",
                                 "magenta"
                             ))
+                        else:
+                            logging.warning(
+                                f"[Trailing] {symbol_short}: Failed to update SL on Bybit: {result.error}"
+                            )
                 
                 except Exception as pos_error:
                     logging.error(f"Trailing update error for {position.symbol}: {pos_error}")
+                    import traceback
+                    logging.error(f"Traceback: {traceback.format_exc()}")
                     continue
             
             # Summary log (only if changes occurred or not silent)
@@ -1267,12 +1341,197 @@ class ThreadSafePositionManager:
                         f"{updates_count} updated ({len(active_positions)} total)"
                     )
                 else:
-                    logging.info(f"🎪 Trailing cycle: {activations_count} activations, {updates_count} updates")
+                    logging.info(
+                        f"🎪 Trailing cycle: {activations_count} activations, "
+                        f"{updates_count} updates ({len(active_positions)} positions)"
+                    )
             
             return updates_count + activations_count
             
         except Exception as e:
             logging.error(f"Trailing stops update failed: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            return 0
+    
+    async def check_and_fix_stop_losses(self, exchange) -> int:
+        """
+        🔧 SISTEMA DI AUTO-CORREZIONE STOP LOSS
+        
+        Controlla tutte le posizioni attive e fixa automaticamente gli stop loss
+        che non sono a -5% corretto dall'entry price.
+        
+        Chiamato ogni ciclo (15 minuti) per garantire che tutti gli SL siano corretti.
+        
+        Args:
+            exchange: Bybit exchange instance
+            
+        Returns:
+            int: Numero di stop loss corretti
+        """
+        fixed_count = 0
+        
+        try:
+            from config import SL_FIXED_PCT
+            from core.price_precision_handler import global_price_precision_handler
+            from core.order_manager import global_order_manager
+            import math
+            
+            # Tolerance: ±0.5% (es. -4.5% ~ -5.5% è OK)
+            TOLERANCE_PCT = 0.005
+            
+            # Get real positions from Bybit
+            bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
+            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
+            
+            if not active_positions:
+                return 0
+            
+            logging.info(colored("🔍 Checking stop losses for correctness...", "cyan"))
+            
+            for position in active_positions:
+                try:
+                    symbol = position.get('symbol')
+                    symbol_short = symbol.replace('/USDT:USDT', '')
+                    
+                    # SKIP positions with active trailing (they manage their own SL)
+                    # Check if this symbol has trailing active in our tracker
+                    has_active_trailing = False
+                    for pos in self._open_positions.values():
+                        if pos.symbol == symbol and pos.status == "OPEN":
+                            if hasattr(pos, 'trailing_data') and pos.trailing_data and pos.trailing_data.enabled:
+                                has_active_trailing = True
+                                break
+                    
+                    if has_active_trailing:
+                        logging.debug(f"[Auto-Fix] {symbol_short}: Skipping - trailing is active")
+                        continue
+                    
+                    # Get position data
+                    entry_price = float(position.get('entryPrice', 0))
+                    side_str = position.get('side', '').lower()
+                    
+                    # Determine if LONG or SHORT
+                    if side_str in ['buy', 'long']:
+                        side = 'buy'
+                        long_position = True
+                    elif side_str in ['sell', 'short']:
+                        side = 'sell'
+                        long_position = False
+                    else:
+                        # Fallback: determine from contracts
+                        contracts = float(position.get('contracts', 0))
+                        if contracts > 0:
+                            side = 'buy'
+                            long_position = True
+                        else:
+                            side = 'sell'
+                            long_position = False
+                    
+                    # Get current SL from Bybit
+                    current_sl = float(position.get('stopLoss', 0) or 0)
+                    
+                    if current_sl == 0:
+                        # NO STOP LOSS! Critical - fix immediately
+                        logging.warning(colored(
+                            f"⚠️ {symbol_short}: NO STOP LOSS DETECTED! Setting -5% SL...",
+                            "red", attrs=['bold']
+                        ))
+                        
+                        # Calculate correct SL
+                        if long_position:
+                            target_sl = entry_price * (1 - SL_FIXED_PCT)
+                        else:
+                            target_sl = entry_price * (1 + SL_FIXED_PCT)
+                        
+                        # Normalize to tick size
+                        normalized_sl, success = await global_price_precision_handler.normalize_stop_loss_price(
+                            exchange, symbol, side, entry_price, target_sl
+                        )
+                        
+                        if success:
+                            # Apply SL on Bybit
+                            result = await global_order_manager.set_trading_stop(
+                                exchange, symbol,
+                                stop_loss=normalized_sl,
+                                take_profit=None
+                            )
+                            
+                            if result.success:
+                                logging.info(colored(
+                                    f"✅ {symbol_short}: SL FIXED - Set to ${normalized_sl:.6f} (-5%)",
+                                    "green"
+                                ))
+                                fixed_count += 1
+                            else:
+                                logging.error(colored(
+                                    f"❌ {symbol_short}: Failed to set SL: {result.error}",
+                                    "red"
+                                ))
+                        continue
+                    
+                    # Calculate expected SL (-5% from entry)
+                    if long_position:
+                        expected_sl = entry_price * (1 - SL_FIXED_PCT)
+                        current_sl_pct = (current_sl - entry_price) / entry_price
+                        expected_sl_pct = -SL_FIXED_PCT
+                    else:
+                        expected_sl = entry_price * (1 + SL_FIXED_PCT)
+                        current_sl_pct = (current_sl - entry_price) / entry_price
+                        expected_sl_pct = +SL_FIXED_PCT
+                    
+                    # Check if SL is within tolerance
+                    sl_deviation = abs(current_sl_pct - expected_sl_pct)
+                    
+                    if sl_deviation > TOLERANCE_PCT:
+                        # SL NOT CORRECT! Fix it
+                        logging.warning(colored(
+                            f"⚠️ {symbol_short}: INCORRECT SL DETECTED!\n"
+                            f"   Current SL: ${current_sl:.6f} ({current_sl_pct*100:+.2f}%)\n"
+                            f"   Expected: ${expected_sl:.6f} ({expected_sl_pct*100:+.2f}%)\n"
+                            f"   Deviation: {sl_deviation*100:.2f}% (tolerance: {TOLERANCE_PCT*100:.1f}%)",
+                            "yellow", attrs=['bold']
+                        ))
+                        
+                        # Normalize correct SL
+                        normalized_sl, success = await global_price_precision_handler.normalize_stop_loss_price(
+                            exchange, symbol, side, entry_price, expected_sl
+                        )
+                        
+                        if success:
+                            # Apply corrected SL on Bybit
+                            result = await global_order_manager.set_trading_stop(
+                                exchange, symbol,
+                                stop_loss=normalized_sl,
+                                take_profit=None
+                            )
+                            
+                            if result.success:
+                                new_sl_pct = (normalized_sl - entry_price) / entry_price
+                                logging.info(colored(
+                                    f"✅ {symbol_short}: SL CORRECTED!\n"
+                                    f"   ${current_sl:.6f} ({current_sl_pct*100:+.2f}%) → "
+                                    f"${normalized_sl:.6f} ({new_sl_pct*100:+.2f}%)",
+                                    "green"
+                                ))
+                                fixed_count += 1
+                            else:
+                                logging.error(colored(
+                                    f"❌ {symbol_short}: Failed to update SL: {result.error}",
+                                    "red"
+                                ))
+                
+                except Exception as pos_error:
+                    logging.error(f"Error checking SL for {position.get('symbol')}: {pos_error}")
+                    continue
+            
+            if fixed_count > 0:
+                logging.info(colored(f"🔧 AUTO-FIX: Corrected {fixed_count} stop losses", "green", attrs=['bold']))
+            
+            return fixed_count
+            
+        except Exception as e:
+            logging.error(f"Error in SL auto-fix system: {e}")
             return 0
     
     async def check_and_close_unsafe_positions(self, exchange):

@@ -69,19 +69,31 @@ class OrderManager:
     async def set_trading_stop(self, exchange, symbol: str,
                                stop_loss: float = None,
                                take_profit: float = None,
-                               position_idx: int = 0) -> OrderExecutionResult:
+                               position_idx: int = None,
+                               side: str = None) -> OrderExecutionResult:
         """
         Imposta SL/TP su Bybit (endpoint: /v5/position/trading-stop)
+        
+        CRITICAL FIX: Auto-detect position_idx if not provided:
+        - position_idx=1 for LONG (Buy)
+        - position_idx=2 for SHORT (Sell)
         """
         try:
             # Converte il simbolo nel formato Bybit (BTC/USDT:USDT → BTCUSDT)
             bybit_symbol = symbol.replace('/USDT:USDT', 'USDT').replace('/', '')
 
+            # FIX: Bybit One-Way Mode requires position_idx=0 always
+            # In Hedge Mode would use: 1=LONG, 2=SHORT
+            # Most accounts use One-Way Mode, so default to 0
+            if position_idx is None:
+                position_idx = 0  # One-Way Mode (default for most accounts)
+
             sl_text = f"${stop_loss:.6f}" if stop_loss else "None"
             tp_text = f"${take_profit:.6f}" if take_profit else "None"
+            idx_text = {0: "Both", 1: "LONG", 2: "SHORT"}.get(position_idx, str(position_idx))
 
             logging.debug(colored(
-                f"🛡️ SETTING TRADING STOP: {bybit_symbol} | SL: {sl_text} | TP: {tp_text}",
+                f"🛡️ SETTING TRADING STOP: {bybit_symbol} ({idx_text}) | SL: {sl_text} | TP: {tp_text}",
                 "yellow", attrs=['bold']
             ))
 

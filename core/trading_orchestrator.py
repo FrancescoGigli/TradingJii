@@ -142,18 +142,24 @@ class TradingOrchestrator:
                 notional_value = margin_override * config.LEVERAGE
                 position_size = notional_value / market_data.price
                 
-                # Crea PositionLevels con margin override
+                # 🔧 CRITICAL FIX: Calculate SL immediately when using portfolio sizing
+                stop_loss_price_calculated = self.risk_calculator.calculate_stop_loss_fixed(
+                    market_data.price, side
+                )
+                
+                # Crea PositionLevels con margin override E SL già calcolato
                 from core.risk_calculator import PositionLevels
                 levels = PositionLevels(
                     margin=margin_override,
                     position_size=position_size,
-                    stop_loss=0,  # Calcolato dopo
+                    stop_loss=stop_loss_price_calculated,  # ✅ FIX: SL calcolato subito
                     take_profit=0,  # Non usato
-                    risk_pct=0,
+                    risk_pct=5.0,  # Fixed -5%
                     reward_pct=0,
                     risk_reward_ratio=0
                 )
                 logging.info(colored(f"💰 Using PORTFOLIO SIZING: ${margin_override:.2f} margin (precalculated)", "cyan"))
+                logging.debug(colored(f"🛡️ SL calculated (portfolio): ${stop_loss_price_calculated:.6f} (-5% from ${market_data.price:.6f})", "cyan"))
             else:
                 # Fallback: calcolo classico
                 levels = self.risk_calculator.calculate_position_levels(market_data, side, confidence, balance)

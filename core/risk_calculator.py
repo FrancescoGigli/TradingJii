@@ -473,17 +473,12 @@ class RiskCalculator:
         """
         🆕 CONFIDENCE-PROPORTIONAL SIZING
         
-        Sistema semplice e fair:
-        - base_size = wallet / 5
-        - margin[i] = base_size × confidence[i]
+        Sistema SEMPRE usa MAX_CONCURRENT_POSITIONS configurate:
+        - Con $140 → 10 posizioni da $14 ciascuna
+        - Con $500 → 10 posizioni da $50 ciascuna  
+        - Con $1000 → 10 posizioni da $100 ciascuna
         
-        Esempio con wallet $624:
-        - Signal 1 (100% conf) → $124.80 × 1.00 = $124.80
-        - Signal 2 (100% conf) → $124.80 × 1.00 = $124.80
-        - Signal 3 (100% conf) → $124.80 × 1.00 = $124.80
-        - Signal 4 (100% conf) → $124.80 × 1.00 = $124.80
-        - Signal 5 (74% conf)  → $124.80 × 0.74 = $92.35
-        TOTALE: $591.55 (94.8% del wallet)
+        Formula SEMPLICE: wallet / MAX_CONCURRENT_POSITIONS
         
         Args:
             signals: Lista segnali ordinati per confidence (desc)
@@ -496,15 +491,29 @@ class RiskCalculator:
         try:
             from config import MAX_CONCURRENT_POSITIONS
             
-            # 1. Prendi top N segnali (max 5)
-            n_signals = min(len(signals), MAX_CONCURRENT_POSITIONS)
-            top_signals = signals[:n_signals]
-            
-            # 2. Usa WALLET TOTALE per sizing
+            # 1. Usa WALLET TOTALE per sizing
             wallet_for_sizing = total_wallet if total_wallet is not None else available_balance
             
-            # 3. CALCOLO SEMPLICE: base size ÷ N positions
+            # 2. SEMPRE usa MAX_CONCURRENT_POSITIONS dal config
+            # Non importa quanto è piccolo il balance, dividi per MAX configurato
+            n_positions = MAX_CONCURRENT_POSITIONS
+            
+            # 3. Prendi top N segnali
+            n_signals = min(len(signals), n_positions)
+            top_signals = signals[:n_signals]
+            
+            # 4. CALCOLO SEMPLICE: wallet ÷ MAX_CONCURRENT_POSITIONS
             base_size = wallet_for_sizing / MAX_CONCURRENT_POSITIONS
+            
+            # Log sizing
+            logging.info(colored(
+                f"💰 FIXED POSITIONS SIZING:\n"
+                f"   Wallet: ${wallet_for_sizing:.2f}\n"
+                f"   Positions: {MAX_CONCURRENT_POSITIONS} (from config)\n"
+                f"   Base Size: ${base_size:.2f} per position\n"
+                f"   Formula: ${wallet_for_sizing:.2f} ÷ {MAX_CONCURRENT_POSITIONS}",
+                "cyan", attrs=['bold']
+            ))
             
             # 4. Margin proporzionale alla confidence
             margins = []
