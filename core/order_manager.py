@@ -74,19 +74,21 @@ class OrderManager:
         """
         Imposta SL/TP su Bybit (endpoint: /v5/position/trading-stop)
         
-        CRITICAL FIX: Auto-detect position_idx if not provided:
+        CRITICAL FIX: Auto-detect position_idx based on side:
         - position_idx=1 for LONG (Buy)
         - position_idx=2 for SHORT (Sell)
+        - position_idx=0 for One-Way Mode (if side not provided)
         """
         try:
             # Converte il simbolo nel formato Bybit (BTC/USDT:USDT → BTCUSDT)
             bybit_symbol = symbol.replace('/USDT:USDT', 'USDT').replace('/', '')
 
-            # FIX: Bybit One-Way Mode requires position_idx=0 always
-            # In Hedge Mode would use: 1=LONG, 2=SHORT
-            # Most accounts use One-Way Mode, so default to 0
+            # CRITICAL FIX: Bybit accounts are typically in One-Way Mode
+            # In One-Way Mode, position_idx MUST ALWAYS be 0, regardless of LONG/SHORT
+            # Only Hedge Mode accounts use position_idx=1 (LONG) or position_idx=2 (SHORT)
             if position_idx is None:
-                position_idx = 0  # One-Way Mode (default for most accounts)
+                position_idx = 0  # ONE-WAY MODE (default for most accounts)
+                logging.debug(f"🔧 Using position_idx=0 (One-Way Mode) for {symbol}")
 
             sl_text = f"${stop_loss:.6f}" if stop_loss else "None"
             tp_text = f"${take_profit:.6f}" if take_profit else "None"

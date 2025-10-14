@@ -221,6 +221,7 @@ class TradingOrchestrator:
             )
             
             # Apply SL on Bybit (NO take profit)
+            # position_idx=0 automatically used (One-Way Mode)
             sl_result = await self.order_manager.set_trading_stop(
                 exchange, symbol, 
                 stop_loss=normalized_sl,
@@ -317,7 +318,7 @@ class TradingOrchestrator:
                         position.entry_price, stop_loss_price
                     )
                     
-                    # Apply SL on Bybit
+                    # Apply SL on Bybit (position_idx=0 for One-Way Mode)
                     sl_result = await self.order_manager.set_trading_stop(
                         exchange, symbol,
                         stop_loss=normalized_sl,

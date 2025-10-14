@@ -1085,8 +1085,8 @@ class ThreadSafePositionManager:
             TRAILING_SILENT_MODE,
             TRAILING_USE_BATCH_FETCH,
             TRAILING_USE_CACHE,
-            TRAILING_DISTANCE_OPTIMAL,
-            TRAILING_DISTANCE_UPDATE
+            TRAILING_DISTANCE_ROE_OPTIMAL,
+            TRAILING_DISTANCE_ROE_UPDATE
         )
         
         if not TRAILING_ENABLED:
@@ -1197,13 +1197,35 @@ class ThreadSafePositionManager:
                     # (Reaches here if trailing.enabled=True OR just_activated=True)
                     # ========================================
                     
-                    # Calculate optimal SL position (-8%) and trigger threshold (-10%)
+                    # 🔧 CRITICAL FIX: Calculate SL based on ROE%, not price%!
+                    # Formula: ROE% = (price_change / entry) × leverage × 100
+                    # Reverse: price_change = (ROE% / leverage / 100) × entry
+                    
+                    from config import TRAILING_DISTANCE_ROE_OPTIMAL, TRAILING_DISTANCE_ROE_UPDATE
+                    
+                    # Calculate current ROE%
                     if position.side in ['buy', 'long']:
-                        optimal_sl = current_price * (1 - TRAILING_DISTANCE_OPTIMAL)  # -8%
-                        trigger_threshold = current_price * (1 - TRAILING_DISTANCE_UPDATE)  # -10%
+                        current_roe = ((current_price - position.entry_price) / position.entry_price) * position.leverage * 100
                     else:  # SHORT
-                        optimal_sl = current_price * (1 + TRAILING_DISTANCE_OPTIMAL)  # +8%
-                        trigger_threshold = current_price * (1 + TRAILING_DISTANCE_UPDATE)  # +10%
+                        current_roe = ((position.entry_price - current_price) / position.entry_price) * position.leverage * 100
+                    
+                    # Target ROE for optimal SL: current_roe - 8% ROE
+                    target_roe_optimal = current_roe - (TRAILING_DISTANCE_ROE_OPTIMAL * 100)  # -8% ROE
+                    target_roe_trigger = current_roe - (TRAILING_DISTANCE_ROE_UPDATE * 100)  # -10% ROE
+                    
+                    # Convert target ROE back to price
+                    # LONG: ROE = (price - entry) / entry × leverage × 100
+                    # SHORT: ROE = (entry - price) / entry × leverage × 100
+                    if position.side in ['buy', 'long']:
+                        # target_roe = (optimal_sl - entry) / entry × leverage × 100
+                        # optimal_sl = entry × (1 + target_roe / (leverage × 100))
+                        optimal_sl = position.entry_price * (1 + target_roe_optimal / (position.leverage * 100))
+                        trigger_threshold = position.entry_price * (1 + target_roe_trigger / (position.leverage * 100))
+                    else:  # SHORT
+                        # target_roe = (entry - optimal_sl) / entry × leverage × 100
+                        # optimal_sl = entry × (1 - target_roe / (leverage × 100))
+                        optimal_sl = position.entry_price * (1 - target_roe_optimal / (position.leverage * 100))
+                        trigger_threshold = position.entry_price * (1 - target_roe_trigger / (position.leverage * 100))
                     
                     # Decision logic: Update only if current SL is worse than -10% threshold
                     # OR if just activated (first update after activation)
@@ -1281,12 +1303,11 @@ class ThreadSafePositionManager:
                     
                     # Apply update to Bybit if needed
                     if should_update and new_sl > 0:
-                        # Update SL on Bybit with correct position_idx for LONG/SHORT
+                        # Update SL on Bybit (position_idx=0 for One-Way Mode)
                         result = await global_order_manager.set_trading_stop(
                             exchange, position.symbol,
                             stop_loss=new_sl,
-                            take_profit=None,
-                            side=position.side  # CRITICAL: Pass side for correct position_idx
+                            take_profit=None
                         )
                         
                         if result.success:

@@ -209,7 +209,7 @@ class TradingDashboard(QMainWindow):
     
     def _create_closed_trades_section(self) -> QGroupBox:
         """Create closed trades table"""
-        group = QGroupBox("📋 LAST 5 CLOSED POSITIONS")
+        group = QGroupBox("📋 CLOSED POSITIONS (SESSION)")
         layout = QVBoxLayout()
         
         self.closed_table = QTableWidget()
@@ -451,18 +451,21 @@ class TradingDashboard(QMainWindow):
             type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.positions_table.setItem(row, 5, type_item)
             
-            # SL % with tooltip (IMPROVEMENT 4)
+            # SL % with tooltip (IMPROVEMENT 4) - FIXED: Calculate from ENTRY price
             sl_pct_item = QTableWidgetItem()
             if pos.side in ['buy', 'long']:
-                sl_distance = ((pos.stop_loss - pos.current_price) / pos.current_price) * 100
+                # LONG: SL sotto entry = negativo
+                sl_distance = ((pos.stop_loss - pos.entry_price) / pos.entry_price) * 100
             else:
-                sl_distance = ((pos.stop_loss - pos.current_price) / pos.current_price) * 100
+                # SHORT: SL sopra entry = positivo
+                sl_distance = ((pos.stop_loss - pos.entry_price) / pos.entry_price) * 100
             
             sl_pct_item.setText(ColorHelper.format_pct(sl_distance))
             sl_pct_item.setToolTip(
-                "Distanza percentuale dello Stop Loss dal prezzo corrente\n\n"
-                "LONG: Negativo = SL sotto prezzo (corretto) ✓\n"
-                "SHORT: Positivo = SL sopra prezzo (corretto) ✓"
+                "Distanza percentuale dello Stop Loss dal prezzo di ENTRATA\n\n"
+                "LONG: -5% = SL sotto entry (protegge da -50% ROE) ✓\n"
+                "SHORT: +5% = SL sopra entry (protegge da -50% ROE) ✓\n"
+                "Trailing: SL si muove dinamicamente seguendo il prezzo"
             )
             
             if pos.side in ['buy', 'long']:
@@ -541,12 +544,16 @@ class TradingDashboard(QMainWindow):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     
     def _update_closed_trades(self):
-        """Update closed trades table"""
-        last_trades = self.session_stats.get_last_n_trades(5)
+        """Update closed trades table - show ALL session trades"""
+        # Get ALL trades from session (not just last 5)
+        all_trades = self.session_stats.closed_trades  # All closed positions from session
+        
+        # Update group title with count
+        self.closed_group.setTitle(f"📋 CLOSED POSITIONS (SESSION) - {len(all_trades)} trades")
         
         self.closed_table.setRowCount(0)
         
-        if not last_trades:
+        if not all_trades:
             self.closed_table.setRowCount(1)
             item = QTableWidgetItem("No closed trades yet")
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -554,17 +561,18 @@ class TradingDashboard(QMainWindow):
             self.closed_table.setSpan(0, 0, 1, 6)
             return
         
+        # Improved emoji mapping - focus on SL hits
         reason_emoji = {
-            "STOP_LOSS_HIT": "❌",
-            "TRAILING_STOP_HIT": "🎪",
-            "TAKE_PROFIT_HIT": "🎯",
-            "MANUAL_CLOSE": "👤",
-            "UNKNOWN": "❓"
+            "STOP_LOSS_HIT": "❌ SL Hit",
+            "TRAILING_STOP_HIT": "🎪 Trail Hit",
+            "TAKE_PROFIT_HIT": "🎯 TP Hit",
+            "MANUAL_CLOSE": "❌ SL Hit",  # Treat as SL hit (most likely)
+            "UNKNOWN": "❓ Unknown"
         }
         
-        self.closed_table.setRowCount(len(last_trades))
+        self.closed_table.setRowCount(len(all_trades))
         
-        for row, trade in enumerate(last_trades):
+        for row, trade in enumerate(all_trades):
             self.closed_table.setItem(row, 0, QTableWidgetItem(trade.symbol))
             
             entry_exit = f"${trade.entry_price:,.4f} → ${trade.exit_price:,.4f}"

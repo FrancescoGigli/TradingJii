@@ -144,10 +144,12 @@ TRAILING_ENABLED = True              # Enable trailing stop system
 # Activation trigger
 TRAILING_TRIGGER_PCT = 0.01          # Activate at +1% price movement (+10% with 10x leverage)
 
-# Protection strategy (NEW SYSTEM)
-TRAILING_DISTANCE_PCT = 0.10         # Keep SL at -10% from CURRENT price (not max profit)
-TRAILING_DISTANCE_OPTIMAL = 0.08     # Optimal position: -8% from current price
-TRAILING_DISTANCE_UPDATE = 0.10      # Update threshold: when SL reaches -10% from current
+# Protection strategy (ROE-BASED SYSTEM)
+# CRITICAL: Distances are in ROE% (Return On Equity), NOT price%!
+# With 10x leverage: 8% ROE = 0.8% price movement
+TRAILING_DISTANCE_PCT = 0.10         # Legacy (not used)
+TRAILING_DISTANCE_ROE_OPTIMAL = 0.08 # Optimal: Protect all but last 8% of ROE
+TRAILING_DISTANCE_ROE_UPDATE = 0.10  # Update when SL is 10% ROE away from optimal
 
 # Update settings (optimized for performance)
 TRAILING_UPDATE_INTERVAL = 30        # Check every 30 seconds (more responsive)
@@ -241,7 +243,7 @@ WARMUP_PERIODS = 30
 # Percorsi modelli
 # ----------------------------------------------------------------------
 _TRAINED_DIR = Path(__file__).resolve().with_name("trained_models")
-_TRIANED_DIR = _TRAINED_DIR.mkdir(exist_ok=True)
+_TRAINED_DIR.mkdir(exist_ok=True)
 
 def get_xgb_model_file(tf: str) -> str: 
     return str(_TRAINED_DIR / f"xgb_model_{tf}.pkl")
