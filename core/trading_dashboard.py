@@ -226,10 +226,10 @@ class TradingDashboard(QMainWindow):
     def _create_position_table(self) -> QTableWidget:
         """Create a position table with standard columns"""
         table = QTableWidget()
-        table.setColumnCount(14)
+        table.setColumnCount(18)
         table.setHorizontalHeaderLabels([
             "Symbol", "Side", "IM", "Entry", "Current", "Stop Loss", "Type", "SL %", "PnL %", "PnL $", 
-            "Liq. Price", "Time", "Status", "Open Reason"
+            "Liq. Price", "Time", "Status", "Conf%", "Vol%", "ADX", "Weight", "Open Reason"
         ])
         
         table.setAlternatingRowColors(True)
@@ -764,7 +764,101 @@ class TradingDashboard(QMainWindow):
                 status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 12, status_item)
                 
-                # Open Reason - Shows ML prediction results for SESSION positions or "Already Open" for SYNCED
+                # NEW: Risk Parameters (Conf%, Vol%, ADX, Weight) - Columns 13-16
+                # Column 13: Confidence %
+                confidence = getattr(pos, 'confidence', 0.0)
+                conf_item = QTableWidgetItem(f"{confidence:.0%}")
+                if confidence >= 0.75:
+                    conf_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for high conf
+                elif confidence >= 0.65:
+                    conf_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for medium
+                else:
+                    conf_item.setForeground(QBrush(ColorHelper.WARNING))  # Orange for low
+                conf_item.setToolTip(f"ML Model Confidence: {confidence:.1%}\nHigher = More confident prediction")
+                conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 13, conf_item)
+                
+                # Column 14: Volatility %
+                # Try to get volatility/ATR data from position
+                atr = getattr(pos, 'atr', 0)
+                volatility_pct = (atr / pos.current_price * 100) if pos.current_price > 0 and atr > 0 else 0
+                
+                if volatility_pct > 0:
+                    vol_item = QTableWidgetItem(f"{volatility_pct:.1f}%")
+                    if volatility_pct < 2.0:
+                        vol_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for low vol (safer)
+                    elif volatility_pct > 4.0:
+                        vol_item.setForeground(QBrush(ColorHelper.NEGATIVE))  # Red for high vol (risky)
+                    else:
+                        vol_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for medium
+                    vol_item.setToolTip(f"Market Volatility (ATR): {volatility_pct:.1f}%\nLower = Less risky = More weight")
+                else:
+                    vol_item = QTableWidgetItem("N/A")
+                    vol_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                    vol_item.setToolTip("Volatility data not available")
+                vol_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 14, vol_item)
+                
+                # Column 15: ADX (Trend Strength)
+                adx = getattr(pos, 'adx', 0)
+                if adx > 0:
+                    adx_item = QTableWidgetItem(f"{adx:.0f}")
+                    if adx >= 25:
+                        adx_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for strong trend
+                    elif adx >= 20:
+                        adx_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for moderate
+                    else:
+                        adx_item.setForeground(QBrush(ColorHelper.WARNING))  # Orange for weak
+                    adx_item.setToolTip(f"ADX Trend Strength: {adx:.1f}\n≥25 = Strong trend = More weight")
+                else:
+                    adx_item = QTableWidgetItem("N/A")
+                    adx_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                    adx_item.setToolTip("ADX data not available")
+                adx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 15, adx_item)
+                
+                # Column 16: Weight (Risk-Weighted Position Sizing Factor)
+                # Calculate weight based on confidence, volatility, ADX
+                if confidence > 0 and volatility_pct > 0:
+                    # Reconstruct weight calculation
+                    confidence_weight = 0.5 + (confidence * 1.0)
+                    
+                    if volatility_pct < 2.0:
+                        volatility_multiplier = 1.3
+                    elif volatility_pct > 4.0:
+                        volatility_multiplier = 0.7
+                    else:
+                        volatility_multiplier = 1.0
+                    
+                    trend_multiplier = 1.2 if adx >= 25 else 1.0
+                    
+                    weight = confidence_weight * volatility_multiplier * trend_multiplier
+                    weight = max(0.5, min(2.0, weight))  # Clamp 0.5-2.0
+                    
+                    weight_item = QTableWidgetItem(f"{weight:.2f}x")
+                    if weight >= 1.5:
+                        weight_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for high weight
+                    elif weight >= 1.0:
+                        weight_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for medium
+                    else:
+                        weight_item.setForeground(QBrush(ColorHelper.WARNING))  # Orange for low
+                    
+                    weight_item.setToolTip(
+                        f"Position Sizing Weight: {weight:.2f}x\n\n"
+                        f"Formula: Conf × Vol × Trend\n"
+                        f"= {confidence_weight:.2f} × {volatility_multiplier:.2f} × {trend_multiplier:.2f}\n\n"
+                        f"Higher weight = Larger position size\n"
+                        f"Range: 0.5x - 2.0x"
+                    )
+                else:
+                    weight_item = QTableWidgetItem("N/A")
+                    weight_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                    weight_item.setToolTip("Weight calculation requires confidence and volatility data")
+                
+                weight_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 16, weight_item)
+                
+                # Column 17: Open Reason - Shows ML prediction results for SESSION positions or "Already Open" for SYNCED
                 reason_item = QTableWidgetItem()
                 origin = getattr(pos, 'origin', 'SESSION')
                 open_reason = getattr(pos, 'open_reason', None)
@@ -834,7 +928,7 @@ class TradingDashboard(QMainWindow):
                         )
                 
                 reason_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 13, reason_item)
+                table.setItem(row, 17, reason_item)
                 
                 # Row highlighting (IMPROVEMENT 2)
                 row_background = None
@@ -846,7 +940,7 @@ class TradingDashboard(QMainWindow):
                     row_background = QColor("#003D00")  # Green
                 
                 if row_background:
-                    for col in range(14):  # 14 columns total (0-13)
+                    for col in range(18):  # 18 columns total (0-17)
                         item = table.item(row, col)
                         if item:
                             item.setBackground(QBrush(row_background))
@@ -888,10 +982,26 @@ class TradingDashboard(QMainWindow):
             entry_exit = f"${pos.entry_price:.4f} → ${pos.current_price:.4f}"
             table.setItem(row, 1, QTableWidgetItem(entry_exit))
             
-            # PnL
-            pnl_text = f"{ColorHelper.format_pct(pos.unrealized_pnl_pct)} | {ColorHelper.format_usd(pos.unrealized_pnl_usd)}"
+            # PnL with ROE% clarification
+            roe_pct = pos.unrealized_pnl_pct
+            # Calculate price change % (without leverage)
+            price_change_pct = roe_pct / pos.leverage if hasattr(pos, 'leverage') and pos.leverage > 0 else roe_pct
+            
+            pnl_text = f"ROE {ColorHelper.format_pct(roe_pct)} | {ColorHelper.format_usd(pos.unrealized_pnl_usd)}"
             pnl_item = QTableWidgetItem(pnl_text)
             ColorHelper.color_cell(pnl_item, pos.unrealized_pnl_usd)
+            
+            # Tooltip explaining the difference
+            pnl_item.setToolTip(
+                f"💰 PnL Breakdown:\n\n"
+                f"ROE% (Return on Equity): {roe_pct:+.2f}%\n"
+                f"  = Profit/Loss on your margin (with leverage)\n\n"
+                f"Price Change: {price_change_pct:+.2f}%\n"
+                f"  = Actual {pos.symbol} price movement\n\n"
+                f"Leverage: {pos.leverage if hasattr(pos, 'leverage') else 10}x\n"
+                f"Formula: ROE% = Price% × Leverage"
+            )
+            
             table.setItem(row, 2, pnl_item)
             
             # Hold Time
@@ -911,13 +1021,21 @@ class TradingDashboard(QMainWindow):
             
             # Close Reason with PnL indicator and detailed snapshot tooltip
             is_profit = pos.unrealized_pnl_usd > 0
+            
+            # Check if this was a stop loss hit
             if "STOP_LOSS" in pos.status or "MANUAL" in pos.status:
+                # Se è positivo, era un trailing stop che ha protetto i guadagni
                 if is_profit:
-                    reason_str = f"✅ SL Hit {pos.unrealized_pnl_pct:+.1f}%"
+                    reason_str = f"✅ Trailing Stop Hit with Gain {pos.unrealized_pnl_pct:+.1f}%"
                 else:
+                    # Se è negativo, era uno stop loss fisso (circa -50% con leva)
                     reason_str = f"❌ SL Hit {pos.unrealized_pnl_pct:+.1f}%"
             elif "TRAILING" in pos.status:
-                reason_str = f"🎪 Trailing {pos.unrealized_pnl_pct:+.1f}%"
+                # Trailing stop esplicito
+                if is_profit:
+                    reason_str = f"✅ Trailing Stop Hit with Gain {pos.unrealized_pnl_pct:+.1f}%"
+                else:
+                    reason_str = f"🎪 Trailing {pos.unrealized_pnl_pct:+.1f}%"
             else:
                 reason_str = f"❓ {pos.status} {pos.unrealized_pnl_pct:+.1f}%"
             
@@ -1028,8 +1146,23 @@ class TradingDashboard(QMainWindow):
             entry_exit = f"${trade.entry_price:,.4f} → ${trade.exit_price:,.4f}"
             self.closed_table.setItem(row, 1, QTableWidgetItem(entry_exit))
             
-            pnl_item = QTableWidgetItem(f"{trade.pnl_pct:+.2f}% | ${trade.pnl_usd:+.2f}")
+            # Calculate price change % (without leverage)
+            price_change_pct = trade.pnl_pct / trade.leverage if trade.leverage > 0 else trade.pnl_pct
+            
+            pnl_item = QTableWidgetItem(f"ROE {trade.pnl_pct:+.2f}% | ${trade.pnl_usd:+.2f}")
             ColorHelper.color_cell(pnl_item, trade.pnl_usd)
+            
+            # Tooltip explaining ROE vs Price Change
+            pnl_item.setToolTip(
+                f"💰 PnL Breakdown:\n\n"
+                f"ROE% (Return on Equity): {trade.pnl_pct:+.2f}%\n"
+                f"  = Your actual profit/loss on margin\n\n"
+                f"Price Change: {price_change_pct:+.2f}%\n"
+                f"  = {trade.symbol} price movement\n\n"
+                f"Leverage: {trade.leverage}x\n\n"
+                f"Example: 7% price × 10x lev = 70% ROE"
+            )
+            
             self.closed_table.setItem(row, 2, pnl_item)
             
             if trade.hold_time_minutes < 60:
@@ -1044,14 +1177,20 @@ class TradingDashboard(QMainWindow):
             is_profit = trade.pnl_usd > 0
             pnl_sign = "+" if is_profit else ""
             
-            # Map reason to descriptive text
+            # Map reason to descriptive text with improved logic
             if "STOP_LOSS" in trade.close_reason or "MANUAL" in trade.close_reason:
+                # Se è positivo, era un trailing stop che ha protetto i guadagni
                 if is_profit:
-                    reason_str = f"✅ SL Hit {pnl_sign}{trade.pnl_pct:.1f}%"
+                    reason_str = f"✅ Trailing Stop Hit with Gain {pnl_sign}{trade.pnl_pct:.1f}%"
                 else:
+                    # Se è negativo, era uno stop loss fisso (circa -50% ROE con leva)
                     reason_str = f"❌ SL Hit {pnl_sign}{trade.pnl_pct:.1f}%"
             elif "TRAILING" in trade.close_reason:
-                reason_str = f"🎪 Trailing {pnl_sign}{trade.pnl_pct:.1f}%"
+                # Trailing stop esplicito
+                if is_profit:
+                    reason_str = f"✅ Trailing Stop Hit with Gain {pnl_sign}{trade.pnl_pct:.1f}%"
+                else:
+                    reason_str = f"🎪 Trailing {pnl_sign}{trade.pnl_pct:.1f}%"
             elif "TAKE_PROFIT" in trade.close_reason:
                 reason_str = f"🎯 TP Hit {pnl_sign}{trade.pnl_pct:.1f}%"
             else:

@@ -471,22 +471,23 @@ class RiskCalculator:
 
     def calculate_portfolio_based_margins(self, signals: list, available_balance: float, total_wallet: float = None) -> list:
         """
-        🆕 FULL BALANCE UTILIZATION
+        🎯 RISK-WEIGHTED POSITION SIZING
         
-        Sistema usa TUTTO il balance disponibile:
-        - Divide equamente tra i segnali
-        - Con $78 e 2 slots → 2 posizioni da $39 ciascuna
-        - Con $140 e 10 slots → 10 posizioni da $14 ciascuna
+        Sistema DINAMICO che pesa le posizioni in base a:
+        - Confidence del modello ML (più alta = più margin)
+        - Rischio/Volatilità (più basso = più margin)
+        - Usa TUTTO il balance disponibile
         
-        Formula: available_balance ÷ numero_segnali_da_aprire
+        Formula: Peso posizione = f(confidence, volatility, adx)
+        Margin posizione = (peso / somma_pesi) × available_balance
         
         Args:
-            signals: Lista segnali ordinati per confidence (desc)
+            signals: Lista segnali con confidence, atr, volatility, adx
             available_balance: Balance DISPONIBILE (già netto delle posizioni aperte)
             total_wallet: Wallet TOTALE (non usato, kept for compatibility)
             
         Returns:
-            list: Lista di margin amounts per ogni segnale
+            list: Lista di margin amounts per ogni segnale (pesati per rischio)
         """
         try:
             from config import MAX_CONCURRENT_POSITIONS
@@ -498,28 +499,66 @@ class RiskCalculator:
                 logging.warning("⚠️ No signals to open")
                 return []
             
-            # 2. DIVIDI EQUAMENTE IL BALANCE DISPONIBILE
-            # Usa TUTTO il balance dividendolo tra le posizioni da aprire
-            margin_per_position = available_balance / n_signals_to_open
+            # 2. CALCOLA PESI DINAMICI per ogni segnale
+            weights = []
+            for i, signal in enumerate(signals[:n_signals_to_open]):
+                # Estrai dati segnale
+                confidence = signal.get('confidence', 0.7)
+                atr = signal.get('atr', 0)
+                price = signal.get('price', 1)
+                volatility = signal.get('volatility', 0.03)
+                adx = signal.get('adx', 0)
+                
+                # Calculate ATR percentage
+                atr_pct = (atr / price * 100) if price > 0 else 3.0
+                
+                # PESO = f(confidence, volatility, trend_strength)
+                # Range: 0.5 - 2.0
+                
+                # Factor 1: Confidence (peso base 0.5-1.5)
+                confidence_weight = 0.5 + (confidence * 1.0)  # 0.5 per 0%, 1.5 per 100%
+                
+                # Factor 2: Volatility (inverso: bassa vol = più peso)
+                # High volatility (>4%) = 0.7x, Low volatility (<2%) = 1.3x
+                if atr_pct < 2.0:  # Low volatility
+                    volatility_multiplier = 1.3
+                elif atr_pct > 4.0:  # High volatility
+                    volatility_multiplier = 0.7
+                else:  # Medium volatility
+                    volatility_multiplier = 1.0
+                
+                # Factor 3: Trend strength (ADX bonus)
+                # Strong trend (ADX ≥25) = 1.2x, Weak trend = 1.0x
+                trend_multiplier = 1.2 if adx >= 25 else 1.0
+                
+                # Peso finale
+                weight = confidence_weight * volatility_multiplier * trend_multiplier
+                
+                # Clamp weight between 0.5 and 2.0
+                weight = max(0.5, min(2.0, weight))
+                
+                weights.append(weight)
+                
+                logging.debug(
+                    f"📊 Signal {i+1}/{n_signals_to_open}: "
+                    f"Conf={confidence:.1%}, Vol={atr_pct:.1f}%, ADX={adx:.1f} → Weight={weight:.2f}"
+                )
             
-            # Log sizing
-            logging.info(colored(
-                f"💰 FULL BALANCE UTILIZATION:\n"
-                f"   Available: ${available_balance:.2f}\n"
-                f"   Positions to open: {n_signals_to_open}\n"
-                f"   Margin per position: ${margin_per_position:.2f}\n"
-                f"   Formula: ${available_balance:.2f} ÷ {n_signals_to_open}",
-                "cyan", attrs=['bold']
-            ))
+            # 3. NORMALIZZA PESI e CALCOLA MARGINS
+            total_weight = sum(weights)
+            margins = []
             
-            # 3. Crea lista margins (tutti uguali)
-            margins = [margin_per_position] * n_signals_to_open
+            for i, weight in enumerate(weights):
+                # Margin proporzionale al peso
+                margin = (weight / total_weight) * available_balance
+                margins.append(margin)
             
             # 4. Applica limiti di sicurezza
             from config import POSITION_SIZE_MIN_ABSOLUTE, POSITION_SIZE_MAX_ABSOLUTE
             
             margins_safe = []
             for i, margin in enumerate(margins):
+                signal = signals[i]
                 # Clip tra min e max
                 safe_margin = max(POSITION_SIZE_MIN_ABSOLUTE, 
                                  min(POSITION_SIZE_MAX_ABSOLUTE, margin))
@@ -527,7 +566,7 @@ class RiskCalculator:
                 
                 if safe_margin != margin:
                     logging.warning(
-                        f"⚠️ Position {i+1} margin adjusted: "
+                        f"⚠️ Position {i+1} ({signal.get('symbol', 'N/A')}) margin adjusted: "
                         f"${margin:.2f} → ${safe_margin:.2f} "
                         f"(limits: ${POSITION_SIZE_MIN_ABSOLUTE}-${POSITION_SIZE_MAX_ABSOLUTE})"
                     )
@@ -535,20 +574,36 @@ class RiskCalculator:
             total_used = sum(margins_safe)
             utilization_pct = (total_used / available_balance) * 100 if available_balance > 0 else 0
             
-            # 5. Log summary
-            logging.info(
-                f"💰 EQUAL DISTRIBUTION SIZING:\n"
+            # 5. Log summary dettagliato
+            logging.info(colored(
+                f"💰 RISK-WEIGHTED POSITION SIZING:\n"
                 f"   Available Balance: ${available_balance:.2f}\n"
-                f"   {n_signals_to_open} positions × ${margin_per_position:.2f} = ${total_used:.2f}\n"
-                f"   Balance Utilization: {utilization_pct:.1f}%\n"
-                f"   Remaining: ${available_balance - total_used:.2f}"
-            )
+                f"   Positions to open: {n_signals_to_open}\n"
+                f"   Total Weight: {total_weight:.2f}\n"
+                f"   Total Allocated: ${total_used:.2f} ({utilization_pct:.1f}%)\n"
+                f"   Remaining: ${available_balance - total_used:.2f}",
+                "cyan", attrs=['bold']
+            ))
+            
+            # Log individual margins
+            for i, (margin, weight) in enumerate(zip(margins_safe, weights)):
+                signal = signals[i]
+                symbol = signal.get('symbol', 'N/A').replace('/USDT:USDT', '')
+                confidence = signal.get('confidence', 0)
+                pct_of_total = (margin / total_used * 100) if total_used > 0 else 0
+                
+                logging.info(
+                    f"   #{i+1} {symbol}: ${margin:.2f} ({pct_of_total:.1f}%) | "
+                    f"Weight={weight:.2f}, Conf={confidence:.0%}"
+                )
             
             return margins_safe
             
         except Exception as e:
-            logging.error(f"Equal distribution sizing failed: {e}")
-            # Fallback: divide available by signals
+            logging.error(f"Risk-weighted sizing failed: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            # Fallback: divide equally
             fallback_margin = available_balance / max(1, len(signals))
             return [fallback_margin] * len(signals)
 

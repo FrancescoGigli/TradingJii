@@ -362,12 +362,14 @@ TIMEFRAME_WEIGHTS = {
 # - Usa tutto il balance disponibile
 # - Più margin ai segnali migliori (ordinati per confidence)
 
-MAX_CONCURRENT_POSITIONS = 10  # INCREASED: 10 positions for safer risk distribution
+MAX_CONCURRENT_POSITIONS = 5  # 5 positions for larger position sizes
 
-# Pesi per position sizing (da posizione 1 a 10)
-# Posizione 1 = migliore confidence, riceve più margin
-# Posizione 10 = peggiore confidence, riceve meno margin
-POSITION_SIZING_WEIGHTS = [1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]
+# DEPRECATED: Position sizing weights (replaced by dynamic risk-weighted system)
+# Now weights are calculated dynamically based on:
+# - ML confidence (higher = more weight)
+# - Volatility (lower = more weight, safer)
+# - Trend strength ADX (stronger = more weight)
+# See: RiskCalculator.calculate_portfolio_based_margins()
 
 # Percentuale del balance da usare (default 98% per lasciare buffer)
 PORTFOLIO_BALANCE_USAGE = 0.98
