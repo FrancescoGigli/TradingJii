@@ -700,8 +700,22 @@ class TradingEngine:
     
     async def _trading_loop(self, exchange, xgb_models, xgb_scalers):
         """Internal trading loop (runs every 15 min)"""
+        cycle_count = 0
+        
         while True:
             try:
+                cycle_count += 1
+                
+                # 🕐 TIMESTAMP SYNC every 5 cycles to prevent drift
+                if cycle_count % 5 == 0:
+                    from core.time_sync_manager import global_time_sync_manager
+                    logging.info(colored(f"🕐 CYCLE {cycle_count}: Forcing timestamp sync...", "yellow"))
+                    sync_success = await global_time_sync_manager.force_time_sync(exchange)
+                    if sync_success:
+                        logging.info(colored("✅ Timestamp sync successful", "green"))
+                    else:
+                        logging.warning(colored("⚠️ Timestamp sync failed - continuing anyway", "yellow"))
+                
                 await self.run_trading_cycle(exchange, xgb_models, xgb_scalers)
                 await self._wait_with_countdown(config.TRADE_CYCLE_INTERVAL)
             except KeyboardInterrupt:

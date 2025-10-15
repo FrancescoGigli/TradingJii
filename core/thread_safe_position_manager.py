@@ -73,6 +73,9 @@ class ThreadSafePosition:
     entry_time: str = ""
     close_time: Optional[str] = None
     status: str = "OPEN"
+    origin: str = "SESSION"  # "SYNCED" (from Bybit at startup) or "SESSION" (opened in this session)
+    open_reason: str = "Unknown"  # Motivo di apertura (es. "ML: High confidence SHORT")
+    close_snapshot: Optional[str] = None  # Snapshot dati al momento della chiusura (JSON string)
     
     # Order tracking
     sl_order_id: Optional[str] = None
@@ -245,6 +248,40 @@ class ThreadSafePositionManager:
             logging.error(f"🔒 Safe read all positions failed: {e}")
             return []
     
+    def safe_get_positions_by_origin(self, origin: str) -> List[ThreadSafePosition]:
+        """
+        🔒 SAFE READ: Ottieni posizioni filtrate per origin
+        
+        Args:
+            origin: "SYNCED" o "SESSION"
+            
+        Returns:
+            List[ThreadSafePosition]: Deep copies delle posizioni con origin specificato
+        """
+        try:
+            with self._read_lock:
+                return [deepcopy(pos) for pos in self._open_positions.values() 
+                       if pos.status == "OPEN" and pos.origin == origin]
+                
+        except Exception as e:
+            logging.error(f"🔒 Safe read positions by origin failed: {e}")
+            return []
+    
+    def safe_get_closed_positions(self) -> List[ThreadSafePosition]:
+        """
+        🔒 SAFE READ: Ottieni tutte le posizioni chiuse
+        
+        Returns:
+            List[ThreadSafePosition]: Deep copies delle posizioni chiuse
+        """
+        try:
+            with self._read_lock:
+                return [deepcopy(pos) for pos in self._closed_positions.values()]
+                
+        except Exception as e:
+            logging.error(f"🔒 Safe read closed positions failed: {e}")
+            return []
+    
     def safe_has_position_for_symbol(self, symbol: str) -> bool:
         """
         🔒 SAFE READ: Controlla se esiste posizione per simbolo
@@ -330,9 +367,12 @@ class ThreadSafePositionManager:
     
     def thread_safe_create_position(self, symbol: str, side: str, entry_price: float,
                                    position_size: float, leverage: int = 10, 
-                                   confidence: float = 0.7) -> str:
+                                   confidence: float = 0.7, open_reason: str = "Unknown") -> str:
         """
         🔒 THREAD SAFE: Crea nuova posizione
+        
+        Args:
+            open_reason: Motivo apertura (es. "ML Prediction: BUY 75%")
         
         Returns:
             str: Position ID se creata con successo
@@ -364,6 +404,8 @@ class ThreadSafePositionManager:
                     current_price=entry_price,
                     confidence=confidence,
                     entry_time=datetime.now().isoformat(),
+                    origin="SESSION",  # Marked as SESSION position (opened in this session)
+                    open_reason=open_reason,  # FIX: Passa motivo apertura con dati ML
                     _migrated=True  # New positions are already migrated
                 )
                 
@@ -377,10 +419,99 @@ class ThreadSafePositionManager:
             logging.error(f"🔒 Thread-safe position creation failed: {e}")
             return ""
     
+    async def thread_safe_close_position_with_snapshot(self, exchange, position_id: str, exit_price: float, 
+                                  close_reason: str = "MANUAL") -> bool:
+        """
+        🔒 THREAD SAFE: Chiudi posizione + capture snapshot + Online Learning
+        
+        Args:
+            exchange: Exchange instance for fetching market data
+            position_id: Position ID to close
+            exit_price: Exit price
+            close_reason: Reason for closure
+        
+        Returns:
+            bool: True se chiusura riuscita
+        """
+        try:
+            # Capture snapshot BEFORE acquiring lock (to minimize lock time)
+            snapshot_data = None
+            position_copy = None
+            
+            with self._read_lock:
+                if position_id in self._open_positions:
+                    position_copy = deepcopy(self._open_positions[position_id])
+            
+            if position_copy:
+                try:
+                    snapshot_data = await self._capture_close_snapshot(exchange, position_copy, exit_price, close_reason)
+                except Exception as snap_err:
+                    logging.warning(f"Failed to capture close snapshot: {snap_err}")
+                    snapshot_data = None
+            
+            # Now proceed with position closure with lock
+            with self._lock:
+                if position_id not in self._open_positions:
+                    logging.warning(f"🔒 Position {position_id} not found for closure")
+                    return False
+                
+                position = self._open_positions[position_id]
+                
+                # Calculate final PnL
+                if position.side == 'buy':
+                    pnl_pct = ((exit_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - exit_price) / position.entry_price) * 100 * position.leverage
+                
+                initial_margin = position.position_size / position.leverage
+                pnl_usd = (pnl_pct / 100) * initial_margin
+                
+                # Update position as closed
+                position.status = f"CLOSED_{close_reason}"
+                position.close_time = datetime.now().isoformat()
+                position.unrealized_pnl_pct = pnl_pct
+                position.unrealized_pnl_usd = pnl_usd
+                position.current_price = exit_price
+                
+                # Save snapshot if captured
+                if snapshot_data:
+                    position.close_snapshot = json.dumps(snapshot_data)
+                
+                # Move to closed positions
+                self._closed_positions[position_id] = position
+                del self._open_positions[position_id]
+                
+                # Update session balance
+                self._session_balance += pnl_usd
+                
+                self._save_positions_unsafe()  # Already in lock
+                
+                # 📊 UPDATE TRADE DECISION IN DATABASE
+                try:
+                    from core.trade_decision_logger import global_trade_decision_logger
+                    global_trade_decision_logger.update_closing_decision(
+                        symbol=position.symbol,
+                        entry_time=position.entry_time,
+                        exit_price=exit_price,
+                        close_reason=close_reason,
+                        pnl_pct=pnl_pct,
+                        pnl_usd=pnl_usd,
+                        exit_snapshots=None  # TODO: Add exit snapshots if needed
+                    )
+                except Exception as log_error:
+                    logging.debug(f"⚠️ Failed to update decision on close: {log_error}")
+                
+                logging.info(f"🔒 Thread-safe position closed: {position.symbol} {close_reason} PnL: {pnl_pct:+.2f}%")
+                return True
+                
+        except Exception as e:
+            logging.error(f"🔒 Thread-safe position closure failed: {e}")
+            return False
+    
     def thread_safe_close_position(self, position_id: str, exit_price: float, 
                                   close_reason: str = "MANUAL") -> bool:
         """
-        🔒 THREAD SAFE: Chiudi posizione + Online Learning notification
+        🔒 THREAD SAFE: Chiudi posizione (sync wrapper, no snapshot)
         
         Returns:
             bool: True se chiusura riuscita
@@ -416,22 +547,7 @@ class ThreadSafePositionManager:
                 # Update session balance
                 self._session_balance += pnl_usd
                 
-                self._save_positions_unsafe()  # Already in lock
-                
-                # 📊 UPDATE TRADE DECISION IN DATABASE
-                try:
-                    from core.trade_decision_logger import global_trade_decision_logger
-                    global_trade_decision_logger.update_closing_decision(
-                        symbol=position.symbol,
-                        entry_time=position.entry_time,
-                        exit_price=exit_price,
-                        close_reason=close_reason,
-                        pnl_pct=pnl_pct,
-                        pnl_usd=pnl_usd,
-                        exit_snapshots=None  # TODO: Add exit snapshots if needed
-                    )
-                except Exception as log_error:
-                    logging.debug(f"⚠️ Failed to update decision on close: {log_error}")
+                self._save_positions_unsafe()
                 
                 logging.info(f"🔒 Thread-safe position closed: {position.symbol} {close_reason} PnL: {pnl_pct:+.2f}%")
                 return True
@@ -728,6 +844,7 @@ class ThreadSafePositionManager:
             current_price=entry_price,
             confidence=0.7,
             entry_time=datetime.now().isoformat(),
+            origin="SYNCED",  # Marked as SYNCED position (found on Bybit at startup)
             unrealized_pnl_usd=bybit_data['unrealized_pnl'],
             _migrated=True
         )
@@ -748,6 +865,114 @@ class ThreadSafePositionManager:
         position.unrealized_pnl_pct = pnl_pct
         position.unrealized_pnl_usd = pnl_usd
         position.max_favorable_pnl = max(position.max_favorable_pnl, pnl_pct)
+    
+    async def _capture_close_snapshot(self, exchange, position: ThreadSafePosition, exit_price: float, close_reason: str) -> Dict:
+        """
+        📸 Capture detailed snapshot at position closure
+        
+        Captures:
+        - Price action (entry, exit, high, low during position lifetime)
+        - Recent candles (last 5-10 candles before closure)
+        - Technical indicators if available
+        - Position metrics and timing
+        
+        Args:
+            exchange: Exchange instance
+            position: Position being closed
+            exit_price: Exit price
+            close_reason: Reason for closure
+            
+        Returns:
+            Dict: Snapshot data
+        """
+        try:
+            snapshot = {
+                'close_time': datetime.now().isoformat(),
+                'close_reason': close_reason,
+                'exit_price': exit_price,
+                'entry_price': position.entry_price,
+                'price_change_pct': ((exit_price - position.entry_price) / position.entry_price) * 100,
+                'side': position.side,
+                'leverage': position.leverage,
+            }
+            
+            # Try to fetch recent candles
+            try:
+                # Fetch last 10 candles (15m timeframe)
+                ohlcv = await exchange.fetch_ohlcv(position.symbol, '15m', limit=10)
+                
+                if ohlcv and len(ohlcv) > 0:
+                    # Convert to readable format
+                    candles = []
+                    for candle in ohlcv[-5:]:  # Last 5 candles
+                        candles.append({
+                            'time': datetime.fromtimestamp(candle[0]/1000).strftime('%H:%M'),
+                            'open': candle[1],
+                            'high': candle[2],
+                            'low': candle[3],
+                            'close': candle[4],
+                            'volume': candle[5]
+                        })
+                    
+                    snapshot['recent_candles'] = candles
+                    
+                    # Calculate position metrics from candles
+                    if len(ohlcv) > 0:
+                        highs = [c[2] for c in ohlcv]
+                        lows = [c[3] for c in ohlcv]
+                        
+                        snapshot['max_price_seen'] = max(highs)
+                        snapshot['min_price_seen'] = min(lows)
+                        
+                        # Calculate how far from extremes we closed
+                        if position.side in ['buy', 'long']:
+                            snapshot['distance_from_peak_pct'] = ((snapshot['max_price_seen'] - exit_price) / exit_price) * 100
+                        else:
+                            snapshot['distance_from_bottom_pct'] = ((exit_price - snapshot['min_price_seen']) / exit_price) * 100
+                
+            except Exception as candle_error:
+                logging.debug(f"Could not fetch candles for snapshot: {candle_error}")
+                snapshot['recent_candles'] = None
+            
+            # Add position timing
+            if position.entry_time:
+                entry_dt = datetime.fromisoformat(position.entry_time)
+                close_dt = datetime.now()
+                duration_minutes = int((close_dt - entry_dt).total_seconds() / 60)
+                
+                snapshot['hold_duration_minutes'] = duration_minutes
+                if duration_minutes < 60:
+                    snapshot['hold_duration_str'] = f"{duration_minutes}m"
+                else:
+                    hours = duration_minutes // 60
+                    mins = duration_minutes % 60
+                    snapshot['hold_duration_str'] = f"{hours}h {mins}m"
+            
+            # Add stop loss info
+            snapshot['stop_loss_price'] = position.stop_loss
+            if position.side in ['buy', 'long']:
+                snapshot['sl_distance_from_entry_pct'] = ((position.stop_loss - position.entry_price) / position.entry_price) * 100
+            else:
+                snapshot['sl_distance_from_entry_pct'] = ((position.stop_loss - position.entry_price) / position.entry_price) * 100
+            
+            # Add trailing info if available
+            if position.trailing_data and position.trailing_data.enabled:
+                snapshot['trailing_was_active'] = True
+                snapshot['trailing_activation_time'] = position.trailing_data.activation_time
+            else:
+                snapshot['trailing_was_active'] = False
+            
+            logging.debug(f"📸 Close snapshot captured for {position.symbol}: {len(str(snapshot))} chars")
+            return snapshot
+            
+        except Exception as e:
+            logging.error(f"Failed to capture close snapshot: {e}")
+            return {
+                'error': str(e),
+                'close_time': datetime.now().isoformat(),
+                'close_reason': close_reason,
+                'exit_price': exit_price
+            }
     
     def _save_positions_unsafe(self):
         """

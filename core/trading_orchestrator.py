@@ -252,13 +252,46 @@ class TradingOrchestrator:
             # 8) Create position in tracker (SL già applicato su Bybit)
             position_usd_value = levels.margin * config.LEVERAGE  # USD notional value
             
+            # Build DETAILED ML open reason with all prediction details
+            symbol_short = symbol.replace('/USDT:USDT', '')
+            side_name = "BUY" if side == 'buy' else "SELL"
+            
+            # Start with base prediction
+            open_reason_parts = [f"ML {side_name} {confidence:.0%}"]
+            
+            # Add timeframe predictions if available
+            tf_predictions = signal_data.get('tf_predictions', {})
+            if tf_predictions:
+                tf_summary = []
+                for tf, pred_data in tf_predictions.items():
+                    if isinstance(pred_data, dict):
+                        pred = pred_data.get('prediction', -1)
+                        pred_conf = pred_data.get('confidence', 0)
+                        if pred == 1:  # BUY
+                            tf_summary.append(f"{tf}:↑{pred_conf:.0%}")
+                        elif pred == 0:  # SELL
+                            tf_summary.append(f"{tf}:↓{pred_conf:.0%}")
+                if tf_summary:
+                    open_reason_parts.append("TF[" + " ".join(tf_summary) + "]")
+            
+            # Add RL approval if available
+            if signal_data.get('rl_approved'):
+                rl_conf = signal_data.get('rl_confidence', 0)
+                open_reason_parts.append(f"RL✓{rl_conf:.0%}")
+            
+            # Add entry price and timestamp for reference
+            open_reason_parts.append(f"@${market_data.price:.6f}")
+            
+            open_reason = " | ".join(open_reason_parts)
+            
             position_id = self.position_manager.thread_safe_create_position(
                 symbol=symbol,
                 side=side,
                 entry_price=market_data.price,
                 position_size=position_usd_value,  # USD value
                 leverage=config.LEVERAGE,
-                confidence=confidence
+                confidence=confidence,
+                open_reason=open_reason  # FIX: Pass ML prediction details
                 # Note: SL già applicato su Bybit, non serve passarlo al tracker
             )
             

@@ -471,19 +471,19 @@ class RiskCalculator:
 
     def calculate_portfolio_based_margins(self, signals: list, available_balance: float, total_wallet: float = None) -> list:
         """
-        🆕 CONFIDENCE-PROPORTIONAL SIZING
+        🆕 FULL BALANCE UTILIZATION
         
-        Sistema SEMPRE usa MAX_CONCURRENT_POSITIONS configurate:
-        - Con $140 → 10 posizioni da $14 ciascuna
-        - Con $500 → 10 posizioni da $50 ciascuna  
-        - Con $1000 → 10 posizioni da $100 ciascuna
+        Sistema usa TUTTO il balance disponibile:
+        - Divide equamente tra i segnali
+        - Con $78 e 2 slots → 2 posizioni da $39 ciascuna
+        - Con $140 e 10 slots → 10 posizioni da $14 ciascuna
         
-        Formula SEMPLICE: wallet / MAX_CONCURRENT_POSITIONS
+        Formula: available_balance ÷ numero_segnali_da_aprire
         
         Args:
             signals: Lista segnali ordinati per confidence (desc)
-            available_balance: Balance disponibile (per auto-scaling)
-            total_wallet: Wallet TOTALE (preferito per sizing)
+            available_balance: Balance DISPONIBILE (già netto delle posizioni aperte)
+            total_wallet: Wallet TOTALE (non usato, kept for compatibility)
             
         Returns:
             list: Lista di margin amounts per ogni segnale
@@ -491,79 +491,66 @@ class RiskCalculator:
         try:
             from config import MAX_CONCURRENT_POSITIONS
             
-            # 1. Usa WALLET TOTALE per sizing
-            wallet_for_sizing = total_wallet if total_wallet is not None else available_balance
+            # 1. Calcola quanti slot abbiamo per nuove posizioni
+            n_signals_to_open = min(len(signals), MAX_CONCURRENT_POSITIONS)
             
-            # 2. SEMPRE usa MAX_CONCURRENT_POSITIONS dal config
-            # Non importa quanto è piccolo il balance, dividi per MAX configurato
-            n_positions = MAX_CONCURRENT_POSITIONS
+            if n_signals_to_open == 0:
+                logging.warning("⚠️ No signals to open")
+                return []
             
-            # 3. Prendi top N segnali
-            n_signals = min(len(signals), n_positions)
-            top_signals = signals[:n_signals]
-            
-            # 4. CALCOLO SEMPLICE: wallet ÷ MAX_CONCURRENT_POSITIONS
-            base_size = wallet_for_sizing / MAX_CONCURRENT_POSITIONS
+            # 2. DIVIDI EQUAMENTE IL BALANCE DISPONIBILE
+            # Usa TUTTO il balance dividendolo tra le posizioni da aprire
+            margin_per_position = available_balance / n_signals_to_open
             
             # Log sizing
             logging.info(colored(
-                f"💰 FIXED POSITIONS SIZING:\n"
-                f"   Wallet: ${wallet_for_sizing:.2f}\n"
-                f"   Positions: {MAX_CONCURRENT_POSITIONS} (from config)\n"
-                f"   Base Size: ${base_size:.2f} per position\n"
-                f"   Formula: ${wallet_for_sizing:.2f} ÷ {MAX_CONCURRENT_POSITIONS}",
+                f"💰 FULL BALANCE UTILIZATION:\n"
+                f"   Available: ${available_balance:.2f}\n"
+                f"   Positions to open: {n_signals_to_open}\n"
+                f"   Margin per position: ${margin_per_position:.2f}\n"
+                f"   Formula: ${available_balance:.2f} ÷ {n_signals_to_open}",
                 "cyan", attrs=['bold']
             ))
             
-            # 4. Margin proporzionale alla confidence
-            margins = []
-            for i, signal in enumerate(top_signals):
-                confidence = signal.get('confidence', 0.7)  # 0.742 = 74.2%
-                margin = base_size * confidence
-                margins.append(margin)
-                
-                logging.debug(
-                    f"📊 Signal {i+1}/{n_signals}: {signal.get('symbol', 'N/A')} "
-                    f"conf={confidence:.1%} → margin=${margin:.2f}"
-                )
+            # 3. Crea lista margins (tutti uguali)
+            margins = [margin_per_position] * n_signals_to_open
             
-            total_requested = sum(margins)
+            # 4. Applica limiti di sicurezza
+            from config import POSITION_SIZE_MIN_ABSOLUTE, POSITION_SIZE_MAX_ABSOLUTE
             
-            # 5. AUTO-SCALING se necessario
-            if total_requested > available_balance:
-                scaling_factor = available_balance / total_requested
-                scaled_margins = [m * scaling_factor for m in margins]
-                total_scaled = sum(scaled_margins)
+            margins_safe = []
+            for i, margin in enumerate(margins):
+                # Clip tra min e max
+                safe_margin = max(POSITION_SIZE_MIN_ABSOLUTE, 
+                                 min(POSITION_SIZE_MAX_ABSOLUTE, margin))
+                margins_safe.append(safe_margin)
                 
-                logging.info(colored(
-                    f"📊 AUTO-SCALING APPLIED:\n"
-                    f"   Requested: ${total_requested:.2f}\n"
-                    f"   Available: ${available_balance:.2f}\n"
-                    f"   Scaling: {scaling_factor:.1%}\n"
-                    f"   Final: ${total_scaled:.2f}",
-                    "cyan"
-                ))
-                
-                margins = scaled_margins
-                total_requested = total_scaled
+                if safe_margin != margin:
+                    logging.warning(
+                        f"⚠️ Position {i+1} margin adjusted: "
+                        f"${margin:.2f} → ${safe_margin:.2f} "
+                        f"(limits: ${POSITION_SIZE_MIN_ABSOLUTE}-${POSITION_SIZE_MAX_ABSOLUTE})"
+                    )
             
-            # 6. Log summary
-            wallet_usage = (total_requested / wallet_for_sizing) * 100
+            total_used = sum(margins_safe)
+            utilization_pct = (total_used / available_balance) * 100 if available_balance > 0 else 0
+            
+            # 5. Log summary
             logging.info(
-                f"💰 CONFIDENCE-PROPORTIONAL SIZING:\n"
-                f"   Total Wallet: ${wallet_for_sizing:.2f}\n"
-                f"   Base Size: ${base_size:.2f} per position\n"
-                f"   {n_signals} positions: ${total_requested:.2f} ({wallet_usage:.1f}%)\n"
-                f"   Range: ${min(margins):.2f} - ${max(margins):.2f}"
+                f"💰 EQUAL DISTRIBUTION SIZING:\n"
+                f"   Available Balance: ${available_balance:.2f}\n"
+                f"   {n_signals_to_open} positions × ${margin_per_position:.2f} = ${total_used:.2f}\n"
+                f"   Balance Utilization: {utilization_pct:.1f}%\n"
+                f"   Remaining: ${available_balance - total_used:.2f}"
             )
             
-            return margins
+            return margins_safe
             
         except Exception as e:
-            logging.error(f"Confidence-proportional sizing failed: {e}")
-            # Fallback: equal distribution
-            fallback_margin = available_balance / max(1, len(signals[:5]))
-            return [fallback_margin] * min(len(signals), 5)
+            logging.error(f"Equal distribution sizing failed: {e}")
+            # Fallback: divide available by signals
+            fallback_margin = available_balance / max(1, len(signals))
+            return [fallback_margin] * len(signals)
 
 # Global risk calculator instance
 global_risk_calculator = RiskCalculator()
