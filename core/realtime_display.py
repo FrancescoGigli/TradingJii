@@ -200,42 +200,113 @@ class RealTimePositionDisplay:
         self._render_wallet_summary(len(open_list), total_pnl_usd, total_im)
 
     def _render_closed(self):
-        enhanced_logger.display_table("🔒 CLOSED POSITIONS (SESSION, Bybit)", "magenta", attrs=["bold"])
+        enhanced_logger.display_table("🔒 CLOSED POSITIONS (SESSION, Individual Trades)", "magenta", attrs=["bold"])
         
-        if not self._session_closed:
+        # ✅ FIX: Get individual closed positions from position_manager instead of aggregated data
+        closed_positions = []
+        if self.position_manager:
+            try:
+                # Get all closed positions from position_manager (each with unique ID)
+                closed_positions = self.position_manager.safe_get_closed_positions()
+            except Exception as e:
+                logging.debug(f"Could not get closed positions from manager: {e}")
+                # Fallback to aggregated data
+                closed_positions = []
+        
+        # Fallback to old aggregated data if no position_manager
+        if not closed_positions:
+            closed_positions = self._session_closed
+        
+        if not closed_positions:
             enhanced_logger.display_table("— nessuna posizione chiusa nella sessione corrente —", "yellow")
             return
 
-        # Closed positions table structure
-        enhanced_logger.display_table("┌─────┬────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┐", "cyan")
-        enhanced_logger.display_table("│  #  │ SYMBOL │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │", "white", attrs=["bold"])
-        enhanced_logger.display_table("├─────┼────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┤", "cyan")
+        # Closed positions table structure with ID, timestamps, and more details
+        enhanced_logger.display_table("┌─────┬────────┬──────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────┬──────────┐", "cyan")
+        enhanced_logger.display_table("│  #  │ SYMBOL │    ID    │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │ OPENED   │  CLOSED  │", "white", attrs=["bold"])
+        enhanced_logger.display_table("├─────┼────────┼──────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────┼──────────┤", "cyan")
 
-        for i, r in enumerate(self._session_closed, 1):
-            sym = r["symbol"].replace("/USDT:USDT", "")[:8]
-            side = r["side"]
-            lev = int(r.get("leverage") or 0)
-            pnl_pct = float(r.get("pnl_pct") or 0.0)
-            pnl_usd = float(r.get("pnl_usd") or 0.0)
+        for i, pos in enumerate(closed_positions, 1):
+            # Handle both dict and object formats
+            if hasattr(pos, 'symbol'):
+                # ThreadSafePosition object
+                sym = pos.symbol.replace("/USDT:USDT", "")[:8]
+                side = pos.side
+                lev = int(pos.leverage) if pos.leverage else 0
+                entry_price = pos.entry_price
+                exit_price = pos.current_price
+                pnl_pct = pos.unrealized_pnl_pct
+                pnl_usd = pos.unrealized_pnl_usd
+                
+                # Extract position ID
+                pos_id = getattr(pos, 'position_id', '')
+                if pos_id and '_' in pos_id:
+                    # Extract timestamp from ID (e.g., "BTC_20241016_093445_123456" -> "0934")
+                    parts = pos_id.split('_')
+                    if len(parts) >= 3:
+                        time_part = parts[-2]  # "093445"
+                        id_display = time_part[:4]  # "0934" (HH:MM)
+                    else:
+                        id_display = pos_id[-8:]
+                else:
+                    id_display = "N/A"
+                
+                # Extract timestamps
+                entry_time = getattr(pos, 'entry_time', '')
+                close_time = getattr(pos, 'close_time', '')
+                
+                if entry_time:
+                    try:
+                        entry_dt = datetime.fromisoformat(entry_time)
+                        opened_str = entry_dt.strftime("%H:%M:%S")
+                    except:
+                        opened_str = "N/A"
+                else:
+                    opened_str = "N/A"
+                
+                if close_time:
+                    try:
+                        close_dt = datetime.fromisoformat(close_time)
+                        closed_str = close_dt.strftime("%H:%M:%S")
+                    except:
+                        closed_str = "N/A"
+                else:
+                    closed_str = "N/A"
+                
+            else:
+                # Dict format (fallback)
+                sym = pos["symbol"].replace("/USDT:USDT", "")[:8]
+                side = pos["side"]
+                lev = int(pos.get("leverage") or 0)
+                entry_price = pos["entry_price"]
+                exit_price = pos["exit_price"]
+                pnl_pct = float(pos.get("pnl_pct") or 0.0)
+                pnl_usd = float(pos.get("pnl_usd") or 0.0)
+                id_display = "N/A"
+                opened_str = "N/A"
+                closed_str = "N/A"
 
             line = (
                 colored(f"│{i:^5}│", "white") +
                 colored(f"{sym:^8}", "cyan") + colored("│", "white") +
-                colored(f"{('LONG' if side=='long' else 'SHORT'):^6}", "green" if side=="long" else "red") + colored("│", "white") +
+                colored(f"{id_display:^10}", "yellow") + colored("│", "white") +
+                colored(f"{('LONG' if side in ['long', 'buy'] else 'SHORT'):^6}", "green" if side in ['long', 'buy'] else "red") + colored("│", "white") +
                 colored(f"{lev:^6}", "yellow") + colored("│", "white") +
-                colored(f"${r['entry_price']:.6f}".center(13), "white") + colored("│", "white") +
-                colored(f"${r['exit_price']:.6f}".center(13), "cyan") + colored("│", "white") +
+                colored(f"${entry_price:.6f}".center(13), "white") + colored("│", "white") +
+                colored(f"${exit_price:.6f}".center(13), "cyan") + colored("│", "white") +
                 colored(f"{pnl_pct:+.1f}%".center(10), pct_color(pnl_pct)) + colored("│", "white") +
-                colored(f"{fmt_money(pnl_usd):>11}", pct_color(pnl_pct)) + colored("│", "white")
+                colored(f"{fmt_money(pnl_usd):>11}", pct_color(pnl_usd)) + colored("│", "white") +
+                colored(f"{opened_str:^10}", "white") + colored("│", "white") +
+                colored(f"{closed_str:^10}", "white") + colored("│", "white")
             )
             # Use enhanced logging
             logging.info(line)
 
         # Closed positions table bottom
-        enhanced_logger.display_table("└─────┴────────┴──────┴─────────────┴─────────────┴──────────┴───────────┘", "cyan")
+        enhanced_logger.display_table("└─────┴────────┴──────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────┴──────────┘", "cyan")
         
         # 📊 SESSION SUMMARY for closed positions
-        self._render_session_summary()
+        self._render_session_summary_individual(closed_positions)
 
     # ── Helpers per dati ─────────────────────────────────────────────────────
 
@@ -431,35 +502,54 @@ class RealTimePositionDisplay:
             logging.debug(f"Error getting wallet balance: {e}")
             return 200.0  # Safe fallback
     
-    def _render_session_summary(self):
+    def _render_session_summary_individual(self, closed_positions):
         """
-        📊 Renders session summary for closed positions with total PnL
+        📊 Renders session summary for individual closed positions with total PnL
+        
+        Args:
+            closed_positions: List of closed positions (individual trades, not aggregated)
         """
-        if not self._session_closed:
+        if not closed_positions:
             return
         
         try:
-            # Calculate session metrics
-            total_trades = len(self._session_closed)
-            total_pnl_usd = sum(r.get('pnl_usd', 0.0) for r in self._session_closed)
-            winning_trades = sum(1 for r in self._session_closed if r.get('pnl_usd', 0.0) > 0)
+            # Calculate session metrics from individual positions
+            total_trades = len(closed_positions)
+            
+            # Handle both object and dict formats
+            def get_pnl(pos):
+                if hasattr(pos, 'unrealized_pnl_usd'):
+                    return pos.unrealized_pnl_usd
+                return pos.get('pnl_usd', 0.0)
+            
+            def get_symbol(pos):
+                if hasattr(pos, 'symbol'):
+                    return pos.symbol.replace('/USDT:USDT', '')
+                return pos.get('symbol', 'UNKNOWN').replace('/USDT:USDT', '')
+            
+            total_pnl_usd = sum(get_pnl(pos) for pos in closed_positions)
+            winning_trades = sum(1 for pos in closed_positions if get_pnl(pos) > 0)
             losing_trades = total_trades - winning_trades
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
             
             # Calculate best and worst trades
-            if self._session_closed:
-                best_trade = max(self._session_closed, key=lambda x: x.get('pnl_usd', 0.0))
-                worst_trade = min(self._session_closed, key=lambda x: x.get('pnl_usd', 0.0))
+            if closed_positions:
+                best_trade = max(closed_positions, key=lambda x: get_pnl(x))
+                worst_trade = min(closed_positions, key=lambda x: get_pnl(x))
                 
-                best_pnl = best_trade.get('pnl_usd', 0.0)
-                worst_pnl = worst_trade.get('pnl_usd', 0.0)
+                best_pnl = get_pnl(best_trade)
+                worst_pnl = get_pnl(worst_trade)
                 avg_pnl = total_pnl_usd / total_trades if total_trades > 0 else 0.0
+                
+                best_symbol = get_symbol(best_trade)[:8]
+                worst_symbol = get_symbol(worst_trade)[:8]
             else:
                 best_pnl = worst_pnl = avg_pnl = 0.0
+                best_symbol = worst_symbol = 'N/A'
             
             # Render session summary using enhanced logging
             enhanced_logger.display_table("")  # Empty line
-            enhanced_logger.display_table("📊 SESSION SUMMARY (Closed Positions)", "cyan", attrs=['bold'])
+            enhanced_logger.display_table("📊 SESSION SUMMARY (Individual Trades)", "cyan", attrs=['bold'])
             enhanced_logger.display_table("┌" + "─" * 78 + "┐", "cyan")
             
             # Total PnL line
@@ -473,9 +563,6 @@ class RealTimePositionDisplay:
                 enhanced_logger.display_table(performance_line.ljust(79) + "│", "white")
                 
                 # Best/Worst trades
-                best_symbol = best_trade['symbol'].replace('/USDT:USDT', '')[:8] if best_trade else 'N/A'
-                worst_symbol = worst_trade['symbol'].replace('/USDT:USDT', '')[:8] if worst_trade else 'N/A'
-                
                 highlights_line = f"│ 🥇 Best: {best_symbol} {fmt_money(best_pnl):>8} │ 🥉 Worst: {worst_symbol} {fmt_money(worst_pnl):>8} │"
                 enhanced_logger.display_table(highlights_line.ljust(79) + "│", "white")
             
@@ -483,10 +570,15 @@ class RealTimePositionDisplay:
             
         except Exception as e:
             logging.error(f"Error rendering session summary: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             # Fallback simple summary using enhanced logging
-            total_pnl = sum(r.get('pnl_usd', 0.0) for r in self._session_closed)
-            enhanced_logger.display_table(f"📊 SESSION TOTAL: {len(self._session_closed)} trades | P&L: {fmt_money(total_pnl)}", 
-                         pct_color(total_pnl), attrs=['bold'])
+            try:
+                total_pnl = sum(get_pnl(pos) for pos in closed_positions)
+                enhanced_logger.display_table(f"📊 SESSION TOTAL: {len(closed_positions)} trades | P&L: {fmt_money(total_pnl)}", 
+                             pct_color(total_pnl), attrs=['bold'])
+            except:
+                enhanced_logger.display_table(f"📊 SESSION TOTAL: {len(closed_positions)} trades", "white")
 
 
 # Global instance

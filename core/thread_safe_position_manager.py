@@ -77,6 +77,11 @@ class ThreadSafePosition:
     open_reason: str = "Unknown"  # Motivo di apertura (es. "ML: High confidence SHORT")
     close_snapshot: Optional[str] = None  # Snapshot dati al momento della chiusura (JSON string)
     
+    # Technical indicators (for dashboard display)
+    atr: float = 0.0  # Average True Range
+    adx: float = 0.0  # ADX trend strength
+    volatility: float = 0.0  # Market volatility
+    
     # Order tracking
     sl_order_id: Optional[str] = None
     tp_order_id: Optional[str] = None
@@ -367,12 +372,16 @@ class ThreadSafePositionManager:
     
     def thread_safe_create_position(self, symbol: str, side: str, entry_price: float,
                                    position_size: float, leverage: int = 10, 
-                                   confidence: float = 0.7, open_reason: str = "Unknown") -> str:
+                                   confidence: float = 0.7, open_reason: str = "Unknown",
+                                   atr: float = 0.0, adx: float = 0.0, volatility: float = 0.0) -> str:
         """
         🔒 THREAD SAFE: Crea nuova posizione
         
         Args:
             open_reason: Motivo apertura (es. "ML Prediction: BUY 75%")
+            atr: Average True Range (for dashboard display)
+            adx: ADX trend strength (for dashboard display)
+            volatility: Market volatility (for dashboard display)
         
         Returns:
             str: Position ID se creata con successo
@@ -406,6 +415,9 @@ class ThreadSafePositionManager:
                     entry_time=datetime.now().isoformat(),
                     origin="SESSION",  # Marked as SESSION position (opened in this session)
                     open_reason=open_reason,  # FIX: Passa motivo apertura con dati ML
+                    atr=atr,  # Store technical indicators for dashboard
+                    adx=adx,
+                    volatility=volatility,
                     _migrated=True  # New positions are already migrated
                 )
                 

@@ -258,9 +258,9 @@ class TradingDashboard(QMainWindow):
     def _create_closed_table(self) -> QTableWidget:
         """Create a closed positions table"""
         table = QTableWidget()
-        table.setColumnCount(6)
+        table.setColumnCount(8)
         table.setHorizontalHeaderLabels([
-            "Symbol", "Entry→Exit", "PnL", "Hold", "Close Reason", "Time"
+            "Symbol", "ID", "Entry→Exit", "PnL", "Hold", "Close Reason", "Opened", "Closed"
         ])
         
         table.setAlternatingRowColors(True)
@@ -276,8 +276,8 @@ class TradingDashboard(QMainWindow):
         # RESPONSIVE LAYOUT: Auto-resize columns to content
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        # Close Reason column stretches to fill remaining space
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        # Close Reason column (index 5) stretches to fill remaining space
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # BUG FIX: was 4, now 5 (Close Reason)
         
         # INTERACTIVE: Enable column sorting by clicking headers
         table.setSortingEnabled(True)
@@ -292,9 +292,9 @@ class TradingDashboard(QMainWindow):
         layout = QVBoxLayout()
         
         self.closed_table = QTableWidget()
-        self.closed_table.setColumnCount(6)
+        self.closed_table.setColumnCount(8)
         self.closed_table.setHorizontalHeaderLabels([
-            "Symbol", "Entry→Exit", "PnL", "Hold", "Close Reason", "Time"
+            "Symbol", "ID", "Entry→Exit", "PnL", "Hold", "Close Reason", "Opened", "Closed"
         ])
         
         self.closed_table.setAlternatingRowColors(True)
@@ -311,7 +311,7 @@ class TradingDashboard(QMainWindow):
         header = self.closed_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         # Close Reason column stretches to fill remaining space
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         
         # INTERACTIVE: Enable column sorting by clicking headers
         self.closed_table.setSortingEnabled(True)
@@ -471,7 +471,14 @@ class TradingDashboard(QMainWindow):
         total_trades = self.session_stats.get_total_trades()
         win_rate = self.session_stats.get_win_rate()
         win_rate_emoji = self.session_stats.get_win_rate_emoji()
-        pnl_usd, pnl_pct = self.session_stats.get_pnl_vs_start()
+        
+        # ✅ CORRECT FIX: Total PnL = Current Balance - Start Balance
+        # This is the ONLY correct way to calculate total session PnL because:
+        # 1. Current balance already includes all realized P&L
+        # 2. It accounts for exchange fees automatically
+        # 3. No double counting or accumulation errors
+        pnl_usd = current_balance - self.session_stats.session_start_balance
+        pnl_pct = (pnl_usd / self.session_stats.session_start_balance * 100) if self.session_stats.session_start_balance > 0 else 0.0
         
         balance_text = f"${current_balance:.2f}\nStart: ${self.session_stats.session_start_balance:.2f}"
         self.stat_labels["Balance"].setText(balance_text)
@@ -551,7 +558,7 @@ class TradingDashboard(QMainWindow):
                 item = QTableWidgetItem(f"No {tab_name.lower()} positions")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(0, 0, item)
-                table.setSpan(0, 0, 1, 9)
+                table.setSpan(0, 0, 1, 18)  # BUG FIX: 18 columns, not 9
                 return
             
             table.setRowCount(len(positions))
@@ -591,8 +598,9 @@ class TradingDashboard(QMainWindow):
                 table.setItem(row, 3, QTableWidgetItem(ColorHelper.format_price(pos.entry_price)))
                 table.setItem(row, 4, QTableWidgetItem(ColorHelper.format_price(pos.current_price)))
                 
-                # Stop Loss (IMPROVEMENT 3)
+                # Stop Loss - Column 5 (IMPROVEMENT 3)
                 sl_item = QTableWidgetItem(ColorHelper.format_price(pos.stop_loss))
+                sl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 5, sl_item)
             
                 # Calculate ROE
@@ -603,7 +611,7 @@ class TradingDashboard(QMainWindow):
                                      pos.trailing_data and 
                                      pos.trailing_data.enabled)
                 
-                # Type with tooltip (IMPROVEMENT 4)
+                # Type - Column 6 (IMPROVEMENT 4)
                 type_item = QTableWidgetItem()
                 if is_trailing_active:
                     type_item.setText("TRAILING")
@@ -614,9 +622,9 @@ class TradingDashboard(QMainWindow):
                     type_item.setForeground(QBrush(ColorHelper.INFO))
                     type_item.setToolTip("Fixed Stop Loss: Stop loss fisso a -50% ROE")
                 type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 5, type_item)
+                table.setItem(row, 6, type_item)
             
-                # SL % with tooltip - NORMALIZED: Always show as ROE% (price% × leverage)
+                # SL % - Column 7 - NORMALIZED: Always show as ROE% (price% × leverage)
                 sl_pct_item = QTableWidgetItem()
                 
                 # Calculate price distance (always shows protection direction)
@@ -664,19 +672,19 @@ class TradingDashboard(QMainWindow):
                 else:
                     sl_pct_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Verde
                 sl_pct_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 6, sl_pct_item)
+                table.setItem(row, 7, sl_pct_item)
                 
-                # PnL % (IMPROVEMENT 3) - Separated column
+                # PnL % - Column 8 (IMPROVEMENT 3)
                 pnl_pct_item = QTableWidgetItem(ColorHelper.format_pct(pos.unrealized_pnl_pct))
                 ColorHelper.color_cell(pnl_pct_item, pos.unrealized_pnl_usd)
                 pnl_pct_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 7, pnl_pct_item)
+                table.setItem(row, 8, pnl_pct_item)
                 
-                # PnL $ (IMPROVEMENT 3) - Separated column
+                # PnL $ - Column 9 (IMPROVEMENT 3)
                 pnl_usd_item = QTableWidgetItem(ColorHelper.format_usd(pos.unrealized_pnl_usd))
                 ColorHelper.color_cell(pnl_usd_item, pos.unrealized_pnl_usd)
                 pnl_usd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 8, pnl_usd_item)
+                table.setItem(row, 9, pnl_usd_item)
                 
                 # Liquidation Price - Calcolo basato su leverage e direction
                 # Formula: Liq = Entry ± (Entry / Leverage) per LONG/SHORT
@@ -707,9 +715,9 @@ class TradingDashboard(QMainWindow):
                     f"🔵 >15%: Sicuro"
                 )
                 liq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 9, liq_item)
+                table.setItem(row, 10, liq_item)
                 
-                # Time in Position
+                # Time in Position - Column 11
                 if pos.entry_time:
                     entry_dt = datetime.fromisoformat(pos.entry_time)
                     now = datetime.now()
@@ -965,7 +973,7 @@ class TradingDashboard(QMainWindow):
                 item = QTableWidgetItem("No closed positions")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(0, 0, item)
-                table.setSpan(0, 0, 1, 6)
+                table.setSpan(0, 0, 1, 8)
                 return
             
             table.setRowCount(len(closed_positions))
@@ -978,9 +986,22 @@ class TradingDashboard(QMainWindow):
             symbol_short = pos.symbol.replace('/USDT:USDT', '')
             table.setItem(row, 0, QTableWidgetItem(symbol_short))
             
+            # ID - Extract time from position_id
+            pos_id = getattr(pos, 'position_id', '')
+            if pos_id and '_' in pos_id:
+                parts = pos_id.split('_')
+                if len(parts) >= 3:
+                    time_part = parts[-2]  # "093445"
+                    id_display = time_part[:4]  # "0934" (HH:MM)
+                else:
+                    id_display = pos_id[-8:]
+            else:
+                id_display = "N/A"
+            table.setItem(row, 1, QTableWidgetItem(id_display))
+            
             # Entry → Exit
             entry_exit = f"${pos.entry_price:.4f} → ${pos.current_price:.4f}"
-            table.setItem(row, 1, QTableWidgetItem(entry_exit))
+            table.setItem(row, 2, QTableWidgetItem(entry_exit))
             
             # PnL with ROE% clarification
             roe_pct = pos.unrealized_pnl_pct
@@ -1002,7 +1023,7 @@ class TradingDashboard(QMainWindow):
                 f"Formula: ROE% = Price% × Leverage"
             )
             
-            table.setItem(row, 2, pnl_item)
+            table.setItem(row, 3, pnl_item)
             
             # Hold Time
             if pos.entry_time and pos.close_time:
@@ -1017,7 +1038,7 @@ class TradingDashboard(QMainWindow):
                     hold_str = f"{hours}h {minutes}m"
             else:
                 hold_str = "N/A"
-            table.setItem(row, 3, QTableWidgetItem(hold_str))
+            table.setItem(row, 4, QTableWidgetItem(hold_str))
             
             # Close Reason with PnL indicator and detailed snapshot tooltip
             is_profit = pos.unrealized_pnl_usd > 0
@@ -1041,6 +1062,29 @@ class TradingDashboard(QMainWindow):
             
             reason_item = QTableWidgetItem(reason_str)
             reason_item.setForeground(QBrush(ColorHelper.POSITIVE if is_profit else ColorHelper.NEGATIVE))
+            table.setItem(row, 5, reason_item)
+            
+            # Opened timestamp
+            if pos.entry_time:
+                try:
+                    entry_dt = datetime.fromisoformat(pos.entry_time)
+                    opened_str = entry_dt.strftime("%H:%M:%S")
+                except:
+                    opened_str = "N/A"
+            else:
+                opened_str = "N/A"
+            table.setItem(row, 6, QTableWidgetItem(opened_str))
+            
+            # Closed timestamp
+            if pos.close_time:
+                try:
+                    close_dt = datetime.fromisoformat(pos.close_time)
+                    closed_str = close_dt.strftime("%H:%M:%S")
+                except:
+                    closed_str = "N/A"
+            else:
+                closed_str = "N/A"
+            table.setItem(row, 7, QTableWidgetItem(closed_str))
             
             # Build detailed tooltip with close snapshot data
             if pos.close_snapshot:
@@ -1102,16 +1146,6 @@ class TradingDashboard(QMainWindow):
                     reason_item.setToolTip(f"Close snapshot error: {e}")
             else:
                 reason_item.setToolTip(f"Status: {pos.status}\nNo snapshot available")
-            
-            table.setItem(row, 4, reason_item)
-            
-            # Close Time
-            if pos.close_time:
-                close_dt = datetime.fromisoformat(pos.close_time)
-                time_str = close_dt.strftime("%H:%M")
-            else:
-                time_str = "N/A"
-            table.setItem(row, 5, QTableWidgetItem(time_str))
         
         # Center align
         for row in range(table.rowCount()):
@@ -1135,17 +1169,31 @@ class TradingDashboard(QMainWindow):
             item = QTableWidgetItem("No closed trades yet")
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.closed_table.setItem(0, 0, item)
-            self.closed_table.setSpan(0, 0, 1, 6)
+            self.closed_table.setSpan(0, 0, 1, 8)  # BUG FIX: 8 columns, not 6
             return
         
         self.closed_table.setRowCount(len(all_trades))
         
         for row, trade in enumerate(all_trades):
+            # Column 0: Symbol
             self.closed_table.setItem(row, 0, QTableWidgetItem(trade.symbol))
             
-            entry_exit = f"${trade.entry_price:,.4f} → ${trade.exit_price:,.4f}"
-            self.closed_table.setItem(row, 1, QTableWidgetItem(entry_exit))
+            # Column 1: ID - Extract from close_time as timestamp
+            if trade.close_time:
+                try:
+                    close_dt = datetime.fromisoformat(trade.close_time)
+                    id_display = close_dt.strftime("%H%M")  # "1550" format
+                except:
+                    id_display = "N/A"
+            else:
+                id_display = "N/A"
+            self.closed_table.setItem(row, 1, QTableWidgetItem(id_display))
             
+            # Column 2: Entry→Exit
+            entry_exit = f"${trade.entry_price:,.4f} → ${trade.exit_price:,.4f}"
+            self.closed_table.setItem(row, 2, QTableWidgetItem(entry_exit))
+            
+            # Column 3: PnL
             # Calculate price change % (without leverage)
             price_change_pct = trade.pnl_pct / trade.leverage if trade.leverage > 0 else trade.pnl_pct
             
@@ -1162,31 +1210,28 @@ class TradingDashboard(QMainWindow):
                 f"Leverage: {trade.leverage}x\n\n"
                 f"Example: 7% price × 10x lev = 70% ROE"
             )
+            self.closed_table.setItem(row, 3, pnl_item)
             
-            self.closed_table.setItem(row, 2, pnl_item)
-            
+            # Column 4: Hold Time
             if trade.hold_time_minutes < 60:
                 hold_str = f"{trade.hold_time_minutes}m"
             else:
                 hours = trade.hold_time_minutes // 60
                 minutes = trade.hold_time_minutes % 60
                 hold_str = f"{hours}h {minutes}m"
-            self.closed_table.setItem(row, 3, QTableWidgetItem(hold_str))
+            self.closed_table.setItem(row, 4, QTableWidgetItem(hold_str))
             
-            # Build reason with profit/loss info
+            # Column 5: Close Reason
             is_profit = trade.pnl_usd > 0
             pnl_sign = "+" if is_profit else ""
             
             # Map reason to descriptive text with improved logic
             if "STOP_LOSS" in trade.close_reason or "MANUAL" in trade.close_reason:
-                # Se è positivo, era un trailing stop che ha protetto i guadagni
                 if is_profit:
                     reason_str = f"✅ Trailing Stop Hit with Gain {pnl_sign}{trade.pnl_pct:.1f}%"
                 else:
-                    # Se è negativo, era uno stop loss fisso (circa -50% ROE con leva)
                     reason_str = f"❌ SL Hit {pnl_sign}{trade.pnl_pct:.1f}%"
             elif "TRAILING" in trade.close_reason:
-                # Trailing stop esplicito
                 if is_profit:
                     reason_str = f"✅ Trailing Stop Hit with Gain {pnl_sign}{trade.pnl_pct:.1f}%"
                 else:
@@ -1204,11 +1249,29 @@ class TradingDashboard(QMainWindow):
             else:
                 reason_item.setForeground(QBrush(ColorHelper.NEGATIVE))
             
-            self.closed_table.setItem(row, 4, reason_item)
+            self.closed_table.setItem(row, 5, reason_item)
             
-            close_time = datetime.fromisoformat(trade.close_time)
-            time_str = close_time.strftime("%H:%M")
-            self.closed_table.setItem(row, 5, QTableWidgetItem(time_str))
+            # Column 6: Opened timestamp
+            if trade.entry_time:
+                try:
+                    entry_dt = datetime.fromisoformat(trade.entry_time)
+                    opened_str = entry_dt.strftime("%H:%M:%S")
+                except:
+                    opened_str = "N/A"
+            else:
+                opened_str = "N/A"
+            self.closed_table.setItem(row, 6, QTableWidgetItem(opened_str))
+            
+            # Column 7: Closed timestamp
+            if trade.close_time:
+                try:
+                    close_dt = datetime.fromisoformat(trade.close_time)
+                    closed_str = close_dt.strftime("%H:%M:%S")
+                except:
+                    closed_str = "N/A"
+            else:
+                closed_str = "N/A"
+            self.closed_table.setItem(row, 7, QTableWidgetItem(closed_str))
         
         for row in range(self.closed_table.rowCount()):
             for col in range(self.closed_table.columnCount()):

@@ -284,6 +284,15 @@ class TradingOrchestrator:
             
             open_reason = " | ".join(open_reason_parts)
             
+            # Extract ADX from signal_data if available
+            adx_value = 0.0
+            if 'adx' in signal_data:
+                adx_value = float(signal_data.get('adx', 0.0))
+            elif 'indicators' in signal_data and isinstance(signal_data['indicators'], dict):
+                adx_value = float(signal_data['indicators'].get('adx', 0.0))
+            elif hasattr(market_data, 'adx'):
+                adx_value = float(market_data.adx) if market_data.adx else 0.0
+            
             position_id = self.position_manager.thread_safe_create_position(
                 symbol=symbol,
                 side=side,
@@ -291,7 +300,10 @@ class TradingOrchestrator:
                 position_size=position_usd_value,  # USD value
                 leverage=config.LEVERAGE,
                 confidence=confidence,
-                open_reason=open_reason  # FIX: Pass ML prediction details
+                open_reason=open_reason,  # FIX: Pass ML prediction details
+                atr=market_data.atr,  # Pass technical indicators for dashboard
+                adx=adx_value,  # FIX: Extract ADX from signal_data
+                volatility=market_data.volatility
                 # Note: SL già applicato su Bybit, non serve passarlo al tracker
             )
             
