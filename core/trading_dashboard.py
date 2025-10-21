@@ -33,6 +33,7 @@ from PyQt6.QtGui import QFont, QColor, QBrush
 from qasync import QEventLoop
 import sqlite3
 from pathlib import Path
+import config
 
 
 class ColorHelper:
@@ -80,16 +81,18 @@ class ColorHelper:
 class TradingDashboard(QMainWindow):
     """Live trading dashboard with PyQt6 GUI + qasync integration"""
     
-    def __init__(self, position_manager, session_stats):
+    def __init__(self, position_manager, session_stats, exchange=None):
         super().__init__()
         
         self.position_manager = position_manager
         self.session_stats = session_stats
+        self.exchange = exchange  # Store exchange for direct balance fetching
         self.last_update_time = datetime.now()
         self.update_interval = 30000  # 30 seconds - less lag
         self.update_timer = None
         self.is_running = False
         self.api_call_count = 0
+        self._last_fetched_balance = 0.0  # Cache for balance
         
         # Cache per ridurre operazioni - SEPARATE per ogni tab
         self._cached_synced = []
@@ -219,6 +222,10 @@ class TradingDashboard(QMainWindow):
         self.closed_tab_table = self._create_closed_table()
         self.tabs.addTab(self.closed_tab_table, "CLOSED (0)")
         
+        # TAB 4: ADAPTIVE LEARNING - Stato sistema adattivo
+        self.adaptive_tab = self._create_adaptive_tab()
+        self.tabs.addTab(self.adaptive_tab, "🧠 ADAPTIVE LEARNING")
+        
         layout.addWidget(self.tabs)
         group.setLayout(layout)
         return group
@@ -254,6 +261,77 @@ class TradingDashboard(QMainWindow):
         header.setSectionsClickable(True)
         
         return table
+    
+    def _create_adaptive_tab(self) -> QWidget:
+        """Create adaptive learning status tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("🧠 ADAPTIVE LEARNING SYSTEM - Real-Time Status")
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        
+        # Grid for main stats
+        stats_grid = QGridLayout()
+        
+        # Create labels for adaptive stats
+        self.adaptive_labels = {}
+        adaptive_categories = [
+            ("τ Global", "Global threshold"),
+            ("τ LONG", "LONG threshold"),
+            ("τ SHORT", "SHORT threshold"),
+            ("Kelly Factor", "Position sizing multiplier"),
+            ("Kelly Cap", "Max position fraction"),
+            ("Total Trades", "Trades learned from"),
+            ("Win Rate", "Recent performance"),
+            ("Calibrators", "Active calibrators"),
+            ("Drift Status", "Market drift detection"),
+            ("Prudent Mode", "Conservative mode"),
+            ("Cooldowns", "Symbols in cooldown"),
+            ("Last Adaptation", "Last param update")
+        ]
+        
+        row = 0
+        col = 0
+        for i, (key, tooltip) in enumerate(adaptive_categories):
+            # Header
+            header = QLabel(key)
+            header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            header.setToolTip(tooltip)
+            stats_grid.addWidget(header, row, col)
+            
+            # Value
+            value = QLabel("Loading...")
+            value.setFont(QFont("Segoe UI", 9))
+            stats_grid.addWidget(value, row + 1, col)
+            
+            self.adaptive_labels[key] = value
+            
+            col += 1
+            if col >= 4:  # 4 columns
+                col = 0
+                row += 2
+        
+        layout.addLayout(stats_grid)
+        
+        # Recent performance table
+        perf_label = QLabel("📈 RECENT PERFORMANCE (Last 100 Trades)")
+        perf_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        layout.addWidget(perf_label)
+        
+        self.adaptive_perf_table = QTableWidget()
+        self.adaptive_perf_table.setColumnCount(7)
+        self.adaptive_perf_table.setHorizontalHeaderLabels([
+            "Win Rate", "Avg ROE", "Avg Win", "Avg Loss", "Profit Factor", "R/R Ratio", "Total PnL"
+        ])
+        self.adaptive_perf_table.setMaximumHeight(100)
+        self.adaptive_perf_table.setAlternatingRowColors(True)
+        layout.addWidget(self.adaptive_perf_table)
+        
+        widget.setLayout(layout)
+        return widget
     
     def _create_closed_table(self) -> QTableWidget:
         """Create a closed positions table"""
@@ -541,6 +619,9 @@ class TradingDashboard(QMainWindow):
         self._populate_position_table(self.all_active_table, all_active_positions, "ALL ACTIVE")
         self._populate_position_table(self.session_table, self._cached_session, "OPENED THIS SESSION")
         self._populate_closed_tab(self.closed_tab_table, self._cached_closed)
+        
+        # Update adaptive learning tab
+        self._update_adaptive_tab()
     
     def _populate_position_table(self, table: QTableWidget, positions: list, tab_name: str):
         """Populate a position table with position data"""
@@ -1307,17 +1388,164 @@ class TradingDashboard(QMainWindow):
         status_text = f"Last sync: {last_sync}s ago | API calls: ~{self.api_call_count}/min | Status: OK"
         self.statusBar().showMessage(status_text)
     
-    def _on_timer_update(self):
-        """Timer callback for periodic updates - NON-BLOCKING"""
+    def _update_adaptive_tab(self):
+        """Update adaptive learning tab with real-time data"""
         try:
-            balance_summary = self.position_manager.safe_get_session_summary()
-            current_balance = balance_summary.get('balance', 0)
+            from core.adaptation_core import global_adaptation_core
             
-            # Schedule async update without blocking GUI
-            asyncio.ensure_future(self.update_dashboard_async(current_balance))
+            # Get current state
+            state = global_adaptation_core.get_current_state()
+            
+            # Update main stats
+            self.adaptive_labels["τ Global"].setText(f"{state.get('tau_global', 0):.2f}")
+            
+            tau_side = state.get('tau_side', {})
+            self.adaptive_labels["τ LONG"].setText(f"{tau_side.get('LONG', 0):.2f}")
+            self.adaptive_labels["τ SHORT"].setText(f"{tau_side.get('SHORT', 0):.2f}")
+            
+            self.adaptive_labels["Kelly Factor"].setText(f"{state.get('kelly_factor', 0):.2f}×")
+            self.adaptive_labels["Kelly Cap"].setText(f"{state.get('kelly_max_fraction', 0)*100:.1f}%")
+            
+            self.adaptive_labels["Total Trades"].setText(f"{state.get('total_trades', 0)}")
+            
+            # Get recent performance
+            perf = global_adaptation_core.get_recent_performance(window=100)
+            win_rate = perf.get('win_rate', 0) * 100 if 'win_rate' in perf else 0
+            self.adaptive_labels["Win Rate"].setText(f"{win_rate:.1f}%")
+            
+            self.adaptive_labels["Calibrators"].setText(f"{state.get('n_calibrators', 0)}")
+            
+            # Drift status
+            drift_active = state.get('prudent_mode_active', False)
+            if drift_active:
+                drift_text = f"🌊 ACTIVE ({state.get('prudent_cycles_remaining', 0)} cycles)"
+                self.adaptive_labels["Drift Status"].setStyleSheet("color: #F59E0B;")
+            else:
+                drift_text = "✅ Normal"
+                self.adaptive_labels["Drift Status"].setStyleSheet("color: #22C55E;")
+            self.adaptive_labels["Drift Status"].setText(drift_text)
+            
+            # Prudent mode
+            if drift_active:
+                self.adaptive_labels["Prudent Mode"].setText(f"🟡 ON")
+                self.adaptive_labels["Prudent Mode"].setStyleSheet("color: #F59E0B;")
+            else:
+                self.adaptive_labels["Prudent Mode"].setText(f"⚪ OFF")
+                self.adaptive_labels["Prudent Mode"].setStyleSheet("color: #E6EEF8;")
+            
+            # Cooldowns
+            cooldowns = state.get('active_cooldowns', [])
+            cooldown_text = f"{len(cooldowns)}" if cooldowns else "0"
+            self.adaptive_labels["Cooldowns"].setText(cooldown_text)
+            
+            # Last adaptation
+            last_adapt = state.get('last_adaptation', 'Never')
+            if last_adapt != 'Never':
+                try:
+                    adapt_dt = datetime.fromisoformat(last_adapt)
+                    time_ago = (datetime.now() - adapt_dt).seconds // 60
+                    if time_ago < 60:
+                        adapt_str = f"{time_ago}m ago"
+                    else:
+                        hours = time_ago // 60
+                        adapt_str = f"{hours}h ago"
+                except:
+                    adapt_str = "N/A"
+            else:
+                adapt_str = "Never"
+            self.adaptive_labels["Last Adaptation"].setText(adapt_str)
+            
+            # Update performance table
+            if perf and perf.get('total_trades', 0) > 0:
+                self.adaptive_perf_table.setRowCount(1)
+                
+                items = [
+                    f"{win_rate:.1f}%",
+                    f"{perf.get('avg_roe', 0):+.2f}%",
+                    f"{perf.get('avg_win', 0):+.2f}%",
+                    f"{perf.get('avg_loss', 0):+.2f}%",
+                    f"{perf.get('profit_factor', 0):.2f}",
+                    f"{perf.get('reward_risk_ratio', 0):.2f}",
+                    f"${perf.get('avg_roe', 0) * 10:.2f}"  # Approximate PnL
+                ]
+                
+                for col, text in enumerate(items):
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    
+                    # Color based on value
+                    if col == 0:  # Win rate
+                        if win_rate >= 70:
+                            item.setForeground(QBrush(ColorHelper.POSITIVE))
+                        elif win_rate >= 50:
+                            item.setForeground(QBrush(ColorHelper.INFO))
+                        else:
+                            item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                    elif col in [1, 6]:  # ROE, Total PnL
+                        value = perf.get('avg_roe', 0)
+                        if value > 0:
+                            item.setForeground(QBrush(ColorHelper.POSITIVE))
+                        elif value < 0:
+                            item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                    
+                    self.adaptive_perf_table.setItem(0, col, item)
+            else:
+                self.adaptive_perf_table.setRowCount(1)
+                item = QTableWidgetItem("No trades yet - system collecting data")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.adaptive_perf_table.setItem(0, 0, item)
+                self.adaptive_perf_table.setSpan(0, 0, 1, 7)
+                
+        except Exception as e:
+            logging.error(f"❌ Failed to update adaptive tab: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            # Don't crash if adaptive system not available
+            pass
+    
+    def _on_timer_update(self):
+        """Timer callback for periodic updates - NON-BLOCKING with real balance fetch"""
+        try:
+            # Schedule async update that will fetch fresh balance
+            asyncio.ensure_future(self._async_timer_update())
             self.api_call_count += 1
         except Exception as e:
             logging.error(f"Error in timer update: {e}")
+    
+    async def _async_timer_update(self):
+        """Async timer update with fresh balance fetching from Bybit"""
+        try:
+            # Fetch fresh balance from Bybit if exchange is available
+            if self.exchange and not config.DEMO_MODE:
+                try:
+                    from trade_manager import get_real_balance
+                    real_balance = await get_real_balance(self.exchange)
+                    
+                    if real_balance and real_balance > 0:
+                        self._last_fetched_balance = real_balance
+                        # Also update position manager to keep it in sync
+                        self.position_manager.update_real_balance(real_balance)
+                        logging.debug(f"💰 Dashboard: Balance fetched from Bybit: ${real_balance:.2f}")
+                    else:
+                        # Fallback to cached value
+                        logging.debug("⚠️ Dashboard: Failed to fetch balance, using cached value")
+                        balance_summary = self.position_manager.safe_get_session_summary()
+                        self._last_fetched_balance = balance_summary.get('balance', 0)
+                except Exception as fetch_error:
+                    logging.debug(f"⚠️ Dashboard: Balance fetch error: {fetch_error}")
+                    # Fallback to position manager balance
+                    balance_summary = self.position_manager.safe_get_session_summary()
+                    self._last_fetched_balance = balance_summary.get('balance', 0)
+            else:
+                # Demo mode or no exchange - use position manager balance
+                balance_summary = self.position_manager.safe_get_session_summary()
+                self._last_fetched_balance = balance_summary.get('balance', 0)
+            
+            # Update dashboard with fresh balance
+            await self.update_dashboard_async(self._last_fetched_balance)
+            
+        except Exception as e:
+            logging.error(f"Error in async timer update: {e}")
     
     def start(self):
         """Start the dashboard (non-async, for synchronous usage)"""
@@ -1349,9 +1577,34 @@ class TradingDashboard(QMainWindow):
         self.update_interval = update_interval * 1000
         self.is_running = True
         
-        # Initial update
-        balance_summary = self.position_manager.safe_get_session_summary()
-        current_balance = balance_summary.get('balance', 0)
+        # Store exchange for balance fetching
+        self.exchange = exchange
+        
+        # Initial update with fresh balance fetch
+        if exchange and not config.DEMO_MODE:
+            try:
+                from trade_manager import get_real_balance
+                real_balance = await get_real_balance(exchange)
+                if real_balance and real_balance > 0:
+                    current_balance = real_balance
+                    self._last_fetched_balance = real_balance
+                    self.position_manager.update_real_balance(real_balance)
+                    logging.info(f"💰 Dashboard initialized with fresh balance: ${real_balance:.2f}")
+                else:
+                    balance_summary = self.position_manager.safe_get_session_summary()
+                    current_balance = balance_summary.get('balance', 0)
+                    self._last_fetched_balance = current_balance
+            except Exception as e:
+                logging.warning(f"Failed to fetch initial balance: {e}")
+                balance_summary = self.position_manager.safe_get_session_summary()
+                current_balance = balance_summary.get('balance', 0)
+                self._last_fetched_balance = current_balance
+        else:
+            # Demo mode
+            balance_summary = self.position_manager.safe_get_session_summary()
+            current_balance = balance_summary.get('balance', 0)
+            self._last_fetched_balance = current_balance
+        
         self.update_dashboard(current_balance)
         
         # Setup QTimer for periodic updates

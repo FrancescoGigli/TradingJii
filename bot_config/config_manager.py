@@ -29,8 +29,9 @@ class ConfigManager:
         """
         default_timeframes = "15m,30m,1h"
         
-        # Check if running in non-interactive mode
-        interactive_mode = os.getenv('BOT_INTERACTIVE', 'true').lower() != 'false'
+        # FORCED HEADLESS MODE: Always use LIVE mode (no menu)
+        # To use interactive mode, set BOT_INTERACTIVE=true environment variable
+        interactive_mode = os.getenv('BOT_INTERACTIVE', 'false').lower() == 'true'
         
         if interactive_mode:
             self._interactive_config(default_timeframes)

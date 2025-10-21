@@ -119,13 +119,14 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # ==============================================================================
 # 🛡️ STOP LOSS & TAKE PROFIT CONFIGURATION
 # ==============================================================================
-# Stop Loss settings
+# Stop Loss settings (OPTIMIZED FOR BETTER RISK/REWARD)
+# NEW: -3% price = -30% ROE with 10x leverage (was -50% ROE)
 SL_USE_FIXED = True                  # Use fixed percentage SL (True) or ATR-based (False)
-SL_FIXED_PCT = 0.05                  # Fixed 5% stop loss against position
+SL_FIXED_PCT = 0.03                  # IMPROVED: 3% stop loss (was 5%) = -30% ROE max risk
 SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss (if not using fixed)
-SL_PRICE_PCT_FALLBACK = 0.06        # 6% fallback if ATR not available
-SL_MIN_DISTANCE_PCT = 0.02          # Minimum 2% distance from entry
-SL_MAX_DISTANCE_PCT = 0.10          # Maximum 10% distance from entry
+SL_PRICE_PCT_FALLBACK = 0.04         # 4% fallback if ATR not available (was 6%)
+SL_MIN_DISTANCE_PCT = 0.015          # Minimum 1.5% distance from entry (was 2%)
+SL_MAX_DISTANCE_PCT = 0.08           # Maximum 8% distance from entry (was 10%)
 
 # Take Profit settings (NOT USED - positions managed by trailing only)
 TP_ENABLED = False                   # Take profit disabled (using trailing stop instead)
@@ -134,22 +135,23 @@ TP_MAX_PROFIT_PCT = 0.15            # Maximum 15% profit target
 TP_MIN_PROFIT_PCT = 0.03            # Minimum 3% profit target
 
 # ==============================================================================
-# 🎪 TRAILING STOP CONFIGURATION (OPTIMIZED)
+# 🎪 TRAILING STOP CONFIGURATION (OPTIMIZED FOR BETTER R/R)
 # ==============================================================================
 # Dynamic trailing stop that follows price at fixed distance
 
 # Master switch
 TRAILING_ENABLED = True              # Enable trailing stop system
 
-# Activation trigger
-TRAILING_TRIGGER_PCT = 0.01          # Activate at +1% price movement (+10% with 10x leverage)
+# Activation trigger (IMPROVED: Let winners run more)
+# NEW: +1.5% price = +15% ROE activation (was +10% ROE)
+TRAILING_TRIGGER_PCT = 0.015         # IMPROVED: Activate at +1.5% price (+15% ROE with 10x leverage)
 
 # Protection strategy (ROE-BASED SYSTEM)
 # CRITICAL: Distances are in ROE% (Return On Equity), NOT price%!
-# With 10x leverage: 8% ROE = 0.8% price movement
+# IMPROVED: More breathing room for profit taking
 TRAILING_DISTANCE_PCT = 0.10         # Legacy (not used)
-TRAILING_DISTANCE_ROE_OPTIMAL = 0.08 # Optimal: Protect all but last 8% of ROE
-TRAILING_DISTANCE_ROE_UPDATE = 0.10  # Update when SL is 10% ROE away from optimal
+TRAILING_DISTANCE_ROE_OPTIMAL = 0.10 # IMPROVED: Protect all but last 10% ROE (was 8%)
+TRAILING_DISTANCE_ROE_UPDATE = 0.12  # IMPROVED: Update when 12% ROE away (was 10%)
 
 # Update settings (optimized for performance)
 TRAILING_UPDATE_INTERVAL = 30        # Check every 30 seconds (more responsive)
@@ -225,8 +227,9 @@ EXPECTED_COLUMNS = [
     "vol_price_alignment"
 ]
 
-# Numero di feature finali = 2x EXPECTED_COLUMNS (corrente + trend)
-N_FEATURES_FINAL = len(EXPECTED_COLUMNS) * 2
+# Numero di feature finali = 66 (actual features created by temporal system)
+# Breakdown: 33 current + 27 momentum + 6 critical stats = 66
+N_FEATURES_FINAL = 66
 
 MODEL_RATES = {"xgb": 1.0}
 
@@ -374,52 +377,6 @@ MAX_CONCURRENT_POSITIONS = 5  # 5 positions for larger position sizes
 # Percentuale del balance da usare (default 98% per lasciare buffer)
 PORTFOLIO_BALANCE_USAGE = 0.98
 
-# ==============================================================================
-# 🧹 FRESH START MODE
-# ==============================================================================
-# Modalità fresh start: chiude tutte le posizioni e resetta file all'avvio
-# Utile per:
-# - Testing di fix/modifiche con ambiente pulito
-# - Forzare reload di codice aggiornato
-# - Ripartire da zero senza posizioni esistenti
-
-# Master switch
-FRESH_START_MODE = False  # False = NON chiudere posizioni all'avvio (raccomandato)
-
-# Opzioni granulari (cosa resettare)
-FRESH_START_OPTIONS = {
-    'close_all_positions': True,      # Chiudi tutte le posizioni su Bybit
-    'clear_position_json': True,      # Cancella thread_safe_positions.json
-    'clear_learning_state': False,    # Mantieni learning history (raccomandato)
-    'clear_rl_model': False,          # MANTIENI RL agent addestrato (NON cancellare!)
-    'log_detailed_cleanup': True      # Log dettagliato operazioni di cleanup
-}
-
-# Esempi di configurazione per diversi scenari:
-#
-# SCENARIO 1: Trading Normale (raccomandato)
-# FRESH_START_MODE = False  # Protegge posizioni esistenti e modello RL
-#
-# SCENARIO 2: Chiusura Posizioni (senza reset modelli)
-# FRESH_START_MODE = True
-# FRESH_START_OPTIONS = {
-#     'close_all_positions': True,
-#     'clear_position_json': True,
-#     'clear_learning_state': False,  # Mantieni history!
-#     'clear_rl_model': False,        # Mantieni modello addestrato!
-#     'log_detailed_cleanup': True
-# }
-#
-# SCENARIO 3: Reset TOTALE (solo per debugging)
-# FRESH_START_MODE = True
-# FRESH_START_OPTIONS = {
-#     'close_all_positions': True,
-#     'clear_position_json': True,
-#     'clear_learning_state': True,   # Reset learning
-#     'clear_rl_model': True,         # Reset RL (attenzione!)
-#     'log_detailed_cleanup': True
-# }
-
 # ----------------------------------------------------------------------
 # Data Cache
 # ----------------------------------------------------------------------
@@ -431,3 +388,53 @@ CACHE_AUTO_CLEANUP = True
 
 CACHE_EXPECTED_HIT_RATE = 70        
 CACHE_API_SAVINGS_TARGET = 80
+
+# ==============================================================================
+# 🧠 ADAPTIVE LEARNING SYSTEM - Meta-Learning Configuration
+# ==============================================================================
+# Sistema di apprendimento adattivo che impara dai trade outcomes
+
+# Master Switch
+ADAPTIVE_LEARNING_ENABLED = True  # Set False to disable (fallback to static parameters)
+
+# Adaptation Triggers
+ADAPTIVE_MIN_TRADES_FOR_UPDATE = 20   # Minimum trades before adaptation (reduced for testing)
+ADAPTIVE_UPDATE_INTERVAL_HOURS = 6    # Or every 6 hours (faster for testing)
+
+# Threshold Controller (τ)
+ADAPTIVE_TAU_GLOBAL_INIT = 0.70       # Initial global threshold
+ADAPTIVE_TAU_SIDE_INIT = {'LONG': 0.70, 'SHORT': 0.72}  # Per-side thresholds
+ADAPTIVE_TAU_TF_INIT = {'15m': 0.70, '30m': 0.71, '1h': 0.71}  # Per-timeframe
+ADAPTIVE_TAU_MIN = 0.60               # Minimum allowed threshold
+ADAPTIVE_TAU_MAX = 0.85               # Maximum allowed threshold
+ADAPTIVE_TAU_MIN_SAMPLES_PER_BUCKET = 50  # Min trades per bucket for update
+
+# Penalty System (Error Weighting)
+ADAPTIVE_PENALTY_W_CONF = 1.0         # Weight for confidence errors
+ADAPTIVE_PENALTY_W_SL = 1.5           # Weight for stop loss hits
+ADAPTIVE_PENALTY_W_FAST = 0.5         # Weight for fast exits
+ADAPTIVE_PENALTY_W_MAE = 0.3          # Weight for adverse excursions
+ADAPTIVE_PENALTY_COOLDOWN_THRESHOLD = 1.2  # Penalty EWMA to trigger cooldown
+ADAPTIVE_PENALTY_COOLDOWN_CYCLES = 3  # Cycles to cooldown
+ADAPTIVE_PENALTY_EWMA_ALPHA = 0.15    # EWMA decay factor
+
+# Confidence Calibration
+ADAPTIVE_CALIBRATION_MIN_SAMPLES = 50  # Min samples for calibration
+ADAPTIVE_CALIBRATION_N_BINS = 10      # Number of confidence bins
+ADAPTIVE_CALIBRATION_PRIOR_ALPHA = 5.0  # Beta distribution alpha
+ADAPTIVE_CALIBRATION_PRIOR_BETA = 2.0   # Beta distribution beta
+
+# Kelly Criterion & Risk Optimizer
+ADAPTIVE_KELLY_FACTOR = 0.25          # Quarter-Kelly (conservative)
+ADAPTIVE_KELLY_MAX_FRACTION = 0.01    # Max 1% of wallet per trade
+ADAPTIVE_KELLY_TARGET_SIGMA = 1.0     # Target volatility threshold
+ADAPTIVE_DAILY_LOSS_CAP_MULTIPLIER = 2.0  # 2× median loss for daily cap
+
+# Drift Detection (Page-Hinkley)
+ADAPTIVE_DRIFT_LAMBDA = 0.5           # Drift sensitivity
+ADAPTIVE_DRIFT_DELTA = 0.02           # Alarm threshold
+ADAPTIVE_DRIFT_PRUDENT_CYCLES = 100   # Cycles in prudent mode after drift
+
+# Data Retention
+ADAPTIVE_MAX_TRADES_RETENTION = 5000  # Max trades to keep in database
+ADAPTIVE_MAX_DAYS_RETENTION = 180     # Max days to keep

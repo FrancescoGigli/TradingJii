@@ -135,7 +135,7 @@ async def get_real_balance(exchange):
     
     # Modalità Live: usa API Bybit reali
     try:
-        logging.info("🔍 LIVE MODE: Tentativo di recupero balance USDT tramite API...")
+        logging.debug("🔍 LIVE MODE: Tentativo di recupero balance USDT tramite API...")
         balance = await exchange.fetch_balance()
         
         # ENHANCED: Bybit Unified Account Balance Recovery (silent processing)
@@ -223,15 +223,8 @@ async def get_real_balance(exchange):
             logging.warning(f"⚠️ Balance not available (source: {found_key})")
             return None
         else:
-            # Clean balance display - no verbose logging
-            logging.info(f"💰 Total Wallet Balance: ${usdt_balance:.2f} (Unified Account)")
-            logging.info("============================================================")
-            logging.info(">>> LIVE MODE BALANCE RECOVERY SUCCESS")
-            logging.info(">>> Account Type: Bybit Unified Account")
-            logging.info(f">>> USDT ONLY: ${usdt_balance:.2f} USD")
-            logging.info(f">>> Source: {found_key}")
-            logging.info(f">>> Ready for live trading with ${usdt_balance:.2f}")
-            logging.info("============================================================")
+            # Silent balance sync - only log changes
+            logging.debug(f"💰 Balance: ${usdt_balance:.2f} (source: {found_key})")
         
         return usdt_balance
         

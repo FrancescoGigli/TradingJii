@@ -513,6 +513,47 @@ class ThreadSafePositionManager:
                 except Exception as log_error:
                     logging.debug(f"⚠️ Failed to update decision on close: {log_error}")
                 
+                # 🧠 LOG TO ADAPTIVE LEARNING SYSTEM
+                try:
+                    from core.adaptation_core import global_adaptation_core
+                    from config import ADAPTIVE_LEARNING_ENABLED
+                    
+                    if ADAPTIVE_LEARNING_ENABLED:
+                        # Calculate trade duration
+                        entry_dt = datetime.fromisoformat(position.entry_time)
+                        close_dt = datetime.now()
+                        duration_seconds = (close_dt - entry_dt).total_seconds()
+                        
+                        # Prepare trade info for adaptive learning
+                        trade_info = {
+                            'timestamp': close_dt.isoformat(),
+                            'symbol': position.symbol,
+                            'side': position.side.upper(),
+                            'timeframe': '15m',  # Default timeframe
+                            'confidence_raw': position.confidence,
+                            'confidence_calibrated': position.confidence,  # Will be calibrated if available
+                            'entry_price': position.entry_price,
+                            'exit_price': exit_price,
+                            'roe_pct': pnl_pct,
+                            'pnl_usd': pnl_usd,
+                            'duration_s': duration_seconds,
+                            'result': 1 if pnl_pct > 0 else 0,
+                            'stop_hit': 'SL' in close_reason.upper() or 'STOP' in close_reason.upper(),
+                            'tp_hit': 'TP' in close_reason.upper() or 'PROFIT' in close_reason.upper(),
+                            'leverage': position.leverage,
+                            'cluster': 'DEFAULT',  # Can be enriched later
+                            'atr': position.atr,
+                            'adx': position.adx,
+                            'volatility': position.volatility
+                        }
+                        
+                        # Log asynchronously (non-blocking)
+                        asyncio.create_task(global_adaptation_core.log_trade_outcome_async(trade_info))
+                        logging.debug(f"🧠 Trade outcome logged to adaptive system: {position.symbol}")
+                        
+                except Exception as adaptive_error:
+                    logging.debug(f"⚠️ Failed to log to adaptive system: {adaptive_error}")
+                
                 logging.info(f"🔒 Thread-safe position closed: {position.symbol} {close_reason} PnL: {pnl_pct:+.2f}%")
                 return True
                 
@@ -794,6 +835,47 @@ class ThreadSafePositionManager:
                         self._session_balance += position.unrealized_pnl_usd
                         
                         logging.info(f"🔒 Sync: CLOSED position {symbol} PnL: {position.unrealized_pnl_pct:+.2f}%")
+                        
+                        # 🧠 LOG TO ADAPTIVE LEARNING SYSTEM (SYNC CLOSURES)
+                        try:
+                            from core.adaptation_core import global_adaptation_core
+                            from config import ADAPTIVE_LEARNING_ENABLED
+                            
+                            if ADAPTIVE_LEARNING_ENABLED:
+                                # Calculate trade duration
+                                entry_dt = datetime.fromisoformat(position.entry_time)
+                                close_dt = datetime.now()
+                                duration_seconds = (close_dt - entry_dt).total_seconds()
+                                
+                                # Prepare trade info for adaptive learning
+                                trade_info = {
+                                    'timestamp': close_dt.isoformat(),
+                                    'symbol': position.symbol,
+                                    'side': position.side.upper(),
+                                    'timeframe': '15m',  # Default timeframe
+                                    'confidence_raw': position.confidence,
+                                    'confidence_calibrated': position.confidence,
+                                    'entry_price': position.entry_price,
+                                    'exit_price': position.current_price,
+                                    'roe_pct': pnl_pct,
+                                    'pnl_usd': pnl_usd,
+                                    'duration_s': duration_seconds,
+                                    'result': 1 if pnl_pct > 0 else 0,
+                                    'stop_hit': True,  # Sync closures are usually SL/TP
+                                    'tp_hit': False,
+                                    'leverage': position.leverage,
+                                    'cluster': 'DEFAULT',
+                                    'atr': position.atr,
+                                    'adx': position.adx,
+                                    'volatility': position.volatility
+                                }
+                                
+                                # Log asynchronously (non-blocking)
+                                asyncio.create_task(global_adaptation_core.log_trade_outcome_async(trade_info))
+                                logging.debug(f"🧠 Sync closure logged to adaptive system: {position.symbol}")
+                                
+                        except Exception as adaptive_error:
+                            logging.debug(f"⚠️ Failed to log sync closure to adaptive system: {adaptive_error}")
                 
                 # Update existing positions with current prices
                 for symbol in (bybit_symbols & tracked_symbols):

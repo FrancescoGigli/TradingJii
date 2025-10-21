@@ -65,6 +65,9 @@ from trading import TradingEngine
 # Realtime display
 from core.realtime_display import initialize_global_realtime_display
 
+# Adaptive Learning System
+from core.adaptation_core import global_adaptation_core
+
 # Models
 from model_loader import load_xgboost_model_func
 from trainer import train_xgboost_model_wrapper, ensure_trained_models_dir
@@ -74,7 +77,9 @@ from utils.display_utils import display_selected_symbols
 
 async def initialize_exchange():
     """Initialize and test exchange connection with robust timestamp sync"""
-    if DEMO_MODE:
+    # CRITICAL FIX: Use config.DEMO_MODE (not the imported variable)
+    # ConfigManager modifies config.DEMO_MODE after import
+    if config.DEMO_MODE:
         logging.info(colored("🧪 DEMO MODE: Exchange not required", "yellow"))
         return None
 
@@ -201,7 +206,7 @@ async def initialize_exchange():
     return async_exchange
 
 
-async def initialize_models(config_manager, top_symbols_training):
+async def initialize_models(config_manager, top_symbols_training, exchange):
     """Load or train ML models"""
     ensure_trained_models_dir()
     logging.info(colored("🧠 Initializing ML models...", "cyan"))
@@ -214,7 +219,7 @@ async def initialize_models(config_manager, top_symbols_training):
                 logging.info(colored(f"🎯 Training new model for {tf}", "yellow"))
                 xgb_models[tf], xgb_scalers[tf], metrics = await train_xgboost_model_wrapper(
                     top_symbols_training,
-                    None,
+                    exchange,  # CRITICAL FIX: Pass exchange for data fetching during training
                     timestep=get_timesteps_for_timeframe(tf),
                     timeframe=tf,
                     use_future_returns=True,
@@ -239,6 +244,14 @@ async def main():
 
         config_manager = ConfigManager()
         selected_timeframes, selected_models, demo_mode = config_manager.select_config()
+        
+        # CRITICAL: Display mode clearly
+        if demo_mode:
+            logging.warning(colored("⚠️ ⚠️ ⚠️ RUNNING IN DEMO MODE - NO EXCHANGE INITIALIZATION ⚠️ ⚠️ ⚠️", "yellow", attrs=['bold']))
+            logging.warning(colored("Exchange will be None, only cached data will be used", "yellow"))
+        else:
+            logging.info(colored("✅ RUNNING IN LIVE MODE - Exchange will be initialized with Bybit", "green", attrs=['bold']))
+        
         logging.info(
             colored(
                 f"⚙️ Config: {len(selected_timeframes)} timeframes, {'DEMO' if demo_mode else 'LIVE'}",
@@ -248,22 +261,6 @@ async def main():
 
         async_exchange = await initialize_exchange()
         
-        # 🧹 FRESH START MODE: Close all positions and cleanup files before starting
-        if config.FRESH_START_MODE:
-            from core.fresh_start_manager import execute_fresh_start
-            logging.info(colored("🧹 Fresh Start Mode is ENABLED", "yellow", attrs=['bold']))
-            
-            fresh_start_success = await execute_fresh_start(
-                exchange=async_exchange,
-                options=config.FRESH_START_OPTIONS
-            )
-            
-            if not fresh_start_success:
-                logging.error(colored("❌ Fresh start failed - check logs above", "red"))
-                logging.warning(colored("⚠️ Proceeding anyway, but state may be inconsistent", "yellow"))
-            
-            # Small delay to ensure all operations completed
-            await asyncio.sleep(2)
         trading_engine = TradingEngine(config_manager)
 
         # Market init
@@ -285,7 +282,7 @@ async def main():
         display_selected_symbols(top_symbols, "SYMBOLS FOR LIVE ANALYSIS", volumes_data)
 
         # ML models
-        xgb_models, xgb_scalers = await initialize_models(config_manager, top_symbols_training)
+        xgb_models, xgb_scalers = await initialize_models(config_manager, top_symbols_training, async_exchange)
 
         # Fresh session
         await trading_engine.initialize_session(async_exchange)
@@ -298,6 +295,12 @@ async def main():
             trading_engine.position_manager if trading_engine.clean_modules_available else None
         )
         logging.debug(colored("📊 Realtime display initialized", "cyan"))
+
+        # Initialize Adaptive Learning System
+        if config.ADAPTIVE_LEARNING_ENABLED:
+            await global_adaptation_core.initialize()
+        else:
+            logging.warning(colored("⚠️ Adaptive Learning DISABLED in config", "yellow"))
 
         # Trading loop
         logging.info(colored("🎯 All systems ready — starting trading loop", "green"))

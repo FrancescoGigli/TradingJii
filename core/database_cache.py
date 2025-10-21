@@ -618,8 +618,9 @@ class SmartDatabaseManager:
                 last_utc = last_timestamp.replace(tzinfo=None) if last_timestamp.tzinfo else last_timestamp
                 age_minutes = (now - last_utc).total_seconds() / 60
                 
-                if age_minutes <= 3:
-                    # Data is fresh, load from database
+                # AGGRESSIVE CACHE: Only use if less than 30 seconds old (force frequent downloads)
+                if age_minutes <= 0.5:  # 30 seconds = 0.5 minutes
+                    # Data is very fresh, load from database
                     cached_data = self.db_cache.get_cached_data(symbol, timeframe)
                     self.db_cache.stats['total_api_calls_saved'] += 1
                     logging.debug(f"⚡ {symbol_short}[{timeframe}]: Using DB cache ({age_minutes:.1f}m old)")
@@ -634,6 +635,11 @@ class SmartDatabaseManager:
                     since = int(since_dt.timestamp() * 1000)
                     
                     try:
+                        # CRITICAL FIX: Check if exchange is available
+                        if exchange is None:
+                            logging.warning(f"⚠️ {symbol_short}[{timeframe}]: Exchange unavailable, using cached data")
+                            return self.db_cache.get_cached_data(symbol, timeframe)
+                        
                         new_ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100, since=since)
                         
                         if new_ohlcv:

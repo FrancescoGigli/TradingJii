@@ -33,6 +33,16 @@ except ImportError:
     TRADE_DECISION_LOGGER_AVAILABLE = False
     global_trade_decision_logger = None
 
+# Import Adaptive Learning System
+try:
+    from core.adaptation_core import global_adaptation_core
+    ADAPTIVE_LEARNING_AVAILABLE = True
+    logging.debug("🧠 Adaptive Learning System integration enabled")
+except ImportError:
+    ADAPTIVE_LEARNING_AVAILABLE = False
+    global_adaptation_core = None
+    logging.warning("⚠️ Adaptive Learning System not available")
+
 # Removed: Online Learning / Post-mortem system (not functioning)
 # Removed: Position Safety Manager (migrated to thread_safe_position_manager)
 
@@ -206,6 +216,10 @@ class TradingEngine:
             cycle_logger.log_phase(3, "SIGNAL PROCESSING & FILTERING", "yellow")
             await self.signal_processor.display_complete_analysis(prediction_results, all_symbol_data)
             all_signals = await self.signal_processor.process_prediction_results(prediction_results, all_symbol_data)
+            
+            # 🧠 ADAPTIVE FILTERING: Apply confidence calibration + threshold + cooldown
+            if ADAPTIVE_LEARNING_AVAILABLE and config.ADAPTIVE_LEARNING_ENABLED:
+                all_signals = global_adaptation_core.apply_adaptive_filtering(all_signals)
 
             # Phase 4: Ranking
             cycle_logger.log_phase(4, "RANKING & TOP SIGNAL SELECTION", "green")
@@ -333,13 +347,20 @@ class TradingEngine:
         max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
         signals_to_execute = tradeable_signals[: min(max_positions, len(tradeable_signals))]
         
-        # 🆕 NUOVO SISTEMA: Portfolio-based sizing (basato su WALLET TOTALE)
-        # Calcola margin per i segnali selezionati usando pesi fissi
+        # 🆕 ADAPTIVE KELLY-BASED SIZING or Portfolio-based fallback
         if signals_to_execute and self.clean_modules_available:
-            portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
-                signals_to_execute, available_balance, total_wallet=usdt_balance
-            )
-            logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins (based on total wallet)", "cyan"))
+            # Try adaptive Kelly-based sizing first
+            if ADAPTIVE_LEARNING_AVAILABLE and config.ADAPTIVE_LEARNING_ENABLED:
+                portfolio_margins = global_adaptation_core.calculate_adaptive_margins(
+                    signals_to_execute, available_balance, self.global_risk_calculator
+                )
+                logging.info(colored(f"🧠 Kelly-based sizing: {len(portfolio_margins)} positions with adaptive margins", "cyan"))
+            else:
+                # Fallback to fixed portfolio sizing
+                portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
+                    signals_to_execute, available_balance, total_wallet=usdt_balance
+                )
+                logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins (based on total wallet)", "cyan"))
         else:
             portfolio_margins = []
         
@@ -667,7 +688,7 @@ class TradingEngine:
         
         # Check if integrated systems are available
         if INTEGRATED_SYSTEMS_AVAILABLE and self.dashboard and self.session_stats:
-            logging.info(colored("🚀 Starting with INTEGRATED SYSTEMS (Trading + Trailing + Dashboard)", "green", attrs=['bold']))
+            logging.info(colored("🚀 Starting with INTEGRATED SYSTEMS (Trading + Trailing + Dashboard + Balance Sync)", "green", attrs=['bold']))
             
             # Create parallel tasks
             trading_task = asyncio.create_task(self._trading_loop(exchange, xgb_models, xgb_scalers))
@@ -677,18 +698,20 @@ class TradingEngine:
             dashboard_task = asyncio.create_task(
                 self.dashboard.run_live_dashboard(exchange, update_interval=30)
             )
+            balance_sync_task = asyncio.create_task(self._balance_sync_loop(exchange))
             
             try:
                 # Run all tasks in parallel
-                await asyncio.gather(trading_task, trailing_task, dashboard_task)
+                await asyncio.gather(trading_task, trailing_task, dashboard_task, balance_sync_task)
             except KeyboardInterrupt:
                 logging.info("⛔ Trading stopped by user")
                 # Cancel all tasks gracefully
                 trading_task.cancel()
                 trailing_task.cancel()
                 dashboard_task.cancel()
+                balance_sync_task.cancel()
                 try:
-                    await asyncio.gather(trading_task, trailing_task, dashboard_task, return_exceptions=True)
+                    await asyncio.gather(trading_task, trailing_task, dashboard_task, balance_sync_task, return_exceptions=True)
                 except:
                     pass
             except Exception as e:
@@ -697,6 +720,56 @@ class TradingEngine:
             # Fallback: Basic mode without dashboard
             logging.warning("⚠️ Running in BASIC MODE (no integrated systems)")
             await self._trading_loop(exchange, xgb_models, xgb_scalers)
+    
+    async def _balance_sync_loop(self, exchange):
+        """
+        Balance sync loop (every 60 seconds)
+        
+        Syncs real balance from Bybit every 60 seconds to keep it accurate.
+        Runs as background task in parallel with trading loop.
+        """
+        if not self.clean_modules_available:
+            logging.warning("⚠️ Balance sync disabled (position manager not available)")
+            return
+        
+        if config.DEMO_MODE:
+            logging.info("🧪 DEMO MODE: Balance sync disabled")
+            return
+        
+        SYNC_INTERVAL = 60  # 60 seconds
+        logging.info(f"💰 Balance sync started (interval: {SYNC_INTERVAL}s)")
+        
+        while True:
+            try:
+                await asyncio.sleep(SYNC_INTERVAL)
+                
+                # Fetch real balance from Bybit
+                real_balance = await get_real_balance(exchange)
+                
+                if real_balance and real_balance > 0:
+                    # Update position manager (single source of truth)
+                    old_balance = self.position_manager.safe_get_session_summary().get('balance', 0.0)
+                    self.position_manager.update_real_balance(real_balance)
+                    
+                    # Log only if there's a significant change (> $1)
+                    balance_change = abs(real_balance - old_balance)
+                    if balance_change > 1.0:
+                        logging.info(colored(
+                            f"💰 Balance synced: ${old_balance:.2f} → ${real_balance:.2f} "
+                            f"({real_balance - old_balance:+.2f})",
+                            "cyan"
+                        ))
+                    else:
+                        logging.debug(f"💰 Balance synced: ${real_balance:.2f}")
+                    
+            except asyncio.CancelledError:
+                # Task was cancelled (normal shutdown)
+                logging.info("💰 Balance sync stopped")
+                break
+            except Exception as e:
+                logging.error(f"❌ Balance sync error: {e}")
+                # Continue loop despite error
+                await asyncio.sleep(SYNC_INTERVAL)
     
     async def _trading_loop(self, exchange, xgb_models, xgb_scalers):
         """Internal trading loop (runs every 15 min)"""
