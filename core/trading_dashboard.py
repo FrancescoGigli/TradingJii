@@ -273,24 +273,194 @@ class TradingDashboard(QMainWindow):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
         
+        # ===== SYSTEM LOGIC EXPLANATION - COMPACT VERSION =====
+        explanation_group = QGroupBox("📚 QUICK REFERENCE GUIDE")
+        explanation_layout = QVBoxLayout()
+        
+        # Create scrollable area for the explanation
+        from PyQt6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMaximumHeight(200)  # Compact height
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
+        
+        explanation_widget = QWidget()
+        explanation_widget_layout = QVBoxLayout()
+        
+        explanation_text = QLabel()
+        explanation_text.setWordWrap(True)
+        explanation_text.setStyleSheet("padding: 8px; background-color: #1F2A37; border-radius: 5px; font-size: 9pt;")
+        explanation_text.setText(
+            "<b style='color: #06B6D4;'>💰 POSITION SIZING (IM 15%)</b><br>"
+            "<span style='color: #E6EEF8; font-size: 8pt;'>"
+            "Balance ÷ $22.50 = Max Positions | Target: $300+ for 10 positions<br>"
+            "</span>"
+            
+            "<b style='color: #F59E0B;'>🧠 TAU THRESHOLDS</b><br>"
+            "<span style='color: #E6EEF8; font-size: 8pt;'>"
+            "Higher τ = Fewer signals | Auto-adjusts every 20 trades or 6h<br>"
+            "</span>"
+            
+            "<b style='color: #EF4444;'>🌊 PRUDENT MODE (5 HOURS)</b><br>"
+            "<span style='color: #E6EEF8; font-size: 8pt;'>"
+            "<b>When:</b> Market drift detected → τ +5%, Kelly ÷2<br>"
+            "<b>Monitor:</b> 'Drift Status' → ACTIVE (N cycles) = N×15min remaining<br>"
+            "<b>Effect:</b> Trade LESS (fewer signals) and SMALLER (half position size)<br>"
+            "</span>"
+            
+            "<b style='color: #F59E0B;'>⏸️ COOLDOWNS (Symbol Ban)</b><br>"
+            "<span style='color: #E6EEF8; font-size: 8pt;'>"
+            "<b>What:</b> Symbols temporarily BLOCKED from trading after poor performance<br>"
+            "<b>When:</b> 3+ consecutive losses OR high penalty score on a symbol<br>"
+            "<b>Duration:</b> ~1 hour (~3-5 cycles of 15min each)<br>"
+            "<b>Why:</b> Prevents 'revenge trading' - stops bot from repeatedly losing on same symbol<br>"
+            "<b>Monitor:</b> 'Cooldowns' shows # of blocked symbols (0 = all clear ✅)<br>"
+            "</span>"
+        )
+        
+        explanation_widget_layout.addWidget(explanation_text)
+        explanation_widget.setLayout(explanation_widget_layout)
+        scroll_area.setWidget(explanation_widget)
+        
+        explanation_layout.addWidget(scroll_area)
+        explanation_group.setLayout(explanation_layout)
+        layout.addWidget(explanation_group)
+        # ===== END COMPACT SECTION =====
+        
         # Grid for main stats
         stats_grid = QGridLayout()
         
-        # Create labels for adaptive stats
+        # Create labels for adaptive stats with ENHANCED tooltips
         self.adaptive_labels = {}
         adaptive_categories = [
-            ("τ Global", "Global threshold"),
-            ("τ LONG", "LONG threshold"),
-            ("τ SHORT", "SHORT threshold"),
-            ("Kelly Factor", "Position sizing multiplier"),
-            ("Kelly Cap", "Max position fraction"),
-            ("Total Trades", "Trades learned from"),
-            ("Win Rate", "Recent performance"),
-            ("Calibrators", "Active calibrators"),
-            ("Drift Status", "Market drift detection"),
-            ("Prudent Mode", "Conservative mode"),
-            ("Cooldowns", "Symbols in cooldown"),
-            ("Last Adaptation", "Last param update")
+            ("τ Global", 
+             "τ (Tau) Global Threshold\n\n"
+             "Soglia minima di confidence per ammettere un segnale ML\n"
+             "• Valore attuale: mostra la soglia corrente\n"
+             "• Range: 0.55 - 0.85\n"
+             "• BASSA (0.55-0.65): Più segnali, meno selettivo\n"
+             "• MEDIA (0.65-0.75): Bilanciato\n"
+             "• ALTA (0.75-0.85): Meno segnali, più selettivo\n\n"
+             "Il sistema ADATTA automaticamente questo valore\n"
+             "basandosi sulle performance reali dei trade."),
+            
+            ("τ LONG", 
+             "τ Threshold per LONG\n\n"
+             "Soglia specifica per segnali LONG (buy)\n"
+             "• Se LONG performa male → soglia AUMENTA\n"
+             "• Se LONG performa bene → soglia DIMINUISCE\n\n"
+             "Adattamento indipendente da SHORT per ottimizzare\n"
+             "ogni direzione separatamente."),
+            
+            ("τ SHORT", 
+             "τ Threshold per SHORT\n\n"
+             "Soglia specifica per segnali SHORT (sell)\n"
+             "• Se SHORT performa male → soglia AUMENTA\n"
+             "• Se SHORT performa bene → soglia DIMINUISCE\n\n"
+             "Tipicamente SHORT è leggermente più alto perché\n"
+             "i mercati crypto tendono al rialzo."),
+            
+            ("Kelly Factor", 
+             "Kelly Fraction Multiplier\n\n"
+             "Moltiplicatore Kelly per position sizing\n"
+             "• 0.25 = Quarter-Kelly (conservativo)\n"
+             "• 0.40 = 40% Kelly (attuale, bilanciato)\n"
+             "• 0.50 = Half-Kelly (aggressivo)\n\n"
+             "Controlla quanto capitale rischiare per trade:\n"
+             "Position Size = Balance × Kelly% × Multiplier\n\n"
+             "Il sistema lo ADATTA basandosi su:\n"
+             "• Win rate recente\n"
+             "• Volatilità dei ritorni\n"
+             "• Drawdown risk"),
+            
+            ("Kelly Cap", 
+             "Kelly Maximum Fraction\n\n"
+             "Limite massimo % di wallet per singolo trade\n"
+             "• 1.0% = Max $10 per $1000 wallet\n"
+             "• 1.5% = Max $15 per $1000 wallet (attuale)\n\n"
+             "SAFETY CAP: Previene overexposure anche se\n"
+             "Kelly suggerisce posizioni più grandi.\n\n"
+             "Aumenta automaticamente se:\n"
+             "• Win rate > 55% consistently\n"
+             "• Low volatility period\n"
+             "• No recent drawdowns"),
+            
+            ("Total Trades", 
+             "Total Trades Processed\n\n"
+             "Numero totale di trade da cui il sistema\n"
+             "ha imparato e adattato i parametri.\n\n"
+             "• < 20 trades: Sistema in fase di apprendimento\n"
+             "• 20-100 trades: Parametri in calibrazione\n"
+             "• > 100 trades: Parametri stabili e affidabili\n\n"
+             "Più trade = più dati = migliore adattamento"),
+            
+            ("Win Rate", 
+             "Recent Win Rate %\n\n"
+             "Percentuale di trade vincenti negli ultimi\n"
+             "100 trade (o tutti i trade se < 100).\n\n"
+             "• < 45%: ⚠️ Sottoperformante, τ aumenta\n"
+             "• 45-55%: ✓ Normale, parametri stabili\n"
+             "• > 55%: 🚀 Sovraperformante, τ diminuisce\n\n"
+             "Target ottimale: 50-52% con R/R > 1.0"),
+            
+            ("Calibrators", 
+             "Active Confidence Calibrators\n\n"
+             "Numero di 'calibratori' attivi che correggono\n"
+             "le confidence ML per renderle più accurate.\n\n"
+             "Ogni calibrator copre un range di confidence:\n"
+             "• 0-10%, 10-20%, ... 90-100%\n"
+             "• Confronta predicted confidence vs actual results\n"
+             "• Applica correzione Bayesiana\n\n"
+             "Più calibrators = migliore accuratezza delle confidence"),
+            
+            ("Drift Status", 
+             "Market/Model Drift Detection\n\n"
+             "🔵 NORMAL: Mercato stabile, parametri OK\n"
+             "🟡 ACTIVE (N cycles): Drift rilevato!\n\n"
+             "DRIFT = Cambiamento significativo in:\n"
+             "• Pattern di mercato\n"
+             "• Accuratezza del modello ML\n"
+             "• Qualità dei trade\n\n"
+             "Quando ACTIVE:\n"
+             "• N cycles = cicli rimanenti in Prudent Mode\n"
+             "• 1 cycle = 15 minuti\n"
+             "• Sistema entra in modalità cautela\n\n"
+             "NOTA: Se vedi '100 cycles' → RIAVVIA IL BOT!\n"
+             "(dovrebbe essere '40 cycles' con nuovo config)"),
+            
+            ("Prudent Mode", 
+             "Prudent (Conservative) Mode\n\n"
+             "🟢 OFF: Trading normale, parametri standard\n"
+             "🟡 ON: Trading prudente, protezione attiva\n\n"
+             "Si attiva quando rileva DRIFT.\n"
+             "In Prudent Mode:\n"
+             "• τ threshold +5% (meno segnali)\n"
+             "• Kelly factor ÷2 (position size dimezzate)\n"
+             "• Più selettivo sui trade\n\n"
+             "Durata: 40 cycles (~10 ore) dopo rilevamento drift\n"
+             "Scopo: Proteggerti durante instabilità mercato"),
+            
+            ("Cooldowns", 
+             "Symbols in Cooldown\n\n"
+             "Numero di simboli temporaneamente BLOCCATI\n"
+             "dal trading a causa di performance scadenti.\n\n"
+             "Un simbolo va in cooldown se:\n"
+             "• 3+ trade negativi consecutivi\n"
+             "• Penalty score troppo alto\n"
+             "• Stop loss hit ripetuti\n\n"
+             "Durata cooldown: 3-5 cicli (~1 ora)\n"
+             "Previene 'revenge trading' su simboli problematici"),
+            
+            ("Last Adaptation", 
+             "Last Parameter Update\n\n"
+             "Ultimo aggiornamento automatico dei parametri.\n\n"
+             "Sistema adatta ogni:\n"
+             "• 20 trade (minimo), O\n"
+             "• 6 ore (massimo)\n\n"
+             "Mostra tempo trascorso dall'ultimo update:\n"
+             "• '5m ago' = Aggiornato di recente\n"
+             "• '2h ago' = Prossimo update tra 4h\n"
+             "• 'Never' = Bot appena avviato, raccogliendo dati")
         ]
         
         row = 0
@@ -694,14 +864,27 @@ class TradingDashboard(QMainWindow):
                 
                 # Type - Column 6 (IMPROVEMENT 4)
                 type_item = QTableWidgetItem()
+                
+                # Calculate REAL SL percentage for tooltip
+                real_sl_price_pct = abs((pos.stop_loss - pos.entry_price) / pos.entry_price) * 100
+                real_sl_roe_pct = real_sl_price_pct * pos.leverage
+                
                 if is_trailing_active:
                     type_item.setText("TRAILING")
                     type_item.setForeground(QBrush(ColorHelper.POSITIVE))
-                    type_item.setToolTip("Trailing Stop: Stop loss dinamico a -8% dal prezzo corrente")
+                    type_item.setToolTip(
+                        f"Trailing Stop: Stop loss dinamico\n"
+                        f"Current SL: ${pos.stop_loss:.6f}\n"
+                        f"Risk: -{real_sl_price_pct:.2f}% price = -{real_sl_roe_pct:.1f}% ROE"
+                    )
                 else:
                     type_item.setText("FIXED")
                     type_item.setForeground(QBrush(ColorHelper.INFO))
-                    type_item.setToolTip("Fixed Stop Loss: Stop loss fisso a -50% ROE")
+                    type_item.setToolTip(
+                        f"Fixed Stop Loss\n"
+                        f"SL Price: ${pos.stop_loss:.6f}\n"
+                        f"Risk: -{real_sl_price_pct:.2f}% price × {pos.leverage}x lev = -{real_sl_roe_pct:.1f}% ROE"
+                    )
                 type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 6, type_item)
             
@@ -742,7 +925,7 @@ class TradingDashboard(QMainWindow):
                 else:
                     tooltip_text += (
                         f"Valore mostrato: {display_value:+.1f}%\n\n"
-                        "Esempio: -5% prezzo × 10x leva = -50% ROE massimo rischio"
+                        f"Questo trade: {abs(price_distance_pct):.2f}% prezzo × {pos.leverage}x leva = {abs(sl_roe_pct):.1f}% ROE rischio"
                     )
                 
                 sl_pct_item.setToolTip(tooltip_text)

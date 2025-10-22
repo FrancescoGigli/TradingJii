@@ -53,9 +53,9 @@ if not API_KEY or not API_SECRET:
 # ----------------------------------------------------------------------
 TIME_SYNC_MAX_RETRIES = 5              # Maximum sync attempts before giving up
 TIME_SYNC_RETRY_DELAY = 3              # Seconds between retry attempts
-TIME_SYNC_INITIAL_RECV_WINDOW = 60000  # 60 seconds for initial sync (more tolerant)
-TIME_SYNC_NORMAL_RECV_WINDOW = 60000   # INCREASED: 60 seconds for normal operations (prevents desync)
-MANUAL_TIME_OFFSET = None              # Optional manual offset in milliseconds (None = auto)
+TIME_SYNC_INITIAL_RECV_WINDOW = 120000 # 120 seconds for initial sync (more tolerant)
+TIME_SYNC_NORMAL_RECV_WINDOW = 300000  # INCREASED: 120 seconds for normal operations (prevents desync)
+MANUAL_TIME_OFFSET = 0             # CRITICAL FIX: Manual -2.5s offset to compensate for local clock drift
 
 exchange_config = {
     "apiKey": API_KEY,
@@ -360,21 +360,30 @@ TIMEFRAME_WEIGHTS = {
 # ----------------------------------------------------------------------
 # Position Limits & Sizing Strategy
 # ----------------------------------------------------------------------
-# NUOVO SISTEMA: Portfolio-based dynamic sizing
-# - Max 10 posizioni per volta (balance diviso per 10)
-# - Usa tutto il balance disponibile
-# - Più margin ai segnali migliori (ordinati per confidence)
-
-MAX_CONCURRENT_POSITIONS = 5  # 5 positions for larger position sizes
-
-# DEPRECATED: Position sizing weights (replaced by dynamic risk-weighted system)
-# Now weights are calculated dynamically based on:
+# PORTFOLIO SIZING OPTIMIZATION with IM 15%
+# 
+# With 10x leverage and Initial Margin = 15% of notional:
+# - Margin per position = position_size × leverage × IM% = position_size × 1.5
+# - Max concurrent positions depends on available balance
+#
+# CALCULATION EXAMPLES (with min position size $15):
+# Balance $100:  100 / (15 × 1.5) = 4.4 positions
+# Balance $150:  150 / (15 × 1.5) = 6.6 positions  
+# Balance $200:  200 / (15 × 1.5) = 8.8 positions
+# Balance $300:  300 / (15 × 1.5) = 13.3 positions
+#
+# STRATEGY: Set limit to 10, let RiskCalculator dynamically size positions based on:
+# - Available balance
 # - ML confidence (higher = more weight)
 # - Volatility (lower = more weight, safer)
 # - Trend strength ADX (stronger = more weight)
+
+MAX_CONCURRENT_POSITIONS = 10  # INCREASED from 5 (requires ~$225 minimum balance with IM 15%)
+
+# DEPRECATED: Position sizing weights (replaced by dynamic risk-weighted system)
 # See: RiskCalculator.calculate_portfolio_based_margins()
 
-# Percentuale del balance da usare (default 98% per lasciare buffer)
+# Percentage of balance to use (default 98% to leave buffer)
 PORTFOLIO_BALANCE_USAGE = 0.98
 
 # ----------------------------------------------------------------------
@@ -401,12 +410,12 @@ ADAPTIVE_LEARNING_ENABLED = True  # Set False to disable (fallback to static par
 ADAPTIVE_MIN_TRADES_FOR_UPDATE = 20   # Minimum trades before adaptation (reduced for testing)
 ADAPTIVE_UPDATE_INTERVAL_HOURS = 6    # Or every 6 hours (faster for testing)
 
-# Threshold Controller (τ)
-ADAPTIVE_TAU_GLOBAL_INIT = 0.70       # Initial global threshold
-ADAPTIVE_TAU_SIDE_INIT = {'LONG': 0.70, 'SHORT': 0.72}  # Per-side thresholds
-ADAPTIVE_TAU_TF_INIT = {'15m': 0.70, '30m': 0.71, '1h': 0.71}  # Per-timeframe
-ADAPTIVE_TAU_MIN = 0.60               # Minimum allowed threshold
-ADAPTIVE_TAU_MAX = 0.85               # Maximum allowed threshold
+# Threshold Controller (τ) - OPTIMIZED for balanced aggression
+ADAPTIVE_TAU_GLOBAL_INIT = 0.60       # LOWERED: Initial global threshold (was 0.70) - more signals admitted
+ADAPTIVE_TAU_SIDE_INIT = {'LONG': 0.60, 'SHORT': 0.62}  # Per-side thresholds (lowered for consistency)
+ADAPTIVE_TAU_TF_INIT = {'15m': 0.60, '30m': 0.61, '1h': 0.61}  # Per-timeframe (lowered)
+ADAPTIVE_TAU_MIN = 0.55               # Minimum allowed threshold (slightly lowered)
+ADAPTIVE_TAU_MAX = 0.85               # Maximum allowed threshold (unchanged)
 ADAPTIVE_TAU_MIN_SAMPLES_PER_BUCKET = 50  # Min trades per bucket for update
 
 # Penalty System (Error Weighting)
@@ -433,7 +442,7 @@ ADAPTIVE_DAILY_LOSS_CAP_MULTIPLIER = 2.0  # 2× median loss for daily cap
 # Drift Detection (Page-Hinkley)
 ADAPTIVE_DRIFT_LAMBDA = 0.5           # Drift sensitivity
 ADAPTIVE_DRIFT_DELTA = 0.02           # Alarm threshold
-ADAPTIVE_DRIFT_PRUDENT_CYCLES = 100   # Cycles in prudent mode after drift
+ADAPTIVE_DRIFT_PRUDENT_CYCLES = 20    # OPTIMIZED: 20 cycles (~5 hours) in prudent mode - balanced protection
 
 # Data Retention
 ADAPTIVE_MAX_TRADES_RETENTION = 5000  # Max trades to keep in database

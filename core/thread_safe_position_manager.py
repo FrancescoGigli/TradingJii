@@ -524,7 +524,7 @@ class ThreadSafePositionManager:
                         close_dt = datetime.now()
                         duration_seconds = (close_dt - entry_dt).total_seconds()
                         
-                        # Prepare trade info for adaptive learning
+                        # Prepare trade info for adaptive learning (WITH ALL REQUIRED FIELDS)
                         trade_info = {
                             'timestamp': close_dt.isoformat(),
                             'symbol': position.symbol,
@@ -533,10 +533,15 @@ class ThreadSafePositionManager:
                             'confidence_raw': position.confidence,
                             'confidence_calibrated': position.confidence,  # Will be calibrated if available
                             'entry_price': position.entry_price,
+                            'entry_time': position.entry_time,  # FIX: Add missing field
                             'exit_price': exit_price,
+                            'exit_time': close_dt.isoformat(),  # FIX: Add missing field
                             'roe_pct': pnl_pct,
                             'pnl_usd': pnl_usd,
+                            'position_size': position.position_size,  # FIX: Add missing field
+                            'margin': initial_margin,  # FIX: Add missing field
                             'duration_s': duration_seconds,
+                            'duration_seconds': duration_seconds,  # FIX: Add with correct name
                             'result': 1 if pnl_pct > 0 else 0,
                             'stop_hit': 'SL' in close_reason.upper() or 'STOP' in close_reason.upper(),
                             'tp_hit': 'TP' in close_reason.upper() or 'PROFIT' in close_reason.upper(),
@@ -847,7 +852,10 @@ class ThreadSafePositionManager:
                                 close_dt = datetime.now()
                                 duration_seconds = (close_dt - entry_dt).total_seconds()
                                 
-                                # Prepare trade info for adaptive learning
+                                # Calculate position_size and margin
+                                initial_margin = position.position_size / position.leverage
+                                
+                                # Prepare trade info for adaptive learning (WITH ALL REQUIRED FIELDS)
                                 trade_info = {
                                     'timestamp': close_dt.isoformat(),
                                     'symbol': position.symbol,
@@ -856,10 +864,15 @@ class ThreadSafePositionManager:
                                     'confidence_raw': position.confidence,
                                     'confidence_calibrated': position.confidence,
                                     'entry_price': position.entry_price,
+                                    'entry_time': position.entry_time,  # FIX: Add missing field
                                     'exit_price': position.current_price,
+                                    'exit_time': close_dt.isoformat(),  # FIX: Add missing field
                                     'roe_pct': pnl_pct,
                                     'pnl_usd': pnl_usd,
+                                    'position_size': position.position_size,  # FIX: Add missing field
+                                    'margin': initial_margin,  # FIX: Add missing field
                                     'duration_s': duration_seconds,
+                                    'duration_seconds': duration_seconds,  # FIX: Add with correct name
                                     'result': 1 if pnl_pct > 0 else 0,
                                     'stop_hit': True,  # Sync closures are usually SL/TP
                                     'tp_hit': False,
@@ -1790,6 +1803,9 @@ class ThreadSafePositionManager:
                         )
                         
                         if success:
+                            # Calculate REAL percentage for logging
+                            real_sl_pct = abs((normalized_sl - entry_price) / entry_price) * 100
+                            
                             # Apply SL on Bybit
                             result = await global_order_manager.set_trading_stop(
                                 exchange, symbol,
@@ -1799,7 +1815,7 @@ class ThreadSafePositionManager:
                             
                             if result.success:
                                 logging.info(colored(
-                                    f"✅ {symbol_short}: SL FIXED - Set to ${normalized_sl:.6f} (-5%)",
+                                    f"✅ {symbol_short}: SL FIXED - Set to ${normalized_sl:.6f} (-{real_sl_pct:.2f}% price)",
                                     "green"
                                 ))
                                 fixed_count += 1

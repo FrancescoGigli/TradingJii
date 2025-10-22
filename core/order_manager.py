@@ -11,6 +11,8 @@ Nessuna logica di trading → solo esecuzione ordini
 """
 
 import logging
+import time
+import pandas as pd
 from typing import Optional, Dict
 from termcolor import colored
 
@@ -23,8 +25,256 @@ class OrderExecutionResult:
 
 class OrderManager:
     """
-    Gestione ordini Bybit semplificata
+    Gestione ordini Bybit semplificata con ATR-based dynamic SL
     """
+    
+    def __init__(self):
+        # Track SL order IDs for verification
+        self._sl_order_ids = {}  # {symbol: order_id}
+        self._last_sl_updates = {}  # {symbol: timestamp} for debouncing
+    
+    def _normalize_price(self, price: float, symbol: str, exchange) -> float:
+        """
+        Normalize price to exchange tick size
+        
+        Args:
+            price: Raw price
+            symbol: Trading symbol
+            exchange: Exchange instance
+            
+        Returns:
+            float: Normalized price
+        """
+        try:
+            market = exchange.market(symbol)
+            tick_size = market['precision']['price']
+            
+            # Round to nearest tick
+            normalized = round(price / tick_size) * tick_size
+            
+            return normalized
+            
+        except Exception as e:
+            logging.error(f"❌ Price normalization failed for {symbol}: {e}")
+            return price
+    
+    async def calculate_dynamic_sl(self, exchange, symbol: str, side: str, 
+                                   entry_price: float, df: pd.DataFrame) -> Optional[float]:
+        """
+        Calculate ATR-based dynamic stop loss with exchange safety checks
+        
+        CRITICAL FIX: Adaptive SL based on market volatility
+        
+        Args:
+            exchange: Exchange instance
+            symbol: Trading symbol
+            side: Position side ('long' or 'short')
+            entry_price: Entry price
+            df: DataFrame with technical indicators (must include ATR_14)
+            
+        Returns:
+            Optional[float]: SL price or None if should skip
+        """
+        try:
+            # 1. CHECK IF ATR IS AVAILABLE
+            if 'ATR_14' not in df.columns or len(df) < 60:
+                logging.warning(f"⚠️ {symbol}: ATR missing, using static -5% SL")
+                sl_price = entry_price * (0.95 if side == 'long' else 1.05)
+                return self._normalize_price(sl_price, symbol, exchange)
+            
+            # 2. GET ATR and calculate volatility percentile
+            atr = df['ATR_14'].iloc[-1]
+            vol_60d = df['ATR_14'].tail(60)
+            vol_percentile = (vol_60d < atr).sum() / len(vol_60d) * 100
+            
+            # 3. ADAPTIVE ATR MULTIPLIER based on volatility (OPTIMIZED for balanced aggression)
+            if vol_percentile < 30:  # Low volatility
+                atr_mult = 1.3  # Tighter SL in calm markets
+            elif vol_percentile < 70:  # Normal
+                atr_mult = 1.8  # Balanced SL
+            else:  # High volatility
+                atr_mult = 2.5  # Wider SL in volatile markets
+            
+            # 4. CALCULATE SL DISTANCE
+            sl_distance = atr * atr_mult
+            
+            if side == 'long':
+                sl_price = entry_price - sl_distance
+                # Bounds: -3% to -10% (safety limits)
+                sl_price = max(entry_price * 0.90, min(sl_price, entry_price * 0.97))
+            else:  # short
+                sl_price = entry_price + sl_distance
+                sl_price = min(entry_price * 1.10, max(sl_price, entry_price * 1.03))
+            
+            # 5. CHECK LIQUIDATION PRICE BUFFER
+            try:
+                positions = await exchange.fetch_positions([symbol])
+                liq_price = None
+                for pos in positions:
+                    if pos['symbol'] == symbol and pos['contracts'] > 0:
+                        liq_price = pos.get('liquidationPrice')
+                        break
+                
+                if liq_price and liq_price > 0:
+                    SAFETY_BUFFER = 0.02  # 2% buffer from liquidation
+                    if side == 'long':
+                        min_sl = liq_price * (1 + SAFETY_BUFFER)
+                        sl_price = max(sl_price, min_sl)
+                    else:
+                        max_sl = liq_price * (1 - SAFETY_BUFFER)
+                        sl_price = min(sl_price, max_sl)
+            except Exception as e:
+                logging.debug(f"⚠️ Could not check liquidation price: {e}")
+            
+            # 6. NORMALIZE TO TICK SIZE
+            sl_price = self._normalize_price(sl_price, symbol, exchange)
+            
+            # 7. VERIFY MIN TRIGGER DISTANCE
+            market = exchange.market(symbol)
+            min_trigger_pct = 0.005  # Default 0.5%
+            
+            actual_distance = abs(sl_price - entry_price) / entry_price
+            if actual_distance < min_trigger_pct:
+                # Adjust to meet minimum
+                if side == 'long':
+                    sl_price = entry_price * (1 - min_trigger_pct * 1.1)
+                else:
+                    sl_price = entry_price * (1 + min_trigger_pct * 1.1)
+                
+                sl_price = self._normalize_price(sl_price, symbol, exchange)
+                logging.debug(f"⚠️ {symbol}: SL adjusted to meet min distance {min_trigger_pct*100:.2f}%")
+            
+            # 8. VERIFY TICK DIFFERENCE (avoid churn)
+            tick_size = market['precision']['price']
+            if abs(sl_price - entry_price) < 0.5 * tick_size:
+                logging.debug(f"🚫 {symbol}: SL too close to entry, skipping")
+                return None
+            
+            logging.info(
+                f"🎯 {symbol}: ATR-based SL ${sl_price:.6f} "
+                f"(distance: {actual_distance*100:.2f}%, mult: {atr_mult}x, vol_pct: {vol_percentile:.1f})"
+            )
+            
+            return sl_price
+            
+        except Exception as e:
+            logging.error(f"❌ Dynamic SL calculation failed for {symbol}: {e}")
+            # Fallback to static -5%
+            sl_price = entry_price * (0.95 if side == 'long' else 1.05)
+            return self._normalize_price(sl_price, symbol, exchange)
+    
+    async def set_stop_loss_with_order_tracking(self, exchange, symbol: str, 
+                                                 side: str, sl_price: float) -> OrderExecutionResult:
+        """
+        Set SL as reduceOnly order with order ID tracking
+        
+        CRITICAL FIX: Use stop market orders instead of position field
+        
+        Args:
+            exchange: Exchange instance
+            symbol: Trading symbol
+            side: Position side
+            sl_price: Stop loss price
+            
+        Returns:
+            OrderExecutionResult: Result of operation
+        """
+        try:
+            # 1. DEBOUNCE: Check if recently updated
+            last_update = self._last_sl_updates.get(symbol, 0)
+            if time.time() - last_update < 30:  # 30s debounce
+                logging.debug(f"🚫 {symbol}: SL update debounced (updated {time.time() - last_update:.0f}s ago)")
+                return OrderExecutionResult(True, "debounced", None)
+            
+            # 2. CANCEL OLD SL ORDER if exists
+            old_order_id = self._sl_order_ids.get(symbol)
+            if old_order_id:
+                try:
+                    await exchange.cancel_order(old_order_id, symbol)
+                    logging.debug(f"🗑️ {symbol}: Cancelled old SL order {old_order_id}")
+                except Exception as e:
+                    logging.debug(f"Old SL order already gone: {e}")
+            
+            # 3. GET POSITION SIZE
+            positions = await exchange.fetch_positions([symbol])
+            position_size = 0
+            position_side = None
+            for pos in positions:
+                if pos['symbol'] == symbol and pos['contracts'] > 0:
+                    position_size = pos['contracts']
+                    position_side = pos['side']
+                    break
+            
+            if position_size == 0:
+                logging.warning(f"⚠️ {symbol}: Position not found for SL order")
+                return OrderExecutionResult(False, None, "Position not found")
+            
+            # 4. CREATE STOP MARKET ORDER (reduceOnly)
+            order_side = 'sell' if side == 'long' else 'buy'
+            
+            order = await exchange.create_order(
+                symbol=symbol,
+                type='stop_market',
+                side=order_side,
+                amount=position_size,
+                params={
+                    'stopPrice': sl_price,
+                    'reduceOnly': True,
+                    'triggerPrice': sl_price,
+                    'triggerBy': 'LastPrice'
+                }
+            )
+            
+            # 5. TRACK ORDER ID
+            new_order_id = order.get('id')
+            if new_order_id:
+                self._sl_order_ids[symbol] = new_order_id
+                self._last_sl_updates[symbol] = time.time()
+                
+                logging.info(colored(
+                    f"✅ {symbol}: SL order created #{new_order_id} @ ${sl_price:.6f}",
+                    "green", attrs=['bold']
+                ))
+                return OrderExecutionResult(True, new_order_id, None)
+            else:
+                logging.warning(f"⚠️ {symbol}: No order ID returned for SL")
+                return OrderExecutionResult(False, None, "No order ID")
+        
+        except Exception as e:
+            logging.error(f"❌ {symbol}: SL order failed - {e}")
+            return OrderExecutionResult(False, None, str(e))
+    
+    async def verify_sl_via_orders(self, exchange, symbol: str) -> bool:
+        """
+        Verify SL exists by checking open stop orders (not position field)
+        
+        CRITICAL FIX: Check actual orders instead of position field
+        
+        Args:
+            exchange: Exchange instance
+            symbol: Trading symbol
+            
+        Returns:
+            bool: True if SL order found
+        """
+        try:
+            open_orders = await exchange.fetch_open_orders(symbol)
+            
+            # Look for stop orders
+            for order in open_orders:
+                if order['type'] in ['stop', 'stop_market', 'stop_limit']:
+                    if order.get('reduceOnly', False):
+                        # Found SL order
+                        order_id = order.get('id')
+                        if order_id:
+                            self._sl_order_ids[symbol] = order_id
+                        return True
+            
+            return False
+        
+        except Exception as e:
+            logging.error(f"❌ {symbol}: Failed to verify SL orders - {e}")
+            return False  # Assume missing on error (safe)
 
     async def place_market_order(self, exchange, symbol: str, side: str, size: float) -> OrderExecutionResult:
         """

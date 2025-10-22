@@ -120,14 +120,14 @@ class DriftDetector:
     def __init__(self,
                  lambda_param: float = 0.5,
                  delta: float = 0.02,
-                 prudent_cycles: int = 100):
+                 prudent_cycles: int = 40):  # UPDATED: Default 40 (was 100)
         """
         Initialize drift detector
         
         Args:
             lambda_param: Drift sensitivity
             delta: Alarm threshold
-            prudent_cycles: Cycles to stay in prudent mode after drift
+            prudent_cycles: Cycles to stay in prudent mode after drift (default: 40 = ~10 hours)
         """
         self.lambda_param = lambda_param
         self.delta = delta
@@ -377,5 +377,20 @@ class DriftDetector:
         logging.info("📉 Drift detector reset")
 
 
-# Global instance
-global_drift_detector = DriftDetector()
+# Global instance with config-based parameters
+try:
+    from config import (
+        ADAPTIVE_DRIFT_LAMBDA,
+        ADAPTIVE_DRIFT_DELTA,
+        ADAPTIVE_DRIFT_PRUDENT_CYCLES
+    )
+    global_drift_detector = DriftDetector(
+        lambda_param=ADAPTIVE_DRIFT_LAMBDA,
+        delta=ADAPTIVE_DRIFT_DELTA,
+        prudent_cycles=ADAPTIVE_DRIFT_PRUDENT_CYCLES
+    )
+    logging.info(f"📉 DriftDetector initialized from config: prudent_cycles={ADAPTIVE_DRIFT_PRUDENT_CYCLES}")
+except ImportError:
+    # Fallback if config not available
+    global_drift_detector = DriftDetector()
+    logging.warning("⚠️ DriftDetector using default parameters (config not found)")

@@ -398,6 +398,49 @@ class FeedbackLogger:
             logging.error(f"❌ Failed to get calibration data: {e}")
             return pd.DataFrame()
     
+    def get_winrate_stats(self, bucket: str, window: int = 100) -> Tuple[int, int, float, float]:
+        """
+        Get empirical winrate statistics for Kelly calculation
+        
+        Args:
+            bucket: Bucket identifier (symbol, cluster, timeframe, or regime)
+            window: Recent trades window
+            
+        Returns:
+            Tuple[int, int, float, float]: (wins, losses, avg_win, avg_loss)
+        """
+        try:
+            with self._get_connection() as conn:
+                # Try to match bucket as symbol, cluster, timeframe, or combination
+                query = """
+                    SELECT roe_pct, result
+                    FROM trades
+                    WHERE symbol = ? OR cluster = ? OR timeframe = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                """
+                
+                df = pd.read_sql_query(query, conn, params=(bucket, bucket, bucket, window))
+                
+                if len(df) < 5:
+                    # Not enough data - return conservative defaults
+                    return (0, 0, 0.0, 0.0)
+                
+                # Calculate wins/losses
+                wins_df = df[df['result'] == 1]
+                losses_df = df[df['result'] == 0]
+                
+                wins = len(wins_df)
+                losses = len(losses_df)
+                avg_win = abs(wins_df['roe_pct'].mean()) if len(wins_df) > 0 else 0.0
+                avg_loss = abs(losses_df['roe_pct'].mean()) if len(losses_df) > 0 else 0.0
+                
+                return (wins, losses, avg_win, avg_loss)
+                
+        except Exception as e:
+            logging.error(f"❌ Failed to get winrate stats for {bucket}: {e}")
+            return (0, 0, 0.0, 0.0)
+    
     def get_kelly_parameters(self, bucket: str, window: int = 200) -> Tuple[float, float, float]:
         """
         Get Kelly parameters for a bucket (symbol/cluster/timeframe)

@@ -410,18 +410,21 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
 # PARALLEL FETCHING OPTIMIZATION - Threading Implementation
 # ==============================================================================
 
-async def fetch_all_data_parallel(exchange, symbols, timeframes, max_concurrent=15):
+async def fetch_all_data_parallel(exchange, symbols, timeframes, max_concurrent=15, chunk_deadline=90):
     """
-    🚀 PARALLEL DATA FETCHING OPTIMIZATION
+    🚀 PARALLEL DATA FETCHING OPTIMIZATION with chunk deadlines
     
     Fetches data for all symbol/timeframe combinations concurrently with intelligent
-    rate limiting. This replaces the sequential approach for massive speedup.
+    rate limiting and deadline protection.
+    
+    CRITICAL FIX: Chunk deadline prevents slow symbols from blocking entire fetch
     
     Args:
         exchange: Exchange instance
         symbols: List of symbols to fetch
         timeframes: List of timeframes to fetch
         max_concurrent: Maximum concurrent requests (default: 15)
+        chunk_deadline: Max seconds per chunk (default: 90s)
         
     Returns:
         dict: {symbol: {timeframe: dataframe}} structure
@@ -429,6 +432,7 @@ async def fetch_all_data_parallel(exchange, symbols, timeframes, max_concurrent=
     Performance:
         - Sequential: ~300-600 seconds for 50 symbols × 3 timeframes
         - Parallel: ~30-60 seconds for same workload (5-10x speedup)
+        - With deadline: guaranteed completion even if some symbols timeout
     """
     start_time = time.time()
     

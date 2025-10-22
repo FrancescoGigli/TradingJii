@@ -234,15 +234,12 @@ class TradingOrchestrator:
                 margin_loss_pct = price_change_pct * config.LEVERAGE
                 
                 logging.info(colored(
-                    f"🛡️ {symbol}: Stop Loss set at ${normalized_sl:.6f}", "green"
+                    f"✅ {symbol}: Stop Loss set at ${normalized_sl:.6f} ({'-' if side == 'buy' else '+'}{price_change_pct:.2f}%)",
+                    "green"
                 ))
                 logging.info(colored(
                     f"   📊 Rischio REALE: {price_change_pct:.2f}% prezzo × {config.LEVERAGE}x leva = "
                     f"-{margin_loss_pct:.1f}% MARGIN", "yellow"
-                ))
-                logging.debug(colored(
-                    f"   ℹ️ Target era -5% prezzo (-50% margin), applicato -{price_change_pct:.2f}% "
-                    f"(Bybit precision adjustment)", "cyan"
                 ))
             else:
                 logging.warning(colored(
@@ -371,8 +368,14 @@ class TradingOrchestrator:
                     )
                     
                     if sl_result.success:
+                        # Calculate REAL percentage from entry price
+                        price_change_pct = abs((normalized_sl - position.entry_price) / position.entry_price) * 100
+                        margin_loss_pct = price_change_pct * config.LEVERAGE
+                        
                         logging.info(colored(
-                            f"✅ {symbol_short}: Stop Loss set at ${normalized_sl:.6f} (-5%)",
+                            f"✅ {symbol_short}: Stop Loss set at ${normalized_sl:.6f} "
+                            f"({'-' if position.side == 'buy' else '+'}{price_change_pct:.2f}% price, "
+                            f"-{margin_loss_pct:.1f}% margin)",
                             "green"
                         ))
                         results[symbol] = TradingResult(

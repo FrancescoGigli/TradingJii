@@ -35,8 +35,8 @@ class RiskOptimizer:
     """
     
     def __init__(self,
-                 k_factor: float = 0.25,
-                 f_max: float = 0.01,
+                 k_factor: float = 0.40,
+                 f_max: float = 0.015,
                  target_sigma: float = 1.0,
                  min_position_usd: float = 15.0,
                  max_position_usd: float = 150.0):
@@ -44,8 +44,8 @@ class RiskOptimizer:
         Initialize risk optimizer
         
         Args:
-            k_factor: Conservative multiplier (0.25 = quarter-Kelly)
-            f_max: Maximum position fraction (1% of wallet)
+            k_factor: Conservative multiplier (0.40 = 40% Kelly - balanced aggression)
+            f_max: Maximum position fraction (1.5% of wallet)
             target_sigma: Target volatility threshold
             min_position_usd: Minimum position size in USD
             max_position_usd: Maximum position size in USD
@@ -78,10 +78,12 @@ class RiskOptimizer:
                                  bucket: str = 'DEFAULT',
                                  wallet_balance: float = 1000.0) -> float:
         """
-        Calculate Kelly-optimal position fraction with variance control
+        Calculate Kelly-optimal position fraction with Bayesian p_win
+        
+        CRITICAL FIX: Separates ML confidence from empirical win probability
         
         Args:
-            conf_cal: Calibrated confidence (win probability)
+            conf_cal: ML confidence (used as multiplier, NOT as p_win!)
             bucket: Symbol/cluster/timeframe bucket
             wallet_balance: Current wallet balance
             
@@ -89,43 +91,76 @@ class RiskOptimizer:
             float: Position fraction (0-1) of wallet to use
         """
         try:
-            # Get Kelly parameters for bucket
-            R, sigma_pnl = self._get_kelly_parameters(bucket)
+            from core.feedback_logger import global_feedback_logger
             
-            # 1. Classic Kelly fraction
-            p = conf_cal
-            f_kelly = (p * R - (1 - p)) / R if R > 0 else 0
+            # 1. GET EMPIRICAL WINRATE STATS (not ML confidence!)
+            wins, losses, avg_win, avg_loss = global_feedback_logger.get_winrate_stats(
+                bucket=bucket,
+                window=100
+            )
+            
+            # 2. BAYESIAN P_WIN with Laplace smoothing
+            # This prevents overfitting on small samples
+            alpha, beta = 1.0, 1.0  # Laplace prior (α=β=1)
+            
+            if wins + losses > 0:
+                p_win_bayesian = (wins + alpha) / (wins + losses + alpha + beta)
+            else:
+                # No historical data - use conservative default
+                p_win_bayesian = 0.45  # Slightly below 50% to be conservative
+                logging.debug(f"💰 {bucket}: No trade history, using default p_win={p_win_bayesian:.2f}")
+            
+            # 3. DYNAMIC R from empirical payoff
+            if avg_loss > 0 and avg_win > 0:
+                R_empirical = avg_win / avg_loss
+            else:
+                R_empirical = 2.0  # Conservative fallback
+            
+            # Cap R to prevent extreme sizing
+            R_empirical = min(R_empirical, 3.5)
+            
+            # 4. CLASSIC KELLY FRACTION with empirical p_win (NOT ML confidence!)
+            if R_empirical > 0:
+                f_kelly = (p_win_bayesian * R_empirical - (1 - p_win_bayesian)) / R_empirical
+            else:
+                f_kelly = 0
             
             # Ensure non-negative
             f_kelly = max(0, f_kelly)
             
-            # 2. Variance adjustment
+            # 5. GET VOLATILITY ADJUSTMENT
+            _, _, sigma_pnl = self._get_kelly_parameters(bucket)
             vol_ratio = self.target_sigma / max(sigma_pnl, self.target_sigma)
-            f_adjusted = f_kelly * vol_ratio
             
-            # 3. Apply conservative scaling
-            f_conservative = self.k_factor * f_adjusted
+            # 6. USE ML CONFIDENCE AS MULTIPLIER (separate concept!)
+            # This scales position by how confident the model is
+            confidence_multiplier = conf_cal
             
-            # 4. Apply maximum cap
-            f_final = min(f_conservative, self.f_max)
+            # 7. COMBINE ALL FACTORS
+            f_adjusted = f_kelly * vol_ratio * confidence_multiplier * self.k_factor
             
-            # 5. Check daily loss cap
+            # 8. APPLY MAXIMUM CAP
+            f_final = min(f_adjusted, self.f_max)
+            
+            # 9. CHECK DAILY LOSS CAP
             if self.daily_loss_cap and self.current_daily_loss > self.daily_loss_cap:
-                f_final *= 0.5  # Halve position sizes if daily cap hit
+                f_final *= 0.5
                 logging.debug(f"💰 Daily loss cap hit: halving Kelly fraction")
             
-            # 6. Convert to USD and apply absolute bounds
-            position_usd = f_final * wallet_balance
+            # 10. CONVERT TO USD with taker fee buffer
+            TAKER_FEE = 0.0006  # 0.06% Bybit futures
+            position_usd = f_final * wallet_balance * (1 - TAKER_FEE)
             position_usd = max(self.min_position_usd, 
                              min(self.max_position_usd, position_usd))
             
             # Convert back to fraction
             f_final = position_usd / wallet_balance if wallet_balance > 0 else 0
             
+            # Enhanced logging
             logging.debug(
-                f"💰 Kelly calculation: p={p:.2f}, R={R:.2f}, σ={sigma_pnl:.2f} "
-                f"→ f={f_kelly:.3f} → adj={f_adjusted:.3f} → final={f_final:.3f} "
-                f"(${position_usd:.2f})"
+                f"💰 Kelly {bucket}: p_win={p_win_bayesian:.3f} (W{wins}/L{losses}), "
+                f"R={R_empirical:.2f}, σ={sigma_pnl:.2f}, ML_conf={conf_cal:.2f} "
+                f"→ f_kelly={f_kelly:.3f} → f_adj={f_adjusted:.3f} → ${position_usd:.2f}"
             )
             
             return f_final

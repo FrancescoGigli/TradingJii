@@ -307,9 +307,12 @@ class RobustMLPredictor:
     
     def _ensemble_vote(self, predictions: Dict[str, int], confidences: Dict[str, float]) -> Tuple[float, int]:
         """
-        ENHANCED: Weighted ensemble voting with timeframe importance and confidence
+        ENHANCED: Weighted ensemble voting with 2/3 timeframe fallback
         
-        CRITICAL FIX: Higher timeframes get more weight (more reliable, less noise)
+        CRITICAL FIX V2:
+        - Rebalances weights when models are missing
+        - Applies disagreement penalty for 2-timeframe splits
+        - Higher timeframes get more weight (more reliable, less noise)
         """
         if not predictions:
             return 0.0, 2  # No predictions -> NEUTRAL
@@ -317,34 +320,84 @@ class RobustMLPredictor:
         # Import timeframe weights
         from config import TIMEFRAME_WEIGHTS
         
-        # Weighted voting with timeframe importance
+        # Check how many timeframes we have
+        n_available = len(predictions)
+        n_expected = 3  # Typically 15m, 30m, 1h
+        
+        # Warn if models are missing
+        if n_available < n_expected:
+            missing = n_expected - n_available
+            logging.warning(
+                f"⚠️ Ensemble with {n_available}/{n_expected} timeframes - "
+                f"{missing} model(s) unavailable, predictions may be less reliable"
+            )
+        
+        # 1. REBALANCE WEIGHTS for available timeframes
+        available_tfs = list(predictions.keys())
+        original_total_weight = sum(TIMEFRAME_WEIGHTS.get(tf, 1.0) for tf in TIMEFRAME_WEIGHTS.keys())
+        available_total_weight = sum(TIMEFRAME_WEIGHTS.get(tf, 1.0) for tf in available_tfs)
+        
+        # Normalization factor to maintain total weight
+        weight_multiplier = original_total_weight / available_total_weight if available_total_weight > 0 else 1.0
+        
+        # Weighted voting with rebalanced timeframe importance
         weighted_votes = {}
         total_weight = 0.0
         
         for tf, pred in predictions.items():
             confidence = confidences.get(tf, 0.5)
-            tf_weight = TIMEFRAME_WEIGHTS.get(tf, 1.0)
+            tf_weight = TIMEFRAME_WEIGHTS.get(tf, 1.0) * weight_multiplier
             
-            # Combined weight: confidence × timeframe importance
+            # Combined weight: confidence × rebalanced timeframe importance
             combined_weight = confidence * tf_weight
             
             # Accumulate weighted votes
             weighted_votes[pred] = weighted_votes.get(pred, 0.0) + combined_weight
             total_weight += combined_weight
             
-            logging.debug(f"Ensemble vote: {tf} → {pred} (conf: {confidence:.3f}, tf_weight: {tf_weight}, combined: {combined_weight:.3f})")
+            logging.debug(
+                f"Ensemble vote: {tf} → {pred} "
+                f"(conf: {confidence:.3f}, tf_weight: {tf_weight:.3f}, combined: {combined_weight:.3f})"
+            )
         
         # Get weighted majority vote
         majority_vote = max(weighted_votes.items(), key=lambda x: x[1])[0]
         majority_weight = weighted_votes[majority_vote]
         
-        # Calculate ensemble confidence (weighted)
+        # Calculate base ensemble confidence (weighted)
         ensemble_confidence = majority_weight / total_weight if total_weight > 0 else 0.0
+        
+        # 2. DISAGREEMENT PENALTY for 2-timeframe splits
+        if n_available == 2:
+            unique_predictions = set(predictions.values())
+            if len(unique_predictions) == 2:  # Complete disagreement
+                disagreement_penalty = 0.85  # Reduce confidence by 15%
+                ensemble_confidence *= disagreement_penalty
+                logging.debug(
+                    f"⚠️ 2-timeframe disagreement detected - "
+                    f"applying {disagreement_penalty:.0%} penalty"
+                )
+        
+        # 3. STRONG CONSENSUS BONUS (only if all available agree)
+        if n_available >= 2:
+            unique_predictions = set(predictions.values())
+            if len(unique_predictions) == 1:  # Perfect agreement
+                if n_available == 3:
+                    consensus_bonus = 1.05  # +5% for 3/3 agreement
+                    ensemble_confidence = min(1.0, ensemble_confidence * consensus_bonus)
+                    logging.debug("🎯 Strong consensus (3/3) - applying +5% bonus")
+                elif n_available == 2:
+                    # No bonus for 2/2 (could be coincidence)
+                    logging.debug("✓ Agreement (2/2) - no bonus applied")
         
         # Log ensemble decision
         vote_breakdown = {k: f"{v:.3f}" for k, v in weighted_votes.items()}
         signal_names = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}
-        logging.debug(f"Ensemble decision: {signal_names[majority_vote]} (conf: {ensemble_confidence:.3f}, votes: {vote_breakdown})")
+        logging.debug(
+            f"Ensemble decision: {signal_names[majority_vote]} "
+            f"(conf: {ensemble_confidence:.3f}, votes: {vote_breakdown}, "
+            f"models: {n_available}/{n_expected})"
+        )
         
         return ensemble_confidence, majority_vote
     
