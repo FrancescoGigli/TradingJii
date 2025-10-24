@@ -41,9 +41,9 @@ class SymbolExclusionManager:
         # 📋 Mostra simboli esclusi con i nomi
         if self.auto_excluded_symbols:
             excluded_names = [sym.replace('/USDT:USDT', '') for sym in sorted(self.auto_excluded_symbols)]
-            logging.info(f"🚫 SymbolExclusionManager: {len(self.auto_excluded_symbols)} auto-excluded symbols loaded: {', '.join(excluded_names)}")
+            logging.debug(f"🚫 SymbolExclusionManager: {len(self.auto_excluded_symbols)} auto-excluded symbols loaded: {', '.join(excluded_names)}")
         else:
-            logging.info(f"🚫 SymbolExclusionManager: 0 auto-excluded symbols loaded")
+            logging.debug(f"🚫 SymbolExclusionManager: 0 auto-excluded symbols loaded")
     
     def _load_excluded_symbols(self):
         """Carica simboli esclusi dal file"""
@@ -56,9 +56,9 @@ class SymbolExclusionManager:
                             symbol, reason = line.split('|', 1) if '|' in line else (line, 'Unknown')
                             self.auto_excluded_symbols.add(symbol)
                             
-                logging.info(f"📋 Loaded {len(self.auto_excluded_symbols)} excluded symbols from {self.excluded_file_path}")
+                logging.debug(f"📋 Loaded {len(self.auto_excluded_symbols)} excluded symbols from {self.excluded_file_path}")
             else:
-                logging.info(f"📋 No exclusion file found, starting fresh")
+                logging.debug(f"📋 No exclusion file found, starting fresh")
                 
         except Exception as e:
             logging.error(f"Error loading excluded symbols: {e}")

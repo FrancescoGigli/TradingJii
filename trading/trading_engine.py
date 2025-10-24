@@ -35,7 +35,6 @@ except ImportError:
 
 # Adaptive Learning System REMOVED (too complex)
 ADAPTIVE_LEARNING_AVAILABLE = False
-global_adaptation_core = None
 
 # Removed: Online Learning / Post-mortem system (not functioning)
 # Removed: Position Safety Manager (migrated to thread_safe_position_manager)
@@ -83,11 +82,14 @@ class TradingEngine:
         self.database_system_loaded = self._init_database_system()
         self.clean_modules_available = self._init_clean_modules()
         
+        # Initialize adaptive position sizing if enabled
+        self._init_adaptive_sizing()
+        
         # Initialize integrated systems (stats + dashboard + trailing)
         if INTEGRATED_SYSTEMS_AVAILABLE and self.clean_modules_available:
             self.session_stats = global_session_statistics
             self.dashboard = TradingDashboard(self.position_manager, self.session_stats)
-            logging.info("📊 Integrated systems initialized (stats, dashboard, trailing)")
+            logging.debug("📊 Integrated systems initialized (stats, dashboard, trailing)")
         else:
             self.session_stats = None
             self.dashboard = None
@@ -125,6 +127,47 @@ class TradingEngine:
             return True
         except ImportError as e:
             logging.error(f"❌ Clean modules not available: {e}")
+            return False
+    
+    def _init_adaptive_sizing(self):
+        """Initialize adaptive position sizing if enabled"""
+        try:
+            if not config.ADAPTIVE_SIZING_ENABLED:
+                logging.info(colored("📊 Using FIXED position sizing (legacy system)", "yellow"))
+                self.adaptive_sizing = None
+                return False
+            
+            from core.adaptive_position_sizing import initialize_adaptive_sizing
+            
+            self.adaptive_sizing = initialize_adaptive_sizing(config)
+            
+            if self.adaptive_sizing:
+                logging.info(colored(
+                    f"🎯 ADAPTIVE POSITION SIZING ENABLED | "
+                    f"Blocks: {config.ADAPTIVE_WALLET_BLOCKS} | "
+                    f"Block cycles: {config.ADAPTIVE_BLOCK_CYCLES}",
+                    "green", attrs=['bold']
+                ))
+                
+                # Display memory stats
+                stats = self.adaptive_sizing.get_memory_stats()
+                if stats.get('total_symbols', 0) > 0:
+                    logging.info(colored(
+                        f"📂 Memory loaded: {stats['total_symbols']} symbols | "
+                        f"Active: {stats['active_symbols']} | "
+                        f"Blocked: {stats['blocked_symbols']} | "
+                        f"Win rate: {stats['win_rate']:.1f}%",
+                        "cyan"
+                    ))
+                
+                return True
+            else:
+                logging.warning("⚠️ Adaptive sizing initialization failed - using fixed sizing")
+                return False
+                
+        except Exception as e:
+            logging.error(f"❌ Error initializing adaptive sizing: {e}")
+            self.adaptive_sizing = None
             return False
 
     async def initialize_session(self, exchange):
@@ -182,6 +225,10 @@ class TradingEngine:
         cycle_start_time = time.time()
 
         try:
+            # Increment adaptive sizing cycle counter if enabled
+            if self.adaptive_sizing:
+                self.adaptive_sizing.increment_cycle()
+            
             log_separator("═", 100, "cyan")
             enhanced_logger.display_table("🚀 TRADING CYCLE STARTED", "cyan", attrs=['bold'])
             log_separator("═", 100, "cyan")
@@ -337,12 +384,32 @@ class TradingEngine:
         max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
         signals_to_execute = tradeable_signals[: min(max_positions, len(tradeable_signals))]
         
-        # Fixed portfolio sizing (weighted by confidence, volatility, ADX)
+        # Calculate margins: ADAPTIVE (if enabled) or PORTFOLIO (legacy)
         if signals_to_execute and self.clean_modules_available:
-            portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
-                signals_to_execute, available_balance, total_wallet=usdt_balance
-            )
-            logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins", "cyan"))
+            if self.adaptive_sizing and config.ADAPTIVE_SIZING_ENABLED:
+                # Use adaptive sizing system
+                portfolio_margins, assigned_symbols, sizing_stats = self.global_risk_calculator.calculate_adaptive_margins(
+                    signals_to_execute, available_balance, max_positions
+                )
+                
+                if sizing_stats.get('symbols_blocked', 0) > 0:
+                    blocked_list = sizing_stats.get('blocked_list', [])
+                    logging.info(colored(
+                        f"🚫 {sizing_stats['symbols_blocked']} symbols blocked: {', '.join([s.replace('/USDT:USDT', '') for s in blocked_list[:3]])}{'...' if len(blocked_list) > 3 else ''}",
+                        "yellow"
+                    ))
+                
+                logging.info(colored(
+                    f"🎯 ADAPTIVE sizing: {len(portfolio_margins)} positions | "
+                    f"Risk: {sizing_stats.get('risk_pct', 0):.1f}%",
+                    "green", attrs=['bold']
+                ))
+            else:
+                # Use legacy portfolio-based sizing
+                portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
+                    signals_to_execute, available_balance, total_wallet=usdt_balance
+                )
+                logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins", "cyan"))
         else:
             portfolio_margins = []
         

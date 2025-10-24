@@ -82,6 +82,12 @@ class ThreadSafePosition:
     adx: float = 0.0  # ADX trend strength
     volatility: float = 0.0  # Market volatility
     
+    # Real Initial Margin from Bybit (FIX: Read actual IM instead of calculating)
+    real_initial_margin: Optional[float] = None  # Actual IM from Bybit
+    
+    # Real Stop Loss from Bybit (FIX: Read actual SL instead of calculating)
+    real_stop_loss: Optional[float] = None  # Actual SL from Bybit
+    
     # Order tracking
     sl_order_id: Optional[str] = None
     tp_order_id: Optional[str] = None
@@ -127,7 +133,7 @@ class ThreadSafePositionManager:
         # Load existing positions from file
         self.load_positions()
         
-        logging.info("🔒 ThreadSafePositionManager: FILE PERSISTENCE MODE (saving to disk)")
+        logging.debug("🔒 ThreadSafePositionManager: FILE PERSISTENCE MODE (saving to disk)")
         
 
     
@@ -513,51 +519,20 @@ class ThreadSafePositionManager:
                 except Exception as log_error:
                     logging.debug(f"⚠️ Failed to update decision on close: {log_error}")
                 
-                # 🧠 LOG TO ADAPTIVE LEARNING SYSTEM
+                # 🎯 NOTIFY ADAPTIVE SIZING SYSTEM
                 try:
-                    from core.adaptation_core import global_adaptation_core
-                    from config import ADAPTIVE_LEARNING_ENABLED
-                    
-                    if ADAPTIVE_LEARNING_ENABLED:
-                        # Calculate trade duration
-                        entry_dt = datetime.fromisoformat(position.entry_time)
-                        close_dt = datetime.now()
-                        duration_seconds = (close_dt - entry_dt).total_seconds()
-                        
-                        # Prepare trade info for adaptive learning (WITH ALL REQUIRED FIELDS)
-                        trade_info = {
-                            'timestamp': close_dt.isoformat(),
-                            'symbol': position.symbol,
-                            'side': position.side.upper(),
-                            'timeframe': '15m',  # Default timeframe
-                            'confidence_raw': position.confidence,
-                            'confidence_calibrated': position.confidence,  # Will be calibrated if available
-                            'entry_price': position.entry_price,
-                            'entry_time': position.entry_time,  # FIX: Add missing field
-                            'exit_price': exit_price,
-                            'exit_time': close_dt.isoformat(),  # FIX: Add missing field
-                            'roe_pct': pnl_pct,
-                            'pnl_usd': pnl_usd,
-                            'position_size': position.position_size,  # FIX: Add missing field
-                            'margin': initial_margin,  # FIX: Add missing field
-                            'duration_s': duration_seconds,
-                            'duration_seconds': duration_seconds,  # FIX: Add with correct name
-                            'result': 1 if pnl_pct > 0 else 0,
-                            'stop_hit': 'SL' in close_reason.upper() or 'STOP' in close_reason.upper(),
-                            'tp_hit': 'TP' in close_reason.upper() or 'PROFIT' in close_reason.upper(),
-                            'leverage': position.leverage,
-                            'cluster': 'DEFAULT',  # Can be enriched later
-                            'atr': position.atr,
-                            'adx': position.adx,
-                            'volatility': position.volatility
-                        }
-                        
-                        # Log asynchronously (non-blocking)
-                        asyncio.create_task(global_adaptation_core.log_trade_outcome_async(trade_info))
-                        logging.debug(f"🧠 Trade outcome logged to adaptive system: {position.symbol}")
-                        
+                    from config import ADAPTIVE_SIZING_ENABLED
+                    if ADAPTIVE_SIZING_ENABLED:
+                        from core.adaptive_position_sizing import global_adaptive_sizing
+                        if global_adaptive_sizing:
+                            global_adaptive_sizing.update_after_trade(
+                                symbol=position.symbol,
+                                pnl_pct=pnl_pct,
+                                wallet_equity=self._session_balance
+                            )
+                            logging.debug(f"🎯 Adaptive sizing notified: {position.symbol} PnL: {pnl_pct:+.2f}%")
                 except Exception as adaptive_error:
-                    logging.debug(f"⚠️ Failed to log to adaptive system: {adaptive_error}")
+                    logging.debug(f"⚠️ Failed to notify adaptive sizing: {adaptive_error}")
                 
                 logging.info(f"🔒 Thread-safe position closed: {position.symbol} {close_reason} PnL: {pnl_pct:+.2f}%")
                 return True
@@ -763,12 +738,36 @@ class ThreadSafePositionManager:
                         # Debug logging
                         logging.debug(f"🔍 {symbol_short}: contracts={contracts_raw}, explicit_side='{explicit_side}', final_side='{side}'")
                         
+                        # 🔧 FIX: Read REAL Initial Margin from Bybit
+                        # This is the actual IM Bybit assigned to the position
+                        real_im_val = pos.get('initialMargin') or pos.get('margin')
+                        real_im = float(real_im_val) if real_im_val else None
+                        
+                        if real_im:
+                            logging.debug(f"💰 {symbol_short}: Real IM from Bybit: ${real_im:.2f}")
+                        else:
+                            # Fallback: calculate from position size
+                            real_im = (contracts * entry_price) / float(pos.get('leverage', 10))
+                            logging.debug(f"💰 {symbol_short}: IM calculated (fallback): ${real_im:.2f}")
+                        
+                        # 🔧 FIX: Read REAL Stop Loss from Bybit
+                        # This is the actual SL set on Bybit (more reliable than calculated)
+                        real_sl_val = pos.get('stopLoss')
+                        real_sl = float(real_sl_val) if real_sl_val and real_sl_val != '' and real_sl_val != '0' else None
+                        
+                        if real_sl:
+                            logging.debug(f"🛡️ {symbol_short}: Real SL from Bybit: ${real_sl:.6f}")
+                        else:
+                            logging.debug(f"🛡️ {symbol_short}: No SL set on Bybit")
+                        
                         bybit_symbols.add(symbol)
                         bybit_position_data[symbol] = {
                             'contracts': contracts,
                             'side': side,
                             'entry_price': entry_price,
-                            'unrealized_pnl': unrealized_pnl
+                            'unrealized_pnl': unrealized_pnl,
+                            'real_initial_margin': real_im,  # Store real IM
+                            'real_stop_loss': real_sl  # Store real SL
                         }
                         
                     except (ValueError, TypeError) as e:
@@ -792,12 +791,25 @@ class ThreadSafePositionManager:
                 # Find newly opened (on Bybit but not tracked)
                 newly_opened_symbols = bybit_symbols - tracked_symbols
                 
+                # 🚨 CRITICAL: Track symbols that need immediate SL fix
+                symbols_needing_sl_fix = []
+                
                 for symbol in newly_opened_symbols:
                     if not self._has_position_for_symbol_unsafe(symbol):  # Double-check
                         bybit_data = bybit_position_data[symbol]
                         position = self._create_position_from_bybit_unsafe(symbol, bybit_data)
                         self._open_positions[position.position_id] = position
                         newly_opened.append(deepcopy(position))
+                        
+                        # 🚨 CRITICAL: Check if SL is missing
+                        if bybit_data.get('real_stop_loss') is None:
+                            symbols_needing_sl_fix.append((symbol, bybit_data))
+                            logging.warning(colored(
+                                f"🚨 CRITICAL: {symbol.replace('/USDT:USDT', '')} opened WITHOUT stop loss! "
+                                f"Will fix IMMEDIATELY after sync!",
+                                "red", attrs=['bold']
+                            ))
+                        
                         # Display LONG/SHORT with colors instead of BUY/SELL
                         side_display = "🟢 LONG" if bybit_data['side'] == 'buy' else "🔴 SHORT"
                         logging.info(f"🔒 Sync: NEW position {symbol} {side_display}")
@@ -841,56 +853,8 @@ class ThreadSafePositionManager:
                         
                         logging.info(f"🔒 Sync: CLOSED position {symbol} PnL: {position.unrealized_pnl_pct:+.2f}%")
                         
-                        # 🧠 LOG TO ADAPTIVE LEARNING SYSTEM (SYNC CLOSURES)
-                        try:
-                            from core.adaptation_core import global_adaptation_core
-                            from config import ADAPTIVE_LEARNING_ENABLED
-                            
-                            if ADAPTIVE_LEARNING_ENABLED:
-                                # Calculate trade duration
-                                entry_dt = datetime.fromisoformat(position.entry_time)
-                                close_dt = datetime.now()
-                                duration_seconds = (close_dt - entry_dt).total_seconds()
-                                
-                                # Calculate position_size and margin
-                                initial_margin = position.position_size / position.leverage
-                                
-                                # Prepare trade info for adaptive learning (WITH ALL REQUIRED FIELDS)
-                                trade_info = {
-                                    'timestamp': close_dt.isoformat(),
-                                    'symbol': position.symbol,
-                                    'side': position.side.upper(),
-                                    'timeframe': '15m',  # Default timeframe
-                                    'confidence_raw': position.confidence,
-                                    'confidence_calibrated': position.confidence,
-                                    'entry_price': position.entry_price,
-                                    'entry_time': position.entry_time,  # FIX: Add missing field
-                                    'exit_price': position.current_price,
-                                    'exit_time': close_dt.isoformat(),  # FIX: Add missing field
-                                    'roe_pct': pnl_pct,
-                                    'pnl_usd': pnl_usd,
-                                    'position_size': position.position_size,  # FIX: Add missing field
-                                    'margin': initial_margin,  # FIX: Add missing field
-                                    'duration_s': duration_seconds,
-                                    'duration_seconds': duration_seconds,  # FIX: Add with correct name
-                                    'result': 1 if pnl_pct > 0 else 0,
-                                    'stop_hit': True,  # Sync closures are usually SL/TP
-                                    'tp_hit': False,
-                                    'leverage': position.leverage,
-                                    'cluster': 'DEFAULT',
-                                    'atr': position.atr,
-                                    'adx': position.adx,
-                                    'volatility': position.volatility
-                                }
-                                
-                                # Log asynchronously (non-blocking)
-                                asyncio.create_task(global_adaptation_core.log_trade_outcome_async(trade_info))
-                                logging.debug(f"🧠 Sync closure logged to adaptive system: {position.symbol}")
-                                
-                        except Exception as adaptive_error:
-                            logging.debug(f"⚠️ Failed to log sync closure to adaptive system: {adaptive_error}")
                 
-                # Update existing positions with current prices
+                # Update existing positions with current prices AND real SL from Bybit
                 for symbol in (bybit_symbols & tracked_symbols):
                     for position in self._open_positions.values():
                         if position.symbol == symbol and position.status == "OPEN":
@@ -902,10 +866,32 @@ class ThreadSafePositionManager:
                                 # Atomic price/PnL update
                                 self._update_position_price_unsafe(position, current_price)
                                 
+                                # 🔧 UPDATE: Also update real_stop_loss from Bybit data
+                                bybit_data = bybit_position_data.get(symbol)
+                                if bybit_data:
+                                    real_sl = bybit_data.get('real_stop_loss')
+                                    if real_sl is not None:
+                                        position.real_stop_loss = real_sl
+                                        position.stop_loss = real_sl
+                                        logging.debug(f"🔄 {symbol.replace('/USDT:USDT', '')}: Updated real_stop_loss from Bybit: ${real_sl:.6f}")
+                                
                             except Exception as e:
                                 logging.warning(f"🔒 Could not update price for {symbol}: {e}")
                 
                 self._save_positions_unsafe()  # Already in lock
+            
+            # 🚨 CRITICAL: Fix missing stop losses IMMEDIATELY (outside lock to avoid blocking)
+            if symbols_needing_sl_fix:
+                # Release lock before async operations
+                pass
+            
+            # Fix SLs immediately after releasing lock
+            if symbols_needing_sl_fix:
+                for symbol, bybit_data in symbols_needing_sl_fix:
+                    try:
+                        await self._emergency_fix_missing_sl(exchange, symbol, bybit_data)
+                    except Exception as e:
+                        logging.error(f"🚨 EMERGENCY SL FIX FAILED for {symbol}: {e}")
             
             return newly_opened, newly_closed
             
@@ -927,7 +913,7 @@ class ThreadSafePositionManager:
         entry_price = bybit_data['entry_price']
         side = bybit_data['side']
         
-        # Simple stop loss calculation (SL system removed)
+        # Simple stop loss calculation (fallback if real SL not available)
         stop_loss = entry_price * (0.94 if side == 'buy' else 1.06)
         
         # Calculate trailing trigger
@@ -938,6 +924,10 @@ class ThreadSafePositionManager:
         
         position_id = f"{symbol.replace('/USDT:USDT', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         
+        # 🔧 FIX: Get real IM and SL from Bybit data
+        real_im = bybit_data.get('real_initial_margin')
+        real_sl = bybit_data.get('real_stop_loss')
+        
         return ThreadSafePosition(
             position_id=position_id,
             symbol=symbol,
@@ -945,7 +935,7 @@ class ThreadSafePositionManager:
             entry_price=entry_price,
             position_size=bybit_data['contracts'] * entry_price,
             leverage=10,
-            stop_loss=stop_loss,  # STEP 2 FIX: From unified calculator
+            stop_loss=real_sl if real_sl else stop_loss,  # Use real SL from Bybit if available
             take_profit=None,
             trailing_trigger=trailing_trigger,
             current_price=entry_price,
@@ -953,6 +943,8 @@ class ThreadSafePositionManager:
             entry_time=datetime.now().isoformat(),
             origin="SYNCED",  # Marked as SYNCED position (found on Bybit at startup)
             unrealized_pnl_usd=bybit_data['unrealized_pnl'],
+            real_initial_margin=real_im,  # Store real IM from Bybit
+            real_stop_loss=real_sl,  # Store real SL from Bybit
             _migrated=True
         )
     
@@ -972,6 +964,90 @@ class ThreadSafePositionManager:
         position.unrealized_pnl_pct = pnl_pct
         position.unrealized_pnl_usd = pnl_usd
         position.max_favorable_pnl = max(position.max_favorable_pnl, pnl_pct)
+    
+    async def _emergency_fix_missing_sl(self, exchange, symbol: str, bybit_data: Dict):
+        """
+        🚨 EMERGENCY: Fix missing stop loss IMMEDIATELY
+        
+        Called when a position is detected without SL during sync.
+        This is CRITICAL to prevent liquidations.
+        
+        Args:
+            exchange: Bybit exchange instance
+            symbol: Symbol with missing SL
+            bybit_data: Position data from Bybit
+        """
+        try:
+            from config import SL_FIXED_PCT
+            from core.price_precision_handler import global_price_precision_handler
+            from core.order_manager import global_order_manager
+            
+            symbol_short = symbol.replace('/USDT:USDT', '')
+            entry_price = bybit_data['entry_price']
+            side = bybit_data['side']
+            
+            logging.error(colored(
+                f"🚨🚨🚨 EMERGENCY SL FIX: {symbol_short} 🚨🚨🚨",
+                "red", attrs=['bold']
+            ))
+            
+            # Calculate correct SL
+            if side == 'buy':
+                target_sl = entry_price * (1 - SL_FIXED_PCT)
+            else:
+                target_sl = entry_price * (1 + SL_FIXED_PCT)
+            
+            # Normalize to tick size
+            normalized_sl, success = await global_price_precision_handler.normalize_stop_loss_price(
+                exchange, symbol, side, entry_price, target_sl
+            )
+            
+            if not success:
+                logging.error(f"🚨 {symbol_short}: Failed to normalize SL price!")
+                return
+            
+            # Apply SL on Bybit IMMEDIATELY
+            result = await global_order_manager.set_trading_stop(
+                exchange, symbol,
+                stop_loss=normalized_sl,
+                take_profit=None
+            )
+            
+            if result.success:
+                # Update tracked position
+                with self._lock:
+                    for pos in self._open_positions.values():
+                        if pos.symbol == symbol and pos.status == "OPEN":
+                            pos.real_stop_loss = normalized_sl
+                            pos.stop_loss = normalized_sl
+                            self._save_positions_unsafe()
+                            break
+                
+                real_sl_pct = abs((normalized_sl - entry_price) / entry_price) * 100
+                
+                logging.info(colored(
+                    f"✅ EMERGENCY FIX SUCCESS: {symbol_short}\n"
+                    f"   Entry: ${entry_price:.6f}\n"
+                    f"   SL Set: ${normalized_sl:.6f} (-{real_sl_pct:.2f}% price)\n"
+                    f"   Position is now PROTECTED!",
+                    "green", attrs=['bold']
+                ))
+            else:
+                logging.error(colored(
+                    f"❌ EMERGENCY FIX FAILED: {symbol_short}\n"
+                    f"   Error: {result.error}\n"
+                    f"   ⚠️ POSITION STILL AT RISK OF LIQUIDATION!",
+                    "red", attrs=['bold']
+                ))
+                
+        except Exception as e:
+            logging.error(colored(
+                f"🚨 CRITICAL ERROR in emergency SL fix for {symbol}: {e}\n"
+                f"⚠️ POSITION MAY BE AT RISK!",
+                "red", attrs=['bold']
+            ))
+            import traceback
+            logging.error(traceback.format_exc())
     
     async def _capture_close_snapshot(self, exchange, position: ThreadSafePosition, exit_price: float, close_reason: str) -> Dict:
         """
@@ -1814,6 +1890,15 @@ class ThreadSafePositionManager:
                             )
                             
                             if result.success:
+                                # ✅ Update real_stop_loss in tracked position
+                                with self._lock:
+                                    for pos in self._open_positions.values():
+                                        if pos.symbol == symbol and pos.status == "OPEN":
+                                            pos.real_stop_loss = normalized_sl
+                                            pos.stop_loss = normalized_sl
+                                            logging.debug(f"💾 {symbol_short}: Updated real_stop_loss to ${normalized_sl:.6f}")
+                                            break
+                                
                                 logging.info(colored(
                                     f"✅ {symbol_short}: SL FIXED - Set to ${normalized_sl:.6f} (-{real_sl_pct:.2f}% price)",
                                     "green"

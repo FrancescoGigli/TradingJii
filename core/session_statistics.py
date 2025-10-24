@@ -65,7 +65,7 @@ class SessionStatistics:
         # Trade history
         self.closed_trades: List[ClosedTradeRecord] = []
         
-        logging.info("📊 SessionStatistics initialized")
+        logging.debug("📊 SessionStatistics initialized")
     
     def initialize_balance(self, start_balance: float):
         """Set starting balance for session"""

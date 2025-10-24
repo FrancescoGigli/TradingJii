@@ -64,7 +64,7 @@ class ConfigManager:
     
     def _headless_config(self, default_timeframes):
         """Handle headless configuration using environment variables"""
-        logging.info("Running in headless mode, using environment variables")
+        logging.debug("Running in headless mode, using environment variables")
         mode_input = os.getenv('BOT_MODE', '2')
         tf_input = os.getenv('BOT_TIMEFRAMES', default_timeframes)
         
@@ -94,7 +94,7 @@ class ConfigManager:
             print(config_summary)
             print("===============================\n")
         else:
-            logging.info(f"Bot Configuration: {config_summary}")
+            logging.debug(f"Bot Configuration: {config_summary}")
     
     def _apply_configuration(self):
         """Apply configuration to global config module"""

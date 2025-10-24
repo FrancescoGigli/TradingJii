@@ -43,7 +43,7 @@ class SignalProcessor:
             from core.thread_safe_position_manager import global_thread_safe_position_manager
             self.position_manager = global_thread_safe_position_manager
             self.position_manager_available = True
-            logging.info("🔒 Signal Processor using ThreadSafePositionManager")
+            logging.debug("🔒 Signal Processor using ThreadSafePositionManager")
         except ImportError:
             logging.error("❌ ThreadSafePositionManager not available")
             self.position_manager_available = False

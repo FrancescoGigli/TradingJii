@@ -13,7 +13,7 @@ GARANTISCE: Calcoli accurati e configurabili
 """
 
 import logging
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, List
 from dataclasses import dataclass
 from termcolor import colored
 from config import (
@@ -606,6 +606,88 @@ class RiskCalculator:
             # Fallback: divide equally
             fallback_margin = available_balance / max(1, len(signals))
             return [fallback_margin] * len(signals)
+
+    def calculate_adaptive_margins(
+        self,
+        signals: List[dict],
+        wallet_equity: float,
+        max_positions: int = 5
+    ) -> Tuple[List[float], List[str], Dict]:
+        """
+        Calculate adaptive margins using AdaptivePositionSizing system
+        
+        This method integrates with the new adaptive sizing system that:
+        - Learns from symbol performance
+        - Rewards winners with larger sizes
+        - Punishes losers with blocks
+        
+        Args:
+            signals: List of trading signals
+            wallet_equity: Total wallet equity (available balance)
+            max_positions: Maximum concurrent positions
+            
+        Returns:
+            Tuple[List[float], List[str], Dict]: (margins, symbols, stats)
+        """
+        try:
+            # Import adaptive sizing
+            from core.adaptive_position_sizing import global_adaptive_sizing
+            
+            if global_adaptive_sizing is None:
+                logging.error("❌ Adaptive sizing not initialized - falling back to portfolio sizing")
+                # Fallback to portfolio-based sizing
+                return self._fallback_to_portfolio_sizing(signals, wallet_equity)
+            
+            # Use adaptive sizing system
+            margins, symbols, stats = global_adaptive_sizing.calculate_adaptive_margins(
+                signals, wallet_equity, max_positions
+            )
+            
+            return margins, symbols, stats
+            
+        except Exception as e:
+            logging.error(f"❌ Error in adaptive margins: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            # Fallback to portfolio sizing
+            return self._fallback_to_portfolio_sizing(signals, wallet_equity)
+    
+    def _fallback_to_portfolio_sizing(
+        self,
+        signals: List[dict],
+        wallet_equity: float
+    ) -> Tuple[List[float], List[str], Dict]:
+        """
+        Fallback to legacy portfolio-based sizing
+        
+        Args:
+            signals: List of trading signals
+            wallet_equity: Total wallet equity
+            
+        Returns:
+            Tuple[List[float], List[str], Dict]: (margins, symbols, stats)
+        """
+        logging.warning("⚠️ Using fallback portfolio sizing")
+        
+        # Use legacy portfolio-based margins
+        margins = self.calculate_portfolio_based_margins(
+            signals, wallet_equity, total_wallet=wallet_equity
+        )
+        
+        # Extract symbols
+        symbols = [s.get('symbol', f'UNKNOWN_{i}') for i, s in enumerate(signals[:len(margins)])]
+        
+        # Build stats
+        stats = {
+            'total_signals': len(signals),
+            'positions_opened': len(margins),
+            'total_margin': sum(margins),
+            'max_loss': sum(margins) * 0.30,  # 30% loss multiplier
+            'risk_pct': (sum(margins) * 0.30 / wallet_equity * 100) if wallet_equity > 0 else 0,
+            'fallback': True
+        }
+        
+        return margins, symbols, stats
 
 # Global risk calculator instance
 global_risk_calculator = RiskCalculator()

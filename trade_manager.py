@@ -66,7 +66,7 @@ ENHANCED_DISPLAY_AVAILABLE = False
 try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager as global_position_tracker
     POSITION_TRACKER_AVAILABLE = True
-    logging.info("🔒 Trade Manager using ThreadSafePositionManager")
+    logging.debug("🔒 Trade Manager using ThreadSafePositionManager")
 except ImportError as e:
     logging.error(f"❌ ThreadSafePositionManager not available: {e}")
     POSITION_TRACKER_AVAILABLE = False

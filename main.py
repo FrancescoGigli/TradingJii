@@ -47,6 +47,9 @@ from config import (
 )
 from logging_config import *
 
+# Startup display system
+from core.startup_display import global_startup_collector
+
 # Unified managers
 try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager
@@ -54,6 +57,7 @@ try:
 
     UNIFIED_MANAGERS_AVAILABLE = True
     logging.debug("🔧 Unified managers available for initialization")
+    global_startup_collector.set_core_system("position_manager", "FILE PERSISTENCE")
 except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
@@ -80,7 +84,7 @@ async def initialize_exchange():
         logging.info(colored("🧪 DEMO MODE: Exchange not required", "yellow"))
         return None
 
-    logging.info(colored("🚀 Initializing Bybit exchange connection...", "cyan"))
+    logging.debug(colored("🚀 Initializing Bybit exchange connection...", "cyan"))
     
     # Configure aiohttp to use ThreadedResolver (no aiodns dependency)
     # aiodns is incompatible with qasync QEventLoop on Windows
@@ -167,7 +171,7 @@ async def initialize_exchange():
     # Phase 3: Load markets (now safe with synchronized time)
     try:
         await async_exchange.load_markets()
-        logging.info(colored("✅ Markets loaded", "green"))
+        logging.debug(colored("✅ Markets loaded", "green"))
     except Exception as e:
         logging.error(colored(f"❌ Failed to load markets: {e}", "red"))
         raise RuntimeError(f"Failed to load markets after time sync: {e}")
@@ -175,12 +179,19 @@ async def initialize_exchange():
     # Phase 4: Test authenticated API connection
     try:
         balance = await async_exchange.fetch_balance()
-        logging.info(colored("✅ Bybit authenticated", "green"))
+        logging.debug(colored("✅ Bybit authenticated", "green"))
     except Exception as e:
         logging.error(colored(f"❌ Authentication failed: {e}", "red"))
         raise RuntimeError(f"Failed to authenticate with Bybit: {e}")
 
     logging.debug(f"Time offset: {final_time_diff}ms")
+    
+    # Register exchange connection data
+    global_startup_collector.set_exchange_connection(
+        time_offset=final_time_diff,
+        markets=True,
+        auth=True
+    )
     
     return async_exchange
 
@@ -188,7 +199,7 @@ async def initialize_exchange():
 async def initialize_models(config_manager, top_symbols_training, exchange):
     """Load or train ML models"""
     ensure_trained_models_dir()
-    logging.info(colored("🧠 Initializing ML models...", "cyan"))
+    logging.debug(colored("🧠 Initializing ML models...", "cyan"))
 
     xgb_models, xgb_scalers, model_status = {}, {}, {}
     for tf in config_manager.get_timeframes():
@@ -209,9 +220,9 @@ async def initialize_models(config_manager, top_symbols_training, exchange):
         else:
             model_status[tf] = True
 
-    logging.info(colored("🤖 ML MODELS STATUS", "green", attrs=["bold"]))
+    logging.debug(colored("🤖 ML MODELS STATUS", "green", attrs=["bold"]))
     for tf, ok in model_status.items():
-        logging.info(f"{tf:>5}: {'✅ READY' if ok else '❌ FAILED'}")
+        logging.debug(f"{tf:>5}: {'✅ READY' if ok else '❌ FAILED'}")
 
     return xgb_models, xgb_scalers
 
@@ -219,23 +230,25 @@ async def initialize_models(config_manager, top_symbols_training, exchange):
 async def main():
     """Main entry point"""
     try:
-        logging.info(colored("🚀 Starting Trading Bot", "cyan"))
+        logging.debug("🚀 Starting Trading Bot")
 
         config_manager = ConfigManager()
         selected_timeframes, selected_models, demo_mode = config_manager.select_config()
         
-        # CRITICAL: Display mode clearly
-        if demo_mode:
-            logging.warning(colored("⚠️ ⚠️ ⚠️ RUNNING IN DEMO MODE - NO EXCHANGE INITIALIZATION ⚠️ ⚠️ ⚠️", "yellow", attrs=['bold']))
-            logging.warning(colored("Exchange will be None, only cached data will be used", "yellow"))
-        else:
-            logging.info(colored("✅ RUNNING IN LIVE MODE - Exchange will be initialized with Bybit", "green", attrs=['bold']))
+        # Register core systems
+        global_startup_collector.set_core_system("signal_processor", "")
+        global_startup_collector.set_core_system("trade_manager", "")
+        global_startup_collector.set_core_system("trade_logger", "data_cache/trade_decisions.db")
+        global_startup_collector.set_core_system("session_stats", "")
         
-        logging.info(
-            colored(
-                f"⚙️ Config: {len(selected_timeframes)} timeframes, {'DEMO' if demo_mode else 'LIVE'}",
-                "cyan",
-            )
+        # Register configuration
+        mode_str = "LIVE (Trading reale)" if not demo_mode else "DEMO MODE"
+        global_startup_collector.set_configuration(
+            excluded_count=len(EXCLUDED_SYMBOLS),
+            excluded_list=EXCLUDED_SYMBOLS,
+            mode=mode_str,
+            timeframes=selected_timeframes,
+            model_type="XGBoost"
         )
 
         async_exchange = await initialize_exchange()
@@ -269,17 +282,29 @@ async def main():
         # Balance sync removed for cleaner startup
         logging.debug("🔧 Balance sync disabled - using direct balance queries when needed")
 
+        # Register modules initialization
+        global_startup_collector.set_modules(
+            orchestrator=trading_engine.clean_modules_available,
+            dashboard="PyQt6 + qasync",
+            subsystems=["stats", "dashboard", "trailing"]
+        )
+        
+        # Register market analysis
+        global_startup_collector.set_market_analysis(
+            total_symbols=TOP_ANALYSIS_CRYPTO,
+            active_symbols=len(top_symbols)
+        )
+        
         # Static realtime display
         initialize_global_realtime_display(
             trading_engine.position_manager if trading_engine.clean_modules_available else None
         )
         logging.debug(colored("📊 Realtime display initialized", "cyan"))
 
-        # Adaptive Learning System removed (too complex)
-        logging.debug("Adaptive Learning System disabled - using fixed position sizing")
+        # Display startup summary (replaces old logging)
+        global_startup_collector.display_startup_summary()
 
         # Trading loop
-        logging.info(colored("🎯 All systems ready — starting trading loop", "green"))
         await trading_engine.run_continuous_trading(async_exchange, xgb_models, xgb_scalers)
 
     except KeyboardInterrupt:

@@ -109,7 +109,7 @@ class TradeDecisionLogger:
         }
         
         self._init_database()
-        logging.info(f"📊 TradeDecisionLogger initialized: {self.db_path}")
+        logging.debug(f"📊 TradeDecisionLogger initialized: {self.db_path}")
     
     def _init_database(self):
         """Initialize database tables"""

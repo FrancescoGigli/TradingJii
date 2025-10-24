@@ -112,13 +112,6 @@ noisy_modules = [
     
     # Adaptive Learning System (silent initialization)
     "core.trade_decision_logger",
-    "core.feedback_logger",
-    "core.penalty_calculator",
-    "core.threshold_controller",
-    "core.confidence_calibrator",
-    "core.drift_detector",
-    "core.risk_optimizer",
-    "core.adaptation_core",
     
     # Session & Display
     "core.session_statistics",

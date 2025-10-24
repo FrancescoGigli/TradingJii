@@ -143,6 +143,11 @@ class TradingDashboard(QMainWindow):
         self.stats_group = self._create_statistics_section()
         main_layout.addWidget(self.stats_group)
         
+        # Add adaptive sizing section if enabled
+        if config.ADAPTIVE_SIZING_ENABLED:
+            self.adaptive_group = self._create_adaptive_sizing_section()
+            main_layout.addWidget(self.adaptive_group)
+        
         self.positions_group = self._create_positions_section()
         main_layout.addWidget(self.positions_group, stretch=2)
         
@@ -202,6 +207,31 @@ class TradingDashboard(QMainWindow):
         group.setLayout(layout)
         return group
     
+    def _create_adaptive_sizing_section(self) -> QGroupBox:
+        """Create adaptive position sizing status section"""
+        group = QGroupBox("🎯 ADAPTIVE POSITION SIZING")
+        layout = QGridLayout()
+        layout.setSpacing(15)
+        
+        self.adaptive_labels = {}
+        categories = ["Cycle", "Active Symbols", "Blocked", "Win Rate", "Avg Size"]
+        
+        for i, category in enumerate(categories):
+            header = QLabel(category)
+            header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            layout.addWidget(header, 0, i)
+            
+            value = QLabel()
+            value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value.setFont(QFont("Segoe UI", 9))
+            layout.addWidget(value, 1, i)
+            
+            self.adaptive_labels[category] = value
+        
+        group.setLayout(layout)
+        return group
+    
     def _create_positions_section(self) -> QGroupBox:
         """Create positions section with 3 tabs: SYNCED, SESSION, CLOSED"""
         group = QGroupBox("🎯 POSITIONS")
@@ -229,10 +259,10 @@ class TradingDashboard(QMainWindow):
     def _create_position_table(self) -> QTableWidget:
         """Create a position table with standard columns"""
         table = QTableWidget()
-        table.setColumnCount(18)
+        table.setColumnCount(17)  # Removed Vol% and ADX columns
         table.setHorizontalHeaderLabels([
             "Symbol", "Side", "IM", "Entry", "Current", "Stop Loss", "Type", "SL %", "PnL %", "PnL $", 
-            "Liq. Price", "Time", "Status", "Conf%", "Vol%", "ADX", "Weight", "Open Reason"
+            "Liq. Price", "Time", "Status", "Conf%", "Weight", "Adaptive Status", "Open Reason"
         ])
         
         table.setAlternatingRowColors(True)
@@ -510,6 +540,77 @@ class TradingDashboard(QMainWindow):
         worst_str = f"-${abs(self.session_stats.worst_trade_pnl):.2f}" if self.session_stats.worst_trade_pnl < 0 else "$0.00"
         best_worst_text = f"{best_str} / {worst_str}\nAvg Hold: {self.session_stats.get_average_hold_time()}"
         self.stat_labels["Best/Worst"].setText(best_worst_text)
+        
+        # Update adaptive sizing section if enabled
+        if config.ADAPTIVE_SIZING_ENABLED:
+            self._update_adaptive_sizing()
+    
+    def _update_adaptive_sizing(self):
+        """Update adaptive position sizing statistics"""
+        try:
+            from core.adaptive_position_sizing import global_adaptive_sizing
+            
+            if global_adaptive_sizing is None:
+                return
+            
+            # Get stats from adaptive sizing
+            stats = global_adaptive_sizing.get_memory_stats()
+            
+            # Cycle
+            cycle_text = f"#{stats.get('cycle', 0)}"
+            self.adaptive_labels["Cycle"].setText(cycle_text)
+            
+            # Active Symbols - Show REAL open positions (max 5)
+            import config
+            max_positions = config.MAX_CONCURRENT_POSITIONS
+            current_open = self.position_manager.safe_get_position_count()
+            
+            active_text = f"{current_open}/{max_positions}"
+            active_label = self.adaptive_labels["Active Symbols"]
+            active_label.setText(active_text)
+            
+            # Color based on capacity
+            if current_open >= max_positions:
+                active_label.setStyleSheet("color: #F59E0B;")  # Orange when full
+            elif current_open > 0:
+                active_label.setStyleSheet("color: #22C55E;")  # Green when active
+            else:
+                active_label.setStyleSheet("color: #E6EEF8;")  # White when empty
+            
+            # Blocked
+            blocked = stats.get('blocked_symbols', 0)
+            blocked_text = f"{blocked}"
+            blocked_label = self.adaptive_labels["Blocked"]
+            blocked_label.setText(blocked_text)
+            if blocked > 0:
+                blocked_label.setStyleSheet("color: #EF4444;")
+            else:
+                blocked_label.setStyleSheet("color: #E6EEF8;")
+            
+            # Win Rate
+            win_rate = stats.get('win_rate', 0)
+            win_rate_text = f"{win_rate:.1f}%"
+            win_rate_label = self.adaptive_labels["Win Rate"]
+            win_rate_label.setText(win_rate_text)
+            if win_rate >= 50:
+                win_rate_label.setStyleSheet("color: #22C55E;")
+            elif win_rate >= 40:
+                win_rate_label.setStyleSheet("color: #F59E0B;")
+            else:
+                win_rate_label.setStyleSheet("color: #EF4444;")
+            
+            # Average Size
+            if total > 0:
+                # Calculate average current size from memory
+                total_size = sum(m.current_size for m in global_adaptive_sizing.symbol_memory.values())
+                avg_size = total_size / total if total > 0 else 0
+                avg_size_text = f"${avg_size:.2f}"
+            else:
+                avg_size_text = "$0.00"
+            self.adaptive_labels["Avg Size"].setText(avg_size_text)
+            
+        except Exception as e:
+            logging.debug(f"Error updating adaptive sizing stats: {e}")
     
     def _update_positions(self):
         """Update all 3 position tabs - OPTIMIZED with cache"""
@@ -583,16 +684,23 @@ class TradingDashboard(QMainWindow):
                 table.setItem(row, 1, side_item)
                 
                 # Initial Margin (IM) - RIGHT AFTER SIDE
-                # Formula: IM = position_size (notional value) / leverage
-                # position_size è già il notional value in USD
-                initial_margin = pos.position_size / pos.leverage if pos.position_size > 0 else 0
+                # 🔧 FIX: Use REAL IM from Bybit if available
+                if hasattr(pos, 'real_initial_margin') and pos.real_initial_margin is not None:
+                    # Use real IM from Bybit
+                    initial_margin = pos.real_initial_margin
+                    im_source = "Bybit"
+                else:
+                    # Fallback: calculate from position size
+                    initial_margin = pos.position_size / pos.leverage if pos.position_size > 0 else 0
+                    im_source = "Calculated"
                 
                 im_item = QTableWidgetItem(f"${initial_margin:.2f}")
                 im_item.setToolTip(
-                    f"Initial Margin (IM)\n\n"
+                    f"Initial Margin (IM) [{im_source}]\n\n"
                     f"Margine bloccato per questa posizione\n"
                     f"Capital allocato: ${initial_margin:.2f}\n\n"
-                    f"Calcolo: position_size ${pos.position_size:.2f} ÷ leverage {pos.leverage}x"
+                    f"Source: {im_source}\n"
+                    f"{'✅ Read from Bybit (exact value)' if im_source == 'Bybit' else '⚠️ Calculated (may differ slightly from Bybit)'}"
                 )
                 im_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 2, im_item)
@@ -601,8 +709,22 @@ class TradingDashboard(QMainWindow):
                 table.setItem(row, 3, QTableWidgetItem(ColorHelper.format_price(pos.entry_price)))
                 table.setItem(row, 4, QTableWidgetItem(ColorHelper.format_price(pos.current_price)))
                 
-                # Stop Loss - Column 5 (IMPROVEMENT 3)
-                sl_item = QTableWidgetItem(ColorHelper.format_price(pos.stop_loss))
+                # Stop Loss - Column 5 - Use REAL SL from Bybit if available
+                if hasattr(pos, 'real_stop_loss') and pos.real_stop_loss is not None:
+                    # Use real SL from Bybit (most accurate)
+                    stop_loss_display = pos.real_stop_loss
+                    sl_source = "Bybit"
+                else:
+                    # Fallback to calculated SL
+                    stop_loss_display = pos.stop_loss
+                    sl_source = "Calculated"
+                
+                sl_item = QTableWidgetItem(ColorHelper.format_price(stop_loss_display))
+                sl_item.setToolTip(
+                    f"Stop Loss Price [{sl_source}]\n"
+                    f"${stop_loss_display:.6f}\n\n"
+                    f"{'✅ Read from Bybit (exact value)' if sl_source == 'Bybit' else '⚠️ Calculated (may differ from Bybit)'}"
+                )
                 sl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 5, sl_item)
             
@@ -640,53 +762,62 @@ class TradingDashboard(QMainWindow):
                 type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 6, type_item)
             
-                # SL % - Column 7 - NORMALIZED: Always show as ROE% (price% × leverage)
+                # SL % - Column 7 - ALWAYS show as NEGATIVE protection (intuitive)
                 sl_pct_item = QTableWidgetItem()
                 
-                # Calculate price distance (always shows protection direction)
-                price_distance_pct = ((pos.stop_loss - pos.entry_price) / pos.entry_price) * 100
+                # Use REAL stop loss from Bybit if available
+                sl_price = pos.real_stop_loss if (hasattr(pos, 'real_stop_loss') and pos.real_stop_loss) else pos.stop_loss
                 
-                # Convert to ROE% by multiplying with leverage
-                sl_roe_pct = price_distance_pct * pos.leverage
+                # Calculate RISK percentage (always shown as negative for protection)
+                # For LONG: SL is below entry → negative %
+                # For SHORT: SL is above entry → but we show it as negative % for consistency
+                if pos.side in ['buy', 'long']:
+                    # LONG: (SL - Entry) / Entry × 100 = negative value
+                    risk_pct = ((sl_price - pos.entry_price) / pos.entry_price) * 100
+                else:
+                    # SHORT: (Entry - SL) / Entry × 100 = show as negative for consistency
+                    # If SL is above entry (correct for SHORT), this gives negative value
+                    risk_pct = ((pos.entry_price - sl_price) / pos.entry_price) * 100
                 
-                # VISUAL ADJUSTMENT: Invert sign for SHORT positions (GUI only)
-                display_value = sl_roe_pct
-                if pos.side in ['sell', 'short']:
-                    display_value = -sl_roe_pct  # Inverte il segno solo visivamente
+                # Check if trailing is active
+                is_trailing_active = (hasattr(pos, 'trailing_data') and 
+                                     pos.trailing_data and 
+                                     pos.trailing_data.enabled)
                 
-                # Display the adjusted value
-                sl_pct_item.setText(ColorHelper.format_pct(display_value))
+                # Display the value (should always be negative or near zero for protection)
+                sl_pct_item.setText(ColorHelper.format_pct(risk_pct))
                 
-                # Build tooltip explaining the visual inversion for SHORT
+                # Build tooltip
                 side_type = "LONG" if pos.side in ['buy', 'long'] else "SHORT"
-                tooltip_text = (
-                    f"Stop Loss Risk (ROE%) - {side_type}\n\n"
-                    "🔴 Rosso (negativo): Fixed SL - Protezione base\n"
-                    "   Protegge da perdite oltre questa percentuale del margine\n\n"
-                    "🟢 Verde (positivo): Trailing attivo\n"
-                    "   Protegge profitti già realizzati\n\n"
-                    f"Calcolo interno: {price_distance_pct:+.1f}% (prezzo) × {pos.leverage}x (leva) = {sl_roe_pct:+.1f}% ROE\n"
-                )
+                sl_roe_pct = risk_pct * pos.leverage
                 
-                if pos.side in ['sell', 'short']:
-                    tooltip_text += (
-                        f"Valore mostrato: {display_value:+.1f}% (segno invertito per SHORT)\n\n"
-                        "📌 Nota: Per le posizioni SHORT, il segno è invertito visivamente\n"
-                        "per rendere intuitivo il concetto: negativo = rischio, positivo = protezione profitti"
+                if is_trailing_active:
+                    tooltip_text = (
+                        f"🎪 TRAILING STOP - {side_type}\n\n"
+                        f"Stop Loss: ${sl_price:.6f}\n"
+                        f"Entry: ${pos.entry_price:.6f}\n"
+                        f"Risk: {risk_pct:.2f}% price\n"
+                        f"Impact on Margin: {sl_roe_pct:.1f}% ROE\n\n"
+                        f"✅ Trailing attivo - protegge profitti"
                     )
                 else:
-                    tooltip_text += (
-                        f"Valore mostrato: {display_value:+.1f}%\n\n"
-                        f"Questo trade: {abs(price_distance_pct):.2f}% prezzo × {pos.leverage}x leva = {abs(sl_roe_pct):.1f}% ROE rischio"
+                    tooltip_text = (
+                        f"🛡️ FIXED STOP LOSS - {side_type}\n\n"
+                        f"Stop Loss: ${sl_price:.6f}\n"
+                        f"Entry: ${pos.entry_price:.6f}\n"
+                        f"Risk: {risk_pct:.2f}% price\n"
+                        f"Impact on Margin: {sl_roe_pct:.1f}% ROE\n\n"
+                        f"⚠️ Protezione base attiva"
                     )
                 
                 sl_pct_item.setToolTip(tooltip_text)
                 
-                # Color based on displayed value
-                if display_value < 0:
-                    sl_pct_item.setForeground(QBrush(ColorHelper.NEGATIVE))  # Rosso
+                # Color based on trailing status
+                if is_trailing_active:
+                    sl_pct_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Verde se trailing
                 else:
-                    sl_pct_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Verde
+                    sl_pct_item.setForeground(QBrush(ColorHelper.NEGATIVE))  # Rosso se fixed
+                
                 sl_pct_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 7, sl_pct_item)
                 
@@ -802,87 +933,108 @@ class TradingDashboard(QMainWindow):
                 conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(row, 13, conf_item)
                 
-                # Column 14: Volatility %
-                # Try to get volatility/ATR data from position
-                atr = getattr(pos, 'atr', 0)
-                volatility_pct = (atr / pos.current_price * 100) if pos.current_price > 0 and atr > 0 else 0
-                
-                if volatility_pct > 0:
-                    vol_item = QTableWidgetItem(f"{volatility_pct:.1f}%")
-                    if volatility_pct < 2.0:
-                        vol_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for low vol (safer)
-                    elif volatility_pct > 4.0:
-                        vol_item.setForeground(QBrush(ColorHelper.NEGATIVE))  # Red for high vol (risky)
-                    else:
-                        vol_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for medium
-                    vol_item.setToolTip(f"Market Volatility (ATR): {volatility_pct:.1f}%\nLower = Less risky = More weight")
+                # Column 14: Weight - Simplified (just show confidence as weight proxy)
+                weight_item = QTableWidgetItem(f"{confidence:.0%}")
+                if confidence >= 0.75:
+                    weight_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                elif confidence >= 0.65:
+                    weight_item.setForeground(QBrush(ColorHelper.INFO))
                 else:
-                    vol_item = QTableWidgetItem("N/A")
-                    vol_item.setForeground(QBrush(ColorHelper.NEUTRAL))
-                    vol_item.setToolTip("Volatility data not available")
-                vol_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 14, vol_item)
-                
-                # Column 15: ADX (Trend Strength)
-                adx = getattr(pos, 'adx', 0)
-                if adx > 0:
-                    adx_item = QTableWidgetItem(f"{adx:.0f}")
-                    if adx >= 25:
-                        adx_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for strong trend
-                    elif adx >= 20:
-                        adx_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for moderate
-                    else:
-                        adx_item.setForeground(QBrush(ColorHelper.WARNING))  # Orange for weak
-                    adx_item.setToolTip(f"ADX Trend Strength: {adx:.1f}\n≥25 = Strong trend = More weight")
-                else:
-                    adx_item = QTableWidgetItem("N/A")
-                    adx_item.setForeground(QBrush(ColorHelper.NEUTRAL))
-                    adx_item.setToolTip("ADX data not available")
-                adx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 15, adx_item)
-                
-                # Column 16: Weight (Risk-Weighted Position Sizing Factor)
-                # Calculate weight based on confidence, volatility, ADX
-                if confidence > 0 and volatility_pct > 0:
-                    # Reconstruct weight calculation
-                    confidence_weight = 0.5 + (confidence * 1.0)
-                    
-                    if volatility_pct < 2.0:
-                        volatility_multiplier = 1.3
-                    elif volatility_pct > 4.0:
-                        volatility_multiplier = 0.7
-                    else:
-                        volatility_multiplier = 1.0
-                    
-                    trend_multiplier = 1.2 if adx >= 25 else 1.0
-                    
-                    weight = confidence_weight * volatility_multiplier * trend_multiplier
-                    weight = max(0.5, min(2.0, weight))  # Clamp 0.5-2.0
-                    
-                    weight_item = QTableWidgetItem(f"{weight:.2f}x")
-                    if weight >= 1.5:
-                        weight_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for high weight
-                    elif weight >= 1.0:
-                        weight_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for medium
-                    else:
-                        weight_item.setForeground(QBrush(ColorHelper.WARNING))  # Orange for low
-                    
-                    weight_item.setToolTip(
-                        f"Position Sizing Weight: {weight:.2f}x\n\n"
-                        f"Formula: Conf × Vol × Trend\n"
-                        f"= {confidence_weight:.2f} × {volatility_multiplier:.2f} × {trend_multiplier:.2f}\n\n"
-                        f"Higher weight = Larger position size\n"
-                        f"Range: 0.5x - 2.0x"
-                    )
-                else:
-                    weight_item = QTableWidgetItem("N/A")
-                    weight_item.setForeground(QBrush(ColorHelper.NEUTRAL))
-                    weight_item.setToolTip("Weight calculation requires confidence and volatility data")
-                
+                    weight_item.setForeground(QBrush(ColorHelper.WARNING))
+                weight_item.setToolTip(f"Position Weight (based on ML confidence): {confidence:.0%}")
                 weight_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 16, weight_item)
+                table.setItem(row, 14, weight_item)
                 
-                # Column 17: Open Reason - Shows ML prediction results for SESSION positions or "Already Open" for SYNCED
+                # Column 15: Adaptive Status - Shows if position size is improving/declining
+                adaptive_item = QTableWidgetItem()
+                
+                # Try to get adaptive sizing memory for this symbol
+                try:
+                    if config.ADAPTIVE_SIZING_ENABLED:
+                        from core.adaptive_position_sizing import global_adaptive_sizing
+                        
+                        if global_adaptive_sizing and pos.symbol in global_adaptive_sizing.symbol_memory:
+                            memory = global_adaptive_sizing.symbol_memory[pos.symbol]
+                            
+                            # Check if blocked
+                            if memory.blocked_cycles_left > 0:
+                                adaptive_item.setText(f"🚫 BLOCKED\n{memory.blocked_cycles_left} cycles")
+                                adaptive_item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                                adaptive_item.setToolTip(
+                                    f"Symbol is BLOCKED for {memory.blocked_cycles_left} more cycles\n\n"
+                                    f"Reason: Last trade was a loss ({memory.last_pnl_pct:+.1f}%)\n"
+                                    f"Size reset to base: ${memory.base_size:.2f}\n"
+                                    f"Will be unblocked after {memory.blocked_cycles_left} cycles\n\n"
+                                    f"History: {memory.wins}W / {memory.losses}L"
+                                )
+                            else:
+                                # Calculate size evolution
+                                base_size = memory.base_size
+                                current_size = memory.current_size
+                                size_change_pct = ((current_size - base_size) / base_size * 100) if base_size > 0 else 0
+                                
+                                # Determine status based on size evolution
+                                if size_change_pct > 5:
+                                    # Growing (winning)
+                                    adaptive_item.setText(f"📈 GROWING\n+{size_change_pct:.1f}%")
+                                    adaptive_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                                    adaptive_item.setToolTip(
+                                        f"Symbol size is GROWING (performing well)\n\n"
+                                        f"Current size: ${current_size:.2f}\n"
+                                        f"Base size: ${base_size:.2f}\n"
+                                        f"Growth: +{size_change_pct:.1f}%\n\n"
+                                        f"Last PnL: {memory.last_pnl_pct:+.1f}%\n"
+                                        f"History: {memory.wins}W / {memory.losses}L\n"
+                                        f"Win rate: {(memory.wins / memory.total_trades * 100):.0f}%" if memory.total_trades > 0 else "No trades yet"
+                                    )
+                                elif size_change_pct < -5:
+                                    # Shrinking (not expected, but handle it)
+                                    adaptive_item.setText(f"📉 RESET\n{size_change_pct:.1f}%")
+                                    adaptive_item.setForeground(QBrush(ColorHelper.WARNING))
+                                    adaptive_item.setToolTip(
+                                        f"Symbol was RESET after a loss\n\n"
+                                        f"Current size: ${current_size:.2f}\n"
+                                        f"Base size: ${base_size:.2f}\n"
+                                        f"Change: {size_change_pct:.1f}%\n\n"
+                                        f"History: {memory.wins}W / {memory.losses}L"
+                                    )
+                                else:
+                                    # Stable (at base level)
+                                    adaptive_item.setText(f"📊 STABLE\n${current_size:.2f}")
+                                    adaptive_item.setForeground(QBrush(ColorHelper.INFO))
+                                    win_rate_text = f"{(memory.wins / memory.total_trades * 100):.0f}%" if memory.total_trades > 0 else "New"
+                                    adaptive_item.setToolTip(
+                                        f"Symbol at BASE size level\n\n"
+                                        f"Current size: ${current_size:.2f}\n"
+                                        f"Base size: ${base_size:.2f}\n\n"
+                                        f"Last PnL: {memory.last_pnl_pct:+.1f}%" if memory.last_pnl_pct != 0 else "First trade\n\n"
+                                        f"History: {memory.wins}W / {memory.losses}L\n"
+                                        f"Win rate: {win_rate_text}"
+                                    )
+                        else:
+                            # Symbol not in memory yet (new position)
+                            adaptive_item.setText("🆕 NEW")
+                            adaptive_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                            adaptive_item.setToolTip(
+                                "New symbol - not yet in adaptive memory\n\n"
+                                "Will be tracked after first close\n"
+                                "Starting with base size"
+                            )
+                    else:
+                        # Adaptive sizing disabled
+                        adaptive_item.setText("N/A")
+                        adaptive_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                        adaptive_item.setToolTip("Adaptive sizing is disabled")
+                        
+                except Exception as e:
+                    adaptive_item.setText("ERROR")
+                    adaptive_item.setForeground(QBrush(ColorHelper.WARNING))
+                    adaptive_item.setToolTip(f"Error getting adaptive status: {e}")
+                
+                adaptive_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 15, adaptive_item)
+                
+                # Column 16: Open Reason - Shows ML prediction results for SESSION positions or "Already Open" for SYNCED
                 reason_item = QTableWidgetItem()
                 origin = getattr(pos, 'origin', 'SESSION')
                 open_reason = getattr(pos, 'open_reason', None)
@@ -952,7 +1104,7 @@ class TradingDashboard(QMainWindow):
                         )
                 
                 reason_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                table.setItem(row, 17, reason_item)
+                table.setItem(row, 16, reason_item)  # Column 16 (last column)
                 
                 # Row highlighting (IMPROVEMENT 2)
                 row_background = None
@@ -964,7 +1116,7 @@ class TradingDashboard(QMainWindow):
                     row_background = QColor("#003D00")  # Green
                 
                 if row_background:
-                    for col in range(18):  # 18 columns total (0-17)
+                    for col in range(17):  # 17 columns total (0-16)
                         item = table.item(row, col)
                         if item:
                             item.setBackground(QBrush(row_background))

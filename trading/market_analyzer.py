@@ -206,7 +206,7 @@ class MarketAnalyzer:
             # Get minimum amounts
             self.min_amounts = await fetch_min_amounts(exchange, self.top_symbols_analysis, markets)
             
-            logging.info(f"✅ Initialized {len(self.top_symbols_analysis)} symbols for analysis")
+            logging.debug(f"✅ Initialized {len(self.top_symbols_analysis)} symbols for analysis")
             
             return self.min_amounts
             
@@ -261,7 +261,7 @@ class MarketAnalyzer:
             symbol_volumes.sort(key=lambda x: x[1], reverse=True)
             top_symbols = [x[0] for x in symbol_volumes[:top_n]]
             
-            logging.info(f"🚀 Parallel ticker fetch: {len(symbol_volumes)} symbols processed concurrently")
+            logging.debug(f"🚀 Parallel ticker fetch: {len(symbol_volumes)} symbols processed concurrently")
             
             return top_symbols, volumes_dict
             

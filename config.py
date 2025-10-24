@@ -77,9 +77,40 @@ exchange_config = {
 LEVERAGE = 10
 
 # ==============================================================================
-# 🎯 POSITION SIZING - SIMPLE FIXED SYSTEM
+# 🎯 POSITION SIZING SYSTEM SELECTOR
+# ==============================================================================
+# Choose between FIXED (legacy) or ADAPTIVE (new) position sizing
+
+ADAPTIVE_SIZING_ENABLED = True  # True = Adaptive (learns from results), False = Fixed 3-tier
+
+# ==============================================================================
+# 🎯 ADAPTIVE POSITION SIZING (NEW SYSTEM)
+# ==============================================================================
+# Sistema adattivo che impara dalle performance reali per simbolo
+# - Premia monete vincenti aumentando size
+# - Punisce monete perdenti bloccandole per 3 cicli
+# - Si auto-adatta al wallet growth
+
+# Wallet structure
+ADAPTIVE_WALLET_BLOCKS = 5           # Divide wallet in N blocks (5 blocks)
+ADAPTIVE_FIRST_CYCLE_FACTOR = 0.5    # First cycle uses 50% of block (prudent start)
+
+# Penalty system
+ADAPTIVE_BLOCK_CYCLES = 3            # Block losing symbols for N cycles
+ADAPTIVE_CAP_MULTIPLIER = 1.0        # Max size = slot_value × multiplier
+
+# Risk management
+ADAPTIVE_RISK_MAX_PCT = 0.20         # Max 20% wallet at risk (total max loss)
+ADAPTIVE_LOSS_MULTIPLIER = 0.30      # Stop loss = 30% of margin (with 10x leverage)
+
+# Memory persistence
+ADAPTIVE_MEMORY_FILE = "adaptive_sizing_memory.json"  # File for symbol memory
+
+# ==============================================================================
+# 🎯 FIXED POSITION SIZING (LEGACY SYSTEM)
 # ==============================================================================
 # Sistema semplice con sizing fisso basato su confidence
+# (Used only if ADAPTIVE_SIZING_ENABLED = False)
 
 # Fixed position sizes (margin per trade)
 POSITION_SIZE_CONSERVATIVE = 15.0   # Low confidence (<65%)
@@ -89,6 +120,9 @@ POSITION_SIZE_AGGRESSIVE = 25.0     # High confidence (>75%)
 # Limiti assoluti
 POSITION_SIZE_MIN_ABSOLUTE = 15.0   # Minimo assoluto
 POSITION_SIZE_MAX_ABSOLUTE = 50.0   # Massimo assoluto
+
+# Position sizing target (for backwards compatibility)
+POSITION_SIZING_TARGET_POSITIONS = 10  # Target number of positions
 
 # Thresholds per Position Sizing
 CONFIDENCE_HIGH_THRESHOLD = 0.75    # ≥75% confidence = aggressive
@@ -374,7 +408,9 @@ TIMEFRAME_WEIGHTS = {
 # - Volatility (lower = more weight, safer)
 # - Trend strength ADX (stronger = more weight)
 
-MAX_CONCURRENT_POSITIONS = 10  # INCREASED from 5 (requires ~$225 minimum balance with IM 15%)
+# ADAPTIVE SIZING: Max positions = wallet blocks (5)
+# With adaptive sizing enabled, this limit must match ADAPTIVE_WALLET_BLOCKS
+MAX_CONCURRENT_POSITIONS = 5  # Aligned with ADAPTIVE_WALLET_BLOCKS for adaptive sizing
 
 # DEPRECATED: Position sizing weights (replaced by dynamic risk-weighted system)
 # See: RiskCalculator.calculate_portfolio_based_margins()
