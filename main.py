@@ -65,9 +65,6 @@ from trading import TradingEngine
 # Realtime display
 from core.realtime_display import initialize_global_realtime_display
 
-# Adaptive Learning System
-from core.adaptation_core import global_adaptation_core
-
 # Models
 from model_loader import load_xgboost_model_func
 from trainer import train_xgboost_model_wrapper, ensure_trained_models_dir
@@ -111,12 +108,10 @@ async def initialize_exchange():
     sync_success = False
     final_time_diff = 0
     
-    logging.info(colored("⏰ Phase 1: Pre-authentication time sync", "cyan"))
+    logging.debug("⏰ Starting time sync...")
     
     for attempt in range(1, TIME_SYNC_MAX_RETRIES + 1):
         try:
-            logging.info(f"⏰ Sync attempt {attempt}/{TIME_SYNC_MAX_RETRIES}...")
-            
             # Step 1: Fetch server time using public API (no authentication required)
             server_time = await async_exchange.fetch_time()
             local_time = async_exchange.milliseconds()
@@ -124,14 +119,8 @@ async def initialize_exchange():
             # Step 2: Calculate time difference
             time_diff = server_time - local_time
             
-            logging.info(f"📊 Time analysis:")
-            logging.info(f"   Local time:  {local_time} ms")
-            logging.info(f"   Server time: {server_time} ms")
-            logging.info(f"   Difference:  {time_diff} ms ({time_diff/1000:.3f} seconds)")
-            
             # Step 3: Apply manual offset if configured
             if MANUAL_TIME_OFFSET is not None:
-                logging.info(f"🔧 Applying manual time offset: {MANUAL_TIME_OFFSET} ms")
                 time_diff += MANUAL_TIME_OFFSET
             
             # Step 4: Store the time difference in exchange options
@@ -145,25 +134,21 @@ async def initialize_exchange():
             verify_adjusted_time = verify_local_time + time_diff
             verify_diff = abs(verify_server_time - verify_adjusted_time)
             
-            logging.info(f"✅ Verification: adjusted time diff = {verify_diff} ms")
-            
             # Accept if difference is less than 2 seconds after adjustment
             if verify_diff < 2000:
-                logging.info(colored(f"✅ Time sync successful! Offset applied: {time_diff} ms", "green"))
+                logging.info(colored(f"✅ Time sync OK (offset: {time_diff}ms)", "green"))
                 sync_success = True
                 break
             else:
-                logging.warning(f"⚠️ Verification failed: adjusted diff too large ({verify_diff} ms)")
+                logging.debug(f"⚠️ Verification failed: adjusted diff {verify_diff}ms")
                 if attempt < TIME_SYNC_MAX_RETRIES:
                     delay = TIME_SYNC_RETRY_DELAY * attempt  # Exponential backoff
-                    logging.info(f"⏳ Waiting {delay}s before retry...")
                     await asyncio.sleep(delay)
                     
         except Exception as e:
             logging.error(f"❌ Sync attempt {attempt} failed: {e}")
             if attempt < TIME_SYNC_MAX_RETRIES:
                 delay = TIME_SYNC_RETRY_DELAY * attempt  # Exponential backoff
-                logging.info(f"⏳ Waiting {delay}s before retry...")
                 await asyncio.sleep(delay)
     
     if not sync_success:
@@ -177,31 +162,25 @@ async def initialize_exchange():
         raise RuntimeError(error_msg)
 
     # Phase 2: Reduce recv_window for tighter security in normal operations
-    logging.info(colored("⏰ Phase 2: Optimizing recv_window for normal operations", "cyan"))
     async_exchange.options['recvWindow'] = TIME_SYNC_NORMAL_RECV_WINDOW
-    logging.info(f"✅ recv_window reduced to {TIME_SYNC_NORMAL_RECV_WINDOW} ms for enhanced security")
 
     # Phase 3: Load markets (now safe with synchronized time)
-    logging.info(colored("⏰ Phase 3: Loading markets with synchronized time", "cyan"))
     try:
         await async_exchange.load_markets()
-        logging.info(colored("✅ Markets loaded successfully", "green"))
+        logging.info(colored("✅ Markets loaded", "green"))
     except Exception as e:
         logging.error(colored(f"❌ Failed to load markets: {e}", "red"))
         raise RuntimeError(f"Failed to load markets after time sync: {e}")
 
     # Phase 4: Test authenticated API connection
-    logging.info(colored("⏰ Phase 4: Testing authenticated API access", "cyan"))
     try:
         balance = await async_exchange.fetch_balance()
-        logging.info(colored("✅ Authenticated API test successful", "green"))
-        logging.info(f"📊 Account balance fetched: {len(balance.get('info', {}))} currencies")
+        logging.info(colored("✅ Bybit authenticated", "green"))
     except Exception as e:
-        logging.error(colored(f"❌ Authenticated API test failed: {e}", "red"))
+        logging.error(colored(f"❌ Authentication failed: {e}", "red"))
         raise RuntimeError(f"Failed to authenticate with Bybit: {e}")
 
-    logging.info(colored("🎯 BYBIT CONNECTION: All phases completed successfully", "green", attrs=["bold"]))
-    logging.info(f"⚙️  Final time offset: {final_time_diff} ms ({final_time_diff/1000:.3f}s)")
+    logging.debug(f"Time offset: {final_time_diff}ms")
     
     return async_exchange
 
@@ -296,11 +275,8 @@ async def main():
         )
         logging.debug(colored("📊 Realtime display initialized", "cyan"))
 
-        # Initialize Adaptive Learning System
-        if config.ADAPTIVE_LEARNING_ENABLED:
-            await global_adaptation_core.initialize()
-        else:
-            logging.warning(colored("⚠️ Adaptive Learning DISABLED in config", "yellow"))
+        # Adaptive Learning System removed (too complex)
+        logging.debug("Adaptive Learning System disabled - using fixed position sizing")
 
         # Trading loop
         logging.info(colored("🎯 All systems ready — starting trading loop", "green"))

@@ -33,6 +33,11 @@ DEMO_MODE = False  # Default: False (LIVE mode), può essere modificato da Confi
 DEMO_BALANCE = 1000.0  # Balance USDT fittizio per modalità demo
 
 # ----------------------------------------------------------------------
+# Logging Mode
+# ----------------------------------------------------------------------
+QUIET_MODE = True  # True = minimal logs (summary only), False = detailed logs
+
+# ----------------------------------------------------------------------
 # Credenziali Bybit
 # ----------------------------------------------------------------------
 API_KEY = os.getenv("BYBIT_API_KEY")
@@ -72,28 +77,18 @@ exchange_config = {
 LEVERAGE = 10
 
 # ==============================================================================
-# 🎯 DYNAMIC POSITION SIZING - BALANCE-ADAPTIVE SYSTEM
+# 🎯 POSITION SIZING - SIMPLE FIXED SYSTEM
 # ==============================================================================
-# Sistema dinamico che scala le position size in base al balance disponibile
-# Garantisce sempre un numero minimo di posizioni possibili
+# Sistema semplice con sizing fisso basato su confidence
 
-# Target: numero minimo di posizioni aggressive possibili
-# INCREASED: 10 positions for safer sizing with better margin buffer
-POSITION_SIZING_TARGET_POSITIONS = 10  # Garantisce almeno 10 posizioni aggressive (più sicuro di 8)
+# Fixed position sizes (margin per trade)
+POSITION_SIZE_CONSERVATIVE = 15.0   # Low confidence (<65%)
+POSITION_SIZE_MODERATE = 20.0       # Medium confidence (65-75%)
+POSITION_SIZE_AGGRESSIVE = 25.0     # High confidence (>75%)
 
-# Ratios tra i tier (mantiene proporzioni 60% / 75% / 100%)
-POSITION_SIZING_RATIO_AGGRESSIVE = 1.0      # Base (100%)
-POSITION_SIZING_RATIO_MODERATE = 0.75       # 75% dell'aggressive
-POSITION_SIZING_RATIO_CONSERVATIVE = 0.60   # 60% dell'aggressive
-
-# Limiti di sicurezza assoluti
-POSITION_SIZE_MIN_ABSOLUTE = 15.0   # Mai sotto $15 (troppo piccolo per Bybit)
-POSITION_SIZE_MAX_ABSOLUTE = 150.0  # Mai sopra $150 (singola pos troppo grande)
-
-# DEPRECATED: Position Size Tiers fissi (usati solo come fallback)
-POSITION_SIZE_CONSERVATIVE = 20.0   # Fallback se dynamic calculation fails
-POSITION_SIZE_MODERATE = 30.0       # Fallback se dynamic calculation fails
-POSITION_SIZE_AGGRESSIVE = 40.0     # Fallback se dynamic calculation fails
+# Limiti assoluti
+POSITION_SIZE_MIN_ABSOLUTE = 15.0   # Minimo assoluto
+POSITION_SIZE_MAX_ABSOLUTE = 50.0   # Massimo assoluto
 
 # Thresholds per Position Sizing
 CONFIDENCE_HIGH_THRESHOLD = 0.75    # ≥75% confidence = aggressive
@@ -141,6 +136,7 @@ TP_MIN_PROFIT_PCT = 0.03            # Minimum 3% profit target
 
 # Master switch
 TRAILING_ENABLED = True              # Enable trailing stop system
+TRAILING_SILENT_MODE = True          # Minimal logging (only important events)
 
 # Activation trigger (IMPROVED: Let winners run more)
 # NEW: +1.5% price = +15% ROE activation (was +10% ROE)
@@ -399,51 +395,6 @@ CACHE_EXPECTED_HIT_RATE = 70
 CACHE_API_SAVINGS_TARGET = 80
 
 # ==============================================================================
-# 🧠 ADAPTIVE LEARNING SYSTEM - Meta-Learning Configuration
+# 🧠 ADAPTIVE LEARNING SYSTEM - DISABLED
 # ==============================================================================
-# Sistema di apprendimento adattivo che impara dai trade outcomes
-
-# Master Switch
-ADAPTIVE_LEARNING_ENABLED = True  # Set False to disable (fallback to static parameters)
-
-# Adaptation Triggers
-ADAPTIVE_MIN_TRADES_FOR_UPDATE = 20   # Minimum trades before adaptation (reduced for testing)
-ADAPTIVE_UPDATE_INTERVAL_HOURS = 6    # Or every 6 hours (faster for testing)
-
-# Threshold Controller (τ) - OPTIMIZED for balanced aggression
-ADAPTIVE_TAU_GLOBAL_INIT = 0.60       # LOWERED: Initial global threshold (was 0.70) - more signals admitted
-ADAPTIVE_TAU_SIDE_INIT = {'LONG': 0.60, 'SHORT': 0.62}  # Per-side thresholds (lowered for consistency)
-ADAPTIVE_TAU_TF_INIT = {'15m': 0.60, '30m': 0.61, '1h': 0.61}  # Per-timeframe (lowered)
-ADAPTIVE_TAU_MIN = 0.55               # Minimum allowed threshold (slightly lowered)
-ADAPTIVE_TAU_MAX = 0.85               # Maximum allowed threshold (unchanged)
-ADAPTIVE_TAU_MIN_SAMPLES_PER_BUCKET = 50  # Min trades per bucket for update
-
-# Penalty System (Error Weighting)
-ADAPTIVE_PENALTY_W_CONF = 1.0         # Weight for confidence errors
-ADAPTIVE_PENALTY_W_SL = 1.5           # Weight for stop loss hits
-ADAPTIVE_PENALTY_W_FAST = 0.5         # Weight for fast exits
-ADAPTIVE_PENALTY_W_MAE = 0.3          # Weight for adverse excursions
-ADAPTIVE_PENALTY_COOLDOWN_THRESHOLD = 1.2  # Penalty EWMA to trigger cooldown
-ADAPTIVE_PENALTY_COOLDOWN_CYCLES = 3  # Cycles to cooldown
-ADAPTIVE_PENALTY_EWMA_ALPHA = 0.15    # EWMA decay factor
-
-# Confidence Calibration
-ADAPTIVE_CALIBRATION_MIN_SAMPLES = 50  # Min samples for calibration
-ADAPTIVE_CALIBRATION_N_BINS = 10      # Number of confidence bins
-ADAPTIVE_CALIBRATION_PRIOR_ALPHA = 5.0  # Beta distribution alpha
-ADAPTIVE_CALIBRATION_PRIOR_BETA = 2.0   # Beta distribution beta
-
-# Kelly Criterion & Risk Optimizer
-ADAPTIVE_KELLY_FACTOR = 0.25          # Quarter-Kelly (conservative)
-ADAPTIVE_KELLY_MAX_FRACTION = 0.01    # Max 1% of wallet per trade
-ADAPTIVE_KELLY_TARGET_SIGMA = 1.0     # Target volatility threshold
-ADAPTIVE_DAILY_LOSS_CAP_MULTIPLIER = 2.0  # 2× median loss for daily cap
-
-# Drift Detection (Page-Hinkley)
-ADAPTIVE_DRIFT_LAMBDA = 0.5           # Drift sensitivity
-ADAPTIVE_DRIFT_DELTA = 0.02           # Alarm threshold
-ADAPTIVE_DRIFT_PRUDENT_CYCLES = 20    # OPTIMIZED: 20 cycles (~5 hours) in prudent mode - balanced protection
-
-# Data Retention
-ADAPTIVE_MAX_TRADES_RETENTION = 5000  # Max trades to keep in database
-ADAPTIVE_MAX_DAYS_RETENTION = 180     # Max days to keep
+ADAPTIVE_LEARNING_ENABLED = False  # Sistema disabilitato - rimosso codice complesso

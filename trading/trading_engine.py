@@ -33,15 +33,9 @@ except ImportError:
     TRADE_DECISION_LOGGER_AVAILABLE = False
     global_trade_decision_logger = None
 
-# Import Adaptive Learning System
-try:
-    from core.adaptation_core import global_adaptation_core
-    ADAPTIVE_LEARNING_AVAILABLE = True
-    logging.debug("🧠 Adaptive Learning System integration enabled")
-except ImportError:
-    ADAPTIVE_LEARNING_AVAILABLE = False
-    global_adaptation_core = None
-    logging.warning("⚠️ Adaptive Learning System not available")
+# Adaptive Learning System REMOVED (too complex)
+ADAPTIVE_LEARNING_AVAILABLE = False
+global_adaptation_core = None
 
 # Removed: Online Learning / Post-mortem system (not functioning)
 # Removed: Position Safety Manager (migrated to thread_safe_position_manager)
@@ -216,10 +210,6 @@ class TradingEngine:
             cycle_logger.log_phase(3, "SIGNAL PROCESSING & FILTERING", "yellow")
             await self.signal_processor.display_complete_analysis(prediction_results, all_symbol_data)
             all_signals = await self.signal_processor.process_prediction_results(prediction_results, all_symbol_data)
-            
-            # 🧠 ADAPTIVE FILTERING: Apply confidence calibration + threshold + cooldown
-            if ADAPTIVE_LEARNING_AVAILABLE and config.ADAPTIVE_LEARNING_ENABLED:
-                all_signals = global_adaptation_core.apply_adaptive_filtering(all_signals)
 
             # Phase 4: Ranking
             cycle_logger.log_phase(4, "RANKING & TOP SIGNAL SELECTION", "green")
@@ -347,20 +337,12 @@ class TradingEngine:
         max_positions = max(0, config.MAX_CONCURRENT_POSITIONS - open_positions_count)
         signals_to_execute = tradeable_signals[: min(max_positions, len(tradeable_signals))]
         
-        # 🆕 ADAPTIVE KELLY-BASED SIZING or Portfolio-based fallback
+        # Fixed portfolio sizing (weighted by confidence, volatility, ADX)
         if signals_to_execute and self.clean_modules_available:
-            # Try adaptive Kelly-based sizing first
-            if ADAPTIVE_LEARNING_AVAILABLE and config.ADAPTIVE_LEARNING_ENABLED:
-                portfolio_margins = global_adaptation_core.calculate_adaptive_margins(
-                    signals_to_execute, available_balance, self.global_risk_calculator
-                )
-                logging.info(colored(f"🧠 Kelly-based sizing: {len(portfolio_margins)} positions with adaptive margins", "cyan"))
-            else:
-                # Fallback to fixed portfolio sizing
-                portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
-                    signals_to_execute, available_balance, total_wallet=usdt_balance
-                )
-                logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins (based on total wallet)", "cyan"))
+            portfolio_margins = self.global_risk_calculator.calculate_portfolio_based_margins(
+                signals_to_execute, available_balance, total_wallet=usdt_balance
+            )
+            logging.info(colored(f"💰 Portfolio sizing: {len(portfolio_margins)} positions with weighted margins", "cyan"))
         else:
             portfolio_margins = []
         
