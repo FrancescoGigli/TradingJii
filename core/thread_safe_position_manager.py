@@ -682,48 +682,18 @@ class ThreadSafePositionManager:
                         contracts = abs(contracts_raw)
                         entry_price = float(entry_price_val)
                         
-                        # FIX #2: INTELLIGENT PNL CALCULATION FALLBACK
-                        # If unrealizedPnl is None, calculate it manually
+                        # 🎯 CRITICAL: Use REAL unrealizedPnl from Bybit (source of truth)
+                        # Don't calculate locally - trust Bybit's data
                         unrealized_pnl_val = pos.get('unrealizedPnl')
                         
                         if unrealized_pnl_val is None or unrealized_pnl_val == '':
-                            logging.info(f"💡 {symbol_short}: unrealizedPnl missing, calculating manually...")
-                            
-                            # Get current/mark price for calculation
-                            current_price_val = pos.get('markPrice') or pos.get('lastPrice')
-                            
-                            if current_price_val is not None and current_price_val != '':
-                                current_price = float(current_price_val)
-                                
-                                # Determine side first for PnL calculation
-                                explicit_side = pos.get('side', '').lower()
-                                if explicit_side in ['buy', 'long']:
-                                    side_for_calc = 'buy'
-                                elif explicit_side in ['sell', 'short']:
-                                    side_for_calc = 'sell'
-                                else:
-                                    side_for_calc = 'buy' if contracts_raw > 0 else 'sell'
-                                
-                                # Calculate PnL percentage
-                                if side_for_calc == 'buy':
-                                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                                else:
-                                    pnl_pct = ((entry_price - current_price) / entry_price) * 100
-                                
-                                # Get leverage (default to 10 if not available)
-                                leverage = float(pos.get('leverage', 10))
-                                
-                                # Calculate unrealized PnL in USD
-                                position_value = contracts * entry_price
-                                unrealized_pnl = (pnl_pct / 100) * position_value * leverage
-                                
-                                logging.info(f"✅ {symbol_short}: Calculated PnL = ${unrealized_pnl:.2f} ({pnl_pct:+.2f}%)")
-                            else:
-                                # Cannot calculate without price - use 0 as emergency fallback
-                                unrealized_pnl = 0.0
-                                logging.warning(f"⚠️ {symbol_short}: No markPrice/lastPrice available, using PnL=0")
+                            # Fallback solo se Bybit non fornisce il dato
+                            logging.warning(f"⚠️ {symbol_short}: unrealizedPnl not provided by Bybit, using 0")
+                            unrealized_pnl = 0.0
                         else:
+                            # ✅ USE BYBIT DATA DIRECTLY (no calculation needed)
                             unrealized_pnl = float(unrealized_pnl_val)
+                            logging.debug(f"✅ {symbol_short}: Using REAL PnL from Bybit: ${unrealized_pnl:+.2f}")
                         
                         # Determine side for storage
                         explicit_side = pos.get('side', '').lower()

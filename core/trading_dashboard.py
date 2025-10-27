@@ -100,7 +100,7 @@ class TradingDashboard(QMainWindow):
         self._cached_closed = []
         self._cached_stats = {}
         self._cache_time_tabs = 0
-        self._cache_ttl = 10  # seconds - aumentato per ridurre lag
+        self._cache_ttl = 5  # seconds - REDUCED for real-time data (was 10)
         
         # Track last data hash to avoid unnecessary updates
         self._last_data_hash = {
@@ -275,11 +275,26 @@ class TradingDashboard(QMainWindow):
         table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         table.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         
-        # RESPONSIVE LAYOUT: Auto-resize columns to content
+        # PERFORMANCE FIX: Use Fixed sizes instead of ResizeToContents (MUCH FASTER!)
         header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        # Last column stretches to fill remaining space
-        header.setSectionResizeMode(9, QHeaderView.ResizeMode.Stretch)
+        # Fixed column widths for better performance
+        table.setColumnWidth(0, 80)   # Symbol
+        table.setColumnWidth(1, 110)  # Side
+        table.setColumnWidth(2, 80)   # IM
+        table.setColumnWidth(3, 90)   # Entry
+        table.setColumnWidth(4, 90)   # Current
+        table.setColumnWidth(5, 90)   # Stop Loss
+        table.setColumnWidth(6, 80)   # Type
+        table.setColumnWidth(7, 70)   # SL %
+        table.setColumnWidth(8, 70)   # PnL %
+        table.setColumnWidth(9, 90)   # PnL $
+        table.setColumnWidth(10, 90)  # Liq. Price
+        table.setColumnWidth(11, 70)  # Time
+        table.setColumnWidth(12, 80)  # Status
+        table.setColumnWidth(13, 60)  # Conf%
+        table.setColumnWidth(14, 60)  # Weight
+        table.setColumnWidth(15, 120) # Adaptive Status
+        header.setSectionResizeMode(16, QHeaderView.ResizeMode.Stretch)  # Open Reason stretches
         
         # INTERACTIVE: Enable column sorting by clicking headers
         table.setSortingEnabled(True)
@@ -649,8 +664,9 @@ class TradingDashboard(QMainWindow):
     def _populate_position_table(self, table: QTableWidget, positions: list, tab_name: str):
         """Populate a position table with position data"""
         
-        # ANTI-LAG: Disable updates during population
+        # PERFORMANCE FIX: Disable ALL expensive operations during populate
         table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)  # CRITICAL: Disable sorting during updates
         
         try:
             # OPTIMIZATION: Only rebuild table if count changed
@@ -1128,7 +1144,8 @@ class TradingDashboard(QMainWindow):
                     if item:
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         finally:
-            # Re-enable updates
+            # Re-enable updates AND sorting
+            table.setSortingEnabled(True)  # CRITICAL: Re-enable sorting AFTER populate
             table.setUpdatesEnabled(True)
     
     def _populate_closed_tab(self, table: QTableWidget, closed_positions: list):
@@ -1326,6 +1343,9 @@ class TradingDashboard(QMainWindow):
         """Update closed trades table - show ALL session trades"""
         # Get ALL trades from session (not just last 5)
         all_trades = self.session_stats.closed_trades  # All closed positions from session
+        
+        # CRITICAL FIX: Reverse order to show most recent trades FIRST
+        all_trades = list(reversed(all_trades))
         
         # Update group title with count
         self.closed_group.setTitle(f"📋 CLOSED POSITIONS (SESSION) - {len(all_trades)} trades")

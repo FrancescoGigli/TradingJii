@@ -19,6 +19,7 @@ from config import (
     get_xgb_model_file, get_xgb_scaler_file, EXPECTED_COLUMNS,
     NEUTRAL_UPPER_THRESHOLD, NEUTRAL_LOWER_THRESHOLD, N_FEATURES_FINAL
 )
+from core.confidence_calibrator import global_calibrator
 
 
 @dataclass
@@ -390,14 +391,26 @@ class RobustMLPredictor:
                     # No bonus for 2/2 (could be coincidence)
                     logging.debug("✓ Agreement (2/2) - no bonus applied")
         
-        # Log ensemble decision
+        # 4. CALIBRATE CONFIDENCE (convert raw to realistic win rate)
+        raw_confidence = ensemble_confidence
+        ensemble_confidence = global_calibrator.calibrate_xgb_confidence(raw_confidence)
+        
+        # Log ensemble decision with calibration info
         vote_breakdown = {k: f"{v:.3f}" for k, v in weighted_votes.items()}
         signal_names = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}
-        logging.debug(
-            f"Ensemble decision: {signal_names[majority_vote]} "
-            f"(conf: {ensemble_confidence:.3f}, votes: {vote_breakdown}, "
-            f"models: {n_available}/{n_expected})"
-        )
+        
+        if global_calibrator.is_calibrated:
+            logging.debug(
+                f"Ensemble decision: {signal_names[majority_vote]} "
+                f"(raw: {raw_confidence:.3f} → calibrated: {ensemble_confidence:.3f}, "
+                f"votes: {vote_breakdown}, models: {n_available}/{n_expected})"
+            )
+        else:
+            logging.debug(
+                f"Ensemble decision: {signal_names[majority_vote]} "
+                f"(conf: {ensemble_confidence:.3f}, votes: {vote_breakdown}, "
+                f"models: {n_available}/{n_expected})"
+            )
         
         return ensemble_confidence, majority_vote
     

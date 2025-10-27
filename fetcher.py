@@ -339,7 +339,7 @@ async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, lim
                 age_minutes = (now - last_timestamp).total_seconds() / 60
                 
                 # CRITICAL: Tightened freshness requirement for trading decisions
-                max_age_for_trading = 2  # Maximum 2 minutes for trading signals (was 5)
+                max_age_for_trading = 0.5  # Maximum 30 seconds for trading signals (real-time data)
                 
                 if age_minutes <= max_age_for_trading:  # Strict freshness for trading
                     # 🎉 JACKPOT: Return pre-calculated indicators (10x speedup!)

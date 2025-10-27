@@ -646,10 +646,19 @@ class TradingEngine:
         if not self.clean_modules_available:
             return
 
-        enhanced_logger.display_table("🔄 Synchronizing positions with Bybit", "cyan")
+        # CRITICAL FIX: FORCED POSITION SYNC - Get real-time data from Bybit
+        enhanced_logger.display_table("🔄 FORCED SYNC: Fetching real-time positions from Bybit", "cyan")
         if not config.DEMO_MODE:
             try:
-                await self.position_manager.sync_with_bybit(exchange)
+                # Force sync with Bybit to get latest position data
+                newly_opened, newly_closed = await self.position_manager.thread_safe_sync_with_bybit(exchange)
+                if newly_opened or newly_closed:
+                    logging.info(colored(
+                        f"🔄 Position sync: {len(newly_opened)} new, {len(newly_closed)} closed",
+                        "green"
+                    ))
+                else:
+                    logging.debug("✅ Position sync: All positions up to date")
             except Exception as e:
                 logging.warning(f"Position sync error: {e}")
 
