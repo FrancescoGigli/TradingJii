@@ -35,47 +35,8 @@ import sqlite3
 from pathlib import Path
 import config
 
-
-class ColorHelper:
-    """Centralized color management"""
-    POSITIVE = QColor("#22C55E")
-    NEGATIVE = QColor("#EF4444")
-    NEUTRAL = QColor("#E6EEF8")
-    WARNING = QColor("#F59E0B")
-    INFO = QColor("#06B6D4")
-    BACKGROUND_DARK = QColor("#0B0F14")
-    BACKGROUND_MEDIUM = QColor("#121822")
-    
-    @staticmethod
-    def color_cell(item: QTableWidgetItem, value: float, neutral_threshold: float = 0):
-        """Apply color based on value"""
-        if value > neutral_threshold:
-            color = ColorHelper.POSITIVE
-        elif value < neutral_threshold:
-            color = ColorHelper.NEGATIVE
-        else:
-            color = ColorHelper.NEUTRAL
-        item.setForeground(QBrush(color))
-    
-    @staticmethod
-    def format_price(price: float) -> str:
-        """Format price with intelligent decimals"""
-        if price < 0.01:
-            return f"${price:.6f}"
-        elif price < 1:
-            return f"${price:.4f}"
-        else:
-            return f"${price:,.2f}"
-    
-    @staticmethod
-    def format_usd(value: float) -> str:
-        """Format USD value with thousands separator"""
-        return f"${value:+,.2f}" if value != 0 else "$0.00"
-    
-    @staticmethod
-    def format_pct(value: float) -> str:
-        """Format percentage with max 1 decimal"""
-        return f"{value:+.1f}%"
+# Import dashboard modules
+from core.dashboard import ColorHelper, create_adaptive_memory_table, populate_adaptive_memory_table
 
 
 class TradingDashboard(QMainWindow):
@@ -100,7 +61,7 @@ class TradingDashboard(QMainWindow):
         self._cached_closed = []
         self._cached_stats = {}
         self._cache_time_tabs = 0
-        self._cache_ttl = 5  # seconds - REDUCED for real-time data (was 10)
+        self._cache_ttl = 15  # seconds - OPTIMIZED: Less aggressive refresh (was 5s)
         
         # Track last data hash to avoid unnecessary updates
         self._last_data_hash = {
@@ -252,6 +213,11 @@ class TradingDashboard(QMainWindow):
         self.closed_tab_table = self._create_closed_table()
         self.tabs.addTab(self.closed_tab_table, "CLOSED (0)")
         
+        # TAB 4: ADAPTIVE MEMORY - Adaptive sizing performance tracking
+        if config.ADAPTIVE_SIZING_ENABLED:
+            self.adaptive_memory_table = create_adaptive_memory_table()
+            self.tabs.addTab(self.adaptive_memory_table, "ADAPTIVE MEMORY (0)")
+        
         layout.addWidget(self.tabs)
         group.setLayout(layout)
         return group
@@ -306,9 +272,9 @@ class TradingDashboard(QMainWindow):
     def _create_closed_table(self) -> QTableWidget:
         """Create a closed positions table"""
         table = QTableWidget()
-        table.setColumnCount(8)
+        table.setColumnCount(9)
         table.setHorizontalHeaderLabels([
-            "Symbol", "ID", "Entry→Exit", "PnL", "Hold", "Close Reason", "Opened", "Closed"
+            "Symbol", "ID", "IM", "Entry→Exit", "PnL", "Hold", "Close Reason", "Opened", "Closed"
         ])
         
         table.setAlternatingRowColors(True)
@@ -324,8 +290,8 @@ class TradingDashboard(QMainWindow):
         # RESPONSIVE LAYOUT: Auto-resize columns to content
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        # Close Reason column (index 5) stretches to fill remaining space
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # BUG FIX: was 4, now 5 (Close Reason)
+        # Close Reason column (index 6) stretches to fill remaining space
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)  # Close Reason column
         
         # INTERACTIVE: Enable column sorting by clicking headers
         table.setSortingEnabled(True)
@@ -340,9 +306,9 @@ class TradingDashboard(QMainWindow):
         layout = QVBoxLayout()
         
         self.closed_table = QTableWidget()
-        self.closed_table.setColumnCount(8)
+        self.closed_table.setColumnCount(9)
         self.closed_table.setHorizontalHeaderLabels([
-            "Symbol", "ID", "Entry→Exit", "PnL", "Hold", "Close Reason", "Opened", "Closed"
+            "Symbol", "ID", "IM", "Entry→Exit", "PnL", "Hold", "Close Reason", "Opened", "Closed"
         ])
         
         self.closed_table.setAlternatingRowColors(True)
@@ -359,7 +325,7 @@ class TradingDashboard(QMainWindow):
         header = self.closed_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         # Close Reason column stretches to fill remaining space
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         
         # INTERACTIVE: Enable column sorting by clicking headers
         self.closed_table.setSortingEnabled(True)
@@ -652,6 +618,15 @@ class TradingDashboard(QMainWindow):
         self.tabs.setTabText(1, f"OPENED THIS SESSION ({len(self._cached_session)})")
         self.tabs.setTabText(2, f"CLOSED ({len(self._cached_closed)})")
         
+        # Update adaptive memory tab count if enabled
+        if config.ADAPTIVE_SIZING_ENABLED:
+            try:
+                from core.adaptive_position_sizing import global_adaptive_sizing
+                memory_count = len(global_adaptive_sizing.symbol_memory) if global_adaptive_sizing else 0
+                self.tabs.setTabText(3, f"ADAPTIVE MEMORY ({memory_count})")
+            except:
+                self.tabs.setTabText(3, "ADAPTIVE MEMORY (0)")
+        
         # Update group title
         total_active = len(all_active_positions)
         self.positions_group.setTitle(f"🎯 POSITIONS (Active: {total_active}, Closed: {len(self._cached_closed)})")
@@ -660,6 +635,14 @@ class TradingDashboard(QMainWindow):
         self._populate_position_table(self.all_active_table, all_active_positions, "ALL ACTIVE")
         self._populate_position_table(self.session_table, self._cached_session, "OPENED THIS SESSION")
         self._populate_closed_tab(self.closed_tab_table, self._cached_closed)
+        
+        # Populate adaptive memory tab if enabled
+        if config.ADAPTIVE_SIZING_ENABLED:
+            try:
+                from core.adaptive_position_sizing import global_adaptive_sizing
+                populate_adaptive_memory_table(self.adaptive_memory_table, global_adaptive_sizing)
+            except Exception as e:
+                logging.debug(f"Error populating adaptive memory tab: {e}")
     
     def _populate_position_table(self, table: QTableWidget, positions: list, tab_name: str):
         """Populate a position table with position data"""
@@ -1158,7 +1141,7 @@ class TradingDashboard(QMainWindow):
                 item = QTableWidgetItem("No closed positions")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 table.setItem(0, 0, item)
-                table.setSpan(0, 0, 1, 8)
+                table.setSpan(0, 0, 1, 9)
                 return
             
             table.setRowCount(len(closed_positions))
@@ -1184,9 +1167,26 @@ class TradingDashboard(QMainWindow):
                 id_display = "N/A"
             table.setItem(row, 1, QTableWidgetItem(id_display))
             
+            # Initial Margin (IM)
+            if hasattr(pos, 'real_initial_margin') and pos.real_initial_margin is not None:
+                initial_margin = pos.real_initial_margin
+                im_source = "Bybit"
+            else:
+                initial_margin = pos.position_size / pos.leverage if pos.position_size > 0 else 0
+                im_source = "Calculated"
+            
+            im_item = QTableWidgetItem(f"${initial_margin:.2f}")
+            im_item.setToolTip(
+                f"Initial Margin (IM) [{im_source}]\n"
+                f"Margine utilizzato per questa posizione\n"
+                f"${initial_margin:.2f}"
+            )
+            im_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(row, 2, im_item)
+            
             # Entry → Exit
             entry_exit = f"${pos.entry_price:.4f} → ${pos.current_price:.4f}"
-            table.setItem(row, 2, QTableWidgetItem(entry_exit))
+            table.setItem(row, 3, QTableWidgetItem(entry_exit))
             
             # PnL with ROE% clarification
             roe_pct = pos.unrealized_pnl_pct
@@ -1208,7 +1208,7 @@ class TradingDashboard(QMainWindow):
                 f"Formula: ROE% = Price% × Leverage"
             )
             
-            table.setItem(row, 3, pnl_item)
+            table.setItem(row, 4, pnl_item)
             
             # Hold Time
             if pos.entry_time and pos.close_time:
@@ -1223,7 +1223,7 @@ class TradingDashboard(QMainWindow):
                     hold_str = f"{hours}h {minutes}m"
             else:
                 hold_str = "N/A"
-            table.setItem(row, 4, QTableWidgetItem(hold_str))
+            table.setItem(row, 5, QTableWidgetItem(hold_str))
             
             # Close Reason with PnL indicator and detailed snapshot tooltip
             is_profit = pos.unrealized_pnl_usd > 0
@@ -1247,29 +1247,29 @@ class TradingDashboard(QMainWindow):
             
             reason_item = QTableWidgetItem(reason_str)
             reason_item.setForeground(QBrush(ColorHelper.POSITIVE if is_profit else ColorHelper.NEGATIVE))
-            table.setItem(row, 5, reason_item)
+            table.setItem(row, 6, reason_item)
             
-            # Opened timestamp
+            # Opened timestamp with date
             if pos.entry_time:
                 try:
                     entry_dt = datetime.fromisoformat(pos.entry_time)
-                    opened_str = entry_dt.strftime("%H:%M:%S")
+                    opened_str = entry_dt.strftime("%d/%m %H:%M:%S")
                 except:
                     opened_str = "N/A"
             else:
                 opened_str = "N/A"
-            table.setItem(row, 6, QTableWidgetItem(opened_str))
+            table.setItem(row, 7, QTableWidgetItem(opened_str))
             
-            # Closed timestamp
+            # Closed timestamp with date
             if pos.close_time:
                 try:
                     close_dt = datetime.fromisoformat(pos.close_time)
-                    closed_str = close_dt.strftime("%H:%M:%S")
+                    closed_str = close_dt.strftime("%d/%m %H:%M:%S")
                 except:
                     closed_str = "N/A"
             else:
                 closed_str = "N/A"
-            table.setItem(row, 7, QTableWidgetItem(closed_str))
+            table.setItem(row, 8, QTableWidgetItem(closed_str))
             
             # Build detailed tooltip with close snapshot data
             if pos.close_snapshot:
@@ -1377,11 +1377,24 @@ class TradingDashboard(QMainWindow):
                 id_display = "N/A"
             self.closed_table.setItem(row, 1, QTableWidgetItem(id_display))
             
-            # Column 2: Entry→Exit
-            entry_exit = f"${trade.entry_price:,.4f} → ${trade.exit_price:,.4f}"
-            self.closed_table.setItem(row, 2, QTableWidgetItem(entry_exit))
+            # Column 2: IM (Initial Margin) - Calculate from trade data
+            # Best effort: calculate from PnL and leverage
+            if hasattr(trade, 'leverage') and trade.leverage > 0:
+                # Estimate IM from entry price assuming standard position size
+                initial_margin = (trade.entry_price * 10) / trade.leverage  # Rough estimate
+            else:
+                initial_margin = 0
             
-            # Column 3: PnL
+            im_item = QTableWidgetItem(f"${initial_margin:.2f}")
+            im_item.setToolTip(f"Initial Margin (Estimated): ${initial_margin:.2f}")
+            im_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.closed_table.setItem(row, 2, im_item)
+            
+            # Column 3: Entry→Exit
+            entry_exit = f"${trade.entry_price:,.4f} → ${trade.exit_price:,.4f}"
+            self.closed_table.setItem(row, 3, QTableWidgetItem(entry_exit))
+            
+            # Column 4: PnL
             # Calculate price change % (without leverage)
             price_change_pct = trade.pnl_pct / trade.leverage if trade.leverage > 0 else trade.pnl_pct
             
@@ -1398,18 +1411,18 @@ class TradingDashboard(QMainWindow):
                 f"Leverage: {trade.leverage}x\n\n"
                 f"Example: 7% price × 10x lev = 70% ROE"
             )
-            self.closed_table.setItem(row, 3, pnl_item)
+            self.closed_table.setItem(row, 4, pnl_item)
             
-            # Column 4: Hold Time
+            # Column 5: Hold Time
             if trade.hold_time_minutes < 60:
                 hold_str = f"{trade.hold_time_minutes}m"
             else:
                 hours = trade.hold_time_minutes // 60
                 minutes = trade.hold_time_minutes % 60
                 hold_str = f"{hours}h {minutes}m"
-            self.closed_table.setItem(row, 4, QTableWidgetItem(hold_str))
+            self.closed_table.setItem(row, 5, QTableWidgetItem(hold_str))
             
-            # Column 5: Close Reason
+            # Column 6: Close Reason
             is_profit = trade.pnl_usd > 0
             pnl_sign = "+" if is_profit else ""
             
@@ -1437,29 +1450,29 @@ class TradingDashboard(QMainWindow):
             else:
                 reason_item.setForeground(QBrush(ColorHelper.NEGATIVE))
             
-            self.closed_table.setItem(row, 5, reason_item)
+            self.closed_table.setItem(row, 6, reason_item)
             
-            # Column 6: Opened timestamp
+            # Column 7: Opened timestamp with date
             if trade.entry_time:
                 try:
                     entry_dt = datetime.fromisoformat(trade.entry_time)
-                    opened_str = entry_dt.strftime("%H:%M:%S")
+                    opened_str = entry_dt.strftime("%d/%m %H:%M:%S")
                 except:
                     opened_str = "N/A"
             else:
                 opened_str = "N/A"
-            self.closed_table.setItem(row, 6, QTableWidgetItem(opened_str))
+            self.closed_table.setItem(row, 7, QTableWidgetItem(opened_str))
             
-            # Column 7: Closed timestamp
+            # Column 8: Closed timestamp with date
             if trade.close_time:
                 try:
                     close_dt = datetime.fromisoformat(trade.close_time)
-                    closed_str = close_dt.strftime("%H:%M:%S")
+                    closed_str = close_dt.strftime("%d/%m %H:%M:%S")
                 except:
                     closed_str = "N/A"
             else:
                 closed_str = "N/A"
-            self.closed_table.setItem(row, 7, QTableWidgetItem(closed_str))
+            self.closed_table.setItem(row, 8, QTableWidgetItem(closed_str))
         
         for row in range(self.closed_table.rowCount()):
             for col in range(self.closed_table.columnCount()):
@@ -1505,36 +1518,19 @@ class TradingDashboard(QMainWindow):
             logging.error(f"Error in timer update: {e}")
     
     async def _async_timer_update(self):
-        """Async timer update with fresh balance fetching from Bybit"""
+        """Async timer update - OPTIMIZED: Read from Position Manager only"""
         try:
-            # Fetch fresh balance from Bybit if exchange is available
-            if self.exchange and not config.DEMO_MODE:
-                try:
-                    from trade_manager import get_real_balance
-                    real_balance = await get_real_balance(self.exchange)
-                    
-                    if real_balance and real_balance > 0:
-                        self._last_fetched_balance = real_balance
-                        # Also update position manager to keep it in sync
-                        self.position_manager.update_real_balance(real_balance)
-                        logging.debug(f"💰 Dashboard: Balance fetched from Bybit: ${real_balance:.2f}")
-                    else:
-                        # Fallback to cached value
-                        logging.debug("⚠️ Dashboard: Failed to fetch balance, using cached value")
-                        balance_summary = self.position_manager.safe_get_session_summary()
-                        self._last_fetched_balance = balance_summary.get('balance', 0)
-                except Exception as fetch_error:
-                    logging.debug(f"⚠️ Dashboard: Balance fetch error: {fetch_error}")
-                    # Fallback to position manager balance
-                    balance_summary = self.position_manager.safe_get_session_summary()
-                    self._last_fetched_balance = balance_summary.get('balance', 0)
-            else:
-                # Demo mode or no exchange - use position manager balance
-                balance_summary = self.position_manager.safe_get_session_summary()
-                self._last_fetched_balance = balance_summary.get('balance', 0)
+            # OPTIMIZATION: Dashboard NO LONGER fetches balance directly from Bybit
+            # Balance is kept up-to-date by Balance Sync Loop in trading_engine
+            # Dashboard just reads the cached value from Position Manager
             
-            # Update dashboard with fresh balance
-            await self.update_dashboard_async(self._last_fetched_balance)
+            balance_summary = self.position_manager.safe_get_session_summary()
+            current_balance = balance_summary.get('balance', 0)
+            
+            # Update dashboard with cached balance (still REAL data from Bybit)
+            await self.update_dashboard_async(current_balance)
+            
+            logging.debug(f"💰 Dashboard: Using cached balance ${current_balance:.2f} (synced by Balance Loop)")
             
         except Exception as e:
             logging.error(f"Error in async timer update: {e}")
@@ -1564,38 +1560,20 @@ class TradingDashboard(QMainWindow):
         event.accept()
         logging.info("📊 Dashboard window closed")
     
-    async def run_live_dashboard(self, exchange, update_interval: int = 30):
+    async def run_live_dashboard(self, exchange, update_interval: int = 60):
         """Run live dashboard with qasync integration (async)"""
         self.update_interval = update_interval * 1000
         self.is_running = True
         
-        # Store exchange for balance fetching
+        # Store exchange reference (not used for fetching anymore)
         self.exchange = exchange
         
-        # Initial update with fresh balance fetch
-        if exchange and not config.DEMO_MODE:
-            try:
-                from trade_manager import get_real_balance
-                real_balance = await get_real_balance(exchange)
-                if real_balance and real_balance > 0:
-                    current_balance = real_balance
-                    self._last_fetched_balance = real_balance
-                    self.position_manager.update_real_balance(real_balance)
-                    logging.info(f"💰 Dashboard initialized with fresh balance: ${real_balance:.2f}")
-                else:
-                    balance_summary = self.position_manager.safe_get_session_summary()
-                    current_balance = balance_summary.get('balance', 0)
-                    self._last_fetched_balance = current_balance
-            except Exception as e:
-                logging.warning(f"Failed to fetch initial balance: {e}")
-                balance_summary = self.position_manager.safe_get_session_summary()
-                current_balance = balance_summary.get('balance', 0)
-                self._last_fetched_balance = current_balance
-        else:
-            # Demo mode
-            balance_summary = self.position_manager.safe_get_session_summary()
-            current_balance = balance_summary.get('balance', 0)
-            self._last_fetched_balance = current_balance
+        # OPTIMIZATION: Initial balance from Position Manager only
+        # Balance is already synced by trading_engine's balance sync loop
+        balance_summary = self.position_manager.safe_get_session_summary()
+        current_balance = balance_summary.get('balance', 0)
+        
+        logging.info(f"💰 Dashboard initialized - Balance: ${current_balance:.2f} (from Position Manager)")
         
         self.update_dashboard(current_balance)
         

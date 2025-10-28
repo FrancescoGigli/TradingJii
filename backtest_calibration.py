@@ -35,7 +35,12 @@ _LOG = logging.getLogger(__name__)
 # Import modules
 from config import (
     LEVERAGE, SL_FIXED_PCT, TRAILING_TRIGGER_PCT,
-    TRAILING_DISTANCE_ROE_OPTIMAL, get_timesteps_for_timeframe
+    TRAILING_DISTANCE_ROE_OPTIMAL, get_timesteps_for_timeframe,
+    SL_ADAPTIVE_ENABLED, SL_LOW_CONFIDENCE, SL_MED_CONFIDENCE, SL_HIGH_CONFIDENCE,
+    EARLY_EXIT_ENABLED, EARLY_EXIT_FAST_REVERSAL_ENABLED, EARLY_EXIT_FAST_TIME_MINUTES,
+    EARLY_EXIT_FAST_DROP_ROE, EARLY_EXIT_IMMEDIATE_ENABLED, EARLY_EXIT_IMMEDIATE_TIME_MINUTES,
+    EARLY_EXIT_IMMEDIATE_DROP_ROE, EARLY_EXIT_PERSISTENT_ENABLED, 
+    EARLY_EXIT_PERSISTENT_TIME_MINUTES, EARLY_EXIT_PERSISTENT_DROP_ROE
 )
 from core.confidence_calibrator import CalibrationAnalyzer
 from core.ml_predictor import RobustMLPredictor
@@ -61,46 +66,115 @@ class BacktestTradeManager:
         self.trailing_distance_roe = TRAILING_DISTANCE_ROE_OPTIMAL
     
     def open_trade(self, symbol, entry_price, entry_time, xgb_confidence, rl_confidence, tf_predictions):
-        sl_price = entry_price * (1 - self.sl_pct)
+        # ADAPTIVE SL: Adjust based on confidence
+        if SL_ADAPTIVE_ENABLED:
+            if xgb_confidence < 0.70:
+                sl_pct = SL_LOW_CONFIDENCE  # 2.5% for low conf
+            elif xgb_confidence > 0.80:
+                sl_pct = SL_HIGH_CONFIDENCE  # 3.5% for high conf
+            else:
+                sl_pct = SL_MED_CONFIDENCE  # 3.0% for medium conf
+        else:
+            sl_pct = self.sl_pct
+        
+        sl_price = entry_price * (1 - sl_pct)
         trailing_trigger = entry_price * (1 + self.trailing_trigger_pct)
         
         self.active_trades[symbol] = {
             'symbol': symbol, 'entry_price': entry_price, 'entry_time': entry_time,
-            'sl_price': sl_price, 'trailing_active': False, 'trailing_stop': None,
+            'sl_price': sl_price, 'sl_pct_used': sl_pct, 'trailing_active': False, 'trailing_stop': None,
             'highest_price': entry_price, 'xgb_confidence': xgb_confidence,
             'rl_confidence': rl_confidence, 'tf_predictions': tf_predictions,
-            'trailing_trigger_price': trailing_trigger
+            'trailing_trigger_price': trailing_trigger, 'lowest_roe': 0.0
         }
     
-    def update_trades(self, symbol, current_price, current_time):
+    def update_trades(self, symbol, current_price, current_time, candle_low=None, candle_high=None):
+        """
+        Update trade con check INTRABAR per SL e trailing
+        
+        Args:
+            current_price: Close price della candela
+            candle_low: Low della candela (per check SL)
+            candle_high: High della candela (per check trailing trigger)
+        """
         if symbol not in self.active_trades:
             return
         
         trade = self.active_trades[symbol]
         entry_price = trade['entry_price']
         
-        if current_price > trade['highest_price']:
-            trade['highest_price'] = current_price
+        # Usa candle_high se disponibile, altrimenti current_price
+        highest_in_candle = candle_high if candle_high is not None else current_price
+        if highest_in_candle > trade['highest_price']:
+            trade['highest_price'] = highest_in_candle
         
-        if current_price <= trade['sl_price']:
-            self._close_trade(symbol, current_price, current_time, 'stop_loss')
+        # Calculate current ROE
+        current_roe = (current_price - entry_price) / entry_price * self.leverage * 100
+        lowest_in_candle = candle_low if candle_low is not None else current_price
+        lowest_roe = (lowest_in_candle - entry_price) / entry_price * self.leverage * 100
+        
+        # Track lowest ROE
+        if lowest_roe < trade.get('lowest_roe', 0):
+            trade['lowest_roe'] = lowest_roe
+        
+        # EARLY EXIT SYSTEM
+        if EARLY_EXIT_ENABLED:
+            try:
+                entry_dt = datetime.fromisoformat(trade['entry_time'])
+                current_dt = datetime.fromisoformat(current_time)
+                elapsed_minutes = (current_dt - entry_dt).total_seconds() / 60
+                
+                # Immediate reversal (first 5 min)
+                if (EARLY_EXIT_IMMEDIATE_ENABLED and 
+                    elapsed_minutes <= EARLY_EXIT_IMMEDIATE_TIME_MINUTES and 
+                    lowest_roe <= EARLY_EXIT_IMMEDIATE_DROP_ROE):
+                    self._close_trade(symbol, current_price, current_time, 'early_exit_immediate')
+                    return
+                
+                # Fast reversal (first 15 min)
+                if (EARLY_EXIT_FAST_REVERSAL_ENABLED and 
+                    elapsed_minutes <= EARLY_EXIT_FAST_TIME_MINUTES and 
+                    lowest_roe <= EARLY_EXIT_FAST_DROP_ROE):
+                    self._close_trade(symbol, current_price, current_time, 'early_exit_fast')
+                    return
+                
+                # Persistent weakness (first 60 min)
+                if (EARLY_EXIT_PERSISTENT_ENABLED and 
+                    elapsed_minutes <= EARLY_EXIT_PERSISTENT_TIME_MINUTES and 
+                    current_roe <= EARLY_EXIT_PERSISTENT_DROP_ROE):
+                    self._close_trade(symbol, current_price, current_time, 'early_exit_persistent')
+                    return
+            except:
+                pass  # Continue with normal SL check if datetime parsing fails
+        
+        # CRITICAL FIX: Check se LOW della candela ha toccato SL
+        if lowest_in_candle <= trade['sl_price']:
+            # Chiudi esattamente al prezzo SL (più realistico)
+            self._close_trade(symbol, trade['sl_price'], current_time, 'stop_loss')
             return
         
-        if not trade['trailing_active'] and current_price >= trade['trailing_trigger_price']:
+        # Check trailing trigger con HIGH della candela
+        if not trade['trailing_active'] and highest_in_candle >= trade['trailing_trigger_price']:
             trade['trailing_active'] = True
-            current_roe = (current_price - entry_price) / entry_price * self.leverage
+            # Calcola trailing stop basato su highest price raggiunto
+            current_roe = (trade['highest_price'] - entry_price) / entry_price * self.leverage
             protected_roe = current_roe - self.trailing_distance_roe
             trade['trailing_stop'] = entry_price * (1 + protected_roe / self.leverage)
         
+        # Update trailing stop
         if trade['trailing_active']:
-            current_roe = (current_price - entry_price) / entry_price * self.leverage
+            # Usa highest_price (peak raggiunto) per trailing
+            current_roe = (trade['highest_price'] - entry_price) / entry_price * self.leverage
             protected_roe = current_roe - self.trailing_distance_roe
             new_trailing = entry_price * (1 + protected_roe / self.leverage)
+            
             if new_trailing > trade['trailing_stop']:
                 trade['trailing_stop'] = new_trailing
             
-            if current_price <= trade['trailing_stop']:
-                self._close_trade(symbol, current_price, current_time, 'trailing_stop')
+            # Check se LOW della candela ha toccato trailing stop
+            if lowest_in_candle <= trade['trailing_stop']:
+                # Chiudi esattamente al trailing stop price
+                self._close_trade(symbol, trade['trailing_stop'], current_time, 'trailing_stop')
     
     def _close_trade(self, symbol, exit_price, exit_time, reason):
         if symbol not in self.active_trades:
@@ -122,8 +196,9 @@ class BacktestTradeManager:
             'xgb_confidence': trade['xgb_confidence'], 'rl_confidence': trade['rl_confidence'],
             'tf_predictions': trade['tf_predictions'], 'result': result,
             'pnl_pct': round(pnl_pct, 2), 'duration_hours': round(duration, 2),
-            'exit_reason': reason, 'stop_loss': self.sl_pct,
-            'trailing_trigger': self.trailing_trigger_pct, 'trailing_distance': self.trailing_distance_roe
+            'exit_reason': reason, 'stop_loss': trade.get('sl_pct_used', self.sl_pct),
+            'trailing_trigger': self.trailing_trigger_pct, 'trailing_distance': self.trailing_distance_roe,
+            'lowest_roe': trade.get('lowest_roe', 0)
         })
         
         _LOG.info(f"{'🟢' if result == 'WIN' else '🔴'} {symbol}: {result} {pnl_pct:+.2f}% | {reason}")
@@ -179,7 +254,14 @@ async def process_single_symbol(symbol, timeframes, months, ml_predictor):
             current_price = current_candle['close']
             current_time = current_candle.name.isoformat()
             
-            trade_manager.update_trades(symbol, current_price, current_time)
+            # CRITICAL FIX: Pass candle low/high for intrabar SL checks
+            trade_manager.update_trades(
+                symbol, 
+                current_price, 
+                current_time,
+                candle_low=current_candle['low'],
+                candle_high=current_candle['high']
+            )
             
             if symbol in trade_manager.active_trades or candle_idx < required_candles:
                 continue
@@ -361,15 +443,16 @@ async def run_backtest_calibration(symbols, timeframes, months=6, max_workers=8)
     _LOG.info(f"📁 File: confidence_calibration.json")
     _LOG.info(f"📊 Based on {len(all_trades)} trades")
     
-    # Save viz data (top 5)
+    # Save viz data (top 5) - ONLY metadata, no candles
     if all_viz_data:
         top_5 = sorted(all_viz_data.items(), key=lambda x: x[1]['num_trades'], reverse=True)[:5]
         
         viz_export = {}
         for symbol, data in top_5:
             viz_export[symbol] = {
-                'candles': data['candles'].reset_index().to_dict('records'),
                 'trades': data['trades'],
+                'timeframe': timeframes[0],  # Primary timeframe
+                'symbol': symbol,
                 'num_trades': data['num_trades']
             }
         
@@ -377,8 +460,9 @@ async def run_backtest_calibration(symbols, timeframes, months=6, max_workers=8)
         with open('backtest_visualization_data.json', 'w') as f:
             json.dump(viz_export, f, indent=2, default=str)
         
-        _LOG.info(f"\n📊 Viz data saved: backtest_visualization_data.json")
+        _LOG.info(f"\n📊 Viz data saved: backtest_visualization_data.json (metadata only)")
         _LOG.info(f"   Top 5: {[s for s, _ in top_5]}")
+        _LOG.info(f"   Candlestick data will be downloaded on-demand during visualization")
 
 
 async def get_top_symbols(exchange, top_n=30):

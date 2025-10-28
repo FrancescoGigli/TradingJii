@@ -63,6 +63,7 @@ class AdaptivePositionSizing:
         self.cap_multiplier = config.ADAPTIVE_CAP_MULTIPLIER
         self.risk_max_pct = config.ADAPTIVE_RISK_MAX_PCT
         self.loss_multiplier = config.ADAPTIVE_LOSS_MULTIPLIER
+        self.fresh_start = config.ADAPTIVE_FRESH_START  # NEW: Flag fresh start
         
         # Memoria simboli
         self.symbol_memory: Dict[str, SymbolMemory] = {}
@@ -73,19 +74,48 @@ class AdaptivePositionSizing:
         # File persistenza
         self.memory_file = Path("adaptive_sizing_memory.json")
         
-        # Carica memoria esistente
+        # Carica memoria esistente (o reset se fresh start)
         self._load_memory()
+        
+        # Log mode
+        mode_msg = "FRESH START MODE" if self.fresh_start else "HISTORICAL MODE"
+        mode_color = "yellow" if self.fresh_start else "green"
         
         logging.info(colored(
             f"🎯 Adaptive Position Sizing initialized | "
+            f"Mode: {mode_msg} | "
             f"Blocks: {self.wallet_blocks} | "
             f"Block cycles: {self.block_cycles}",
-            "cyan"
+            mode_color, attrs=['bold']
         ))
     
     def _load_memory(self):
-        """Carica memoria da file JSON"""
+        """Carica memoria da file JSON (o reset se fresh start)"""
         try:
+            # CHECK: Fresh Start Mode
+            if self.fresh_start:
+                # Reset complete: cancella memoria e riparti da zero
+                self.symbol_memory = {}
+                self.current_cycle = 0
+                
+                # Cancella file se esiste
+                if self.memory_file.exists():
+                    self.memory_file.unlink()
+                    logging.warning(colored(
+                        "🔄 FRESH START: Previous memory deleted - Starting from scratch",
+                        "yellow", attrs=['bold']
+                    ))
+                else:
+                    logging.info(colored(
+                        "🆕 FRESH START: No previous memory - Starting fresh session",
+                        "yellow"
+                    ))
+                
+                # Salva memoria vuota
+                self._save_memory()
+                return
+            
+            # HISTORICAL MODE: Carica memoria esistente
             if self.memory_file.exists():
                 with open(self.memory_file, 'r') as f:
                     data = json.load(f)
@@ -97,13 +127,23 @@ class AdaptivePositionSizing:
                     # Carica cycle counter
                     self.current_cycle = data.get('current_cycle', 0)
                     
+                    # Calcola stats
+                    total_trades = sum(m.total_trades for m in self.symbol_memory.values())
+                    total_wins = sum(m.wins for m in self.symbol_memory.values())
+                    total_losses = sum(m.losses for m in self.symbol_memory.values())
+                    win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
+                    
                     logging.info(colored(
-                        f"📂 Loaded {len(self.symbol_memory)} symbols from memory | "
-                        f"Cycle {self.current_cycle}",
-                        "green"
+                        f"📂 HISTORICAL MODE: Loaded {len(self.symbol_memory)} symbols | "
+                        f"Cycle {self.current_cycle} | "
+                        f"Stats: {total_wins}W/{total_losses}L ({win_rate:.1f}% WR)",
+                        "green", attrs=['bold']
                     ))
             else:
-                logging.info(colored("🆕 No existing memory found - starting fresh", "yellow"))
+                logging.info(colored(
+                    "🆕 HISTORICAL MODE: No existing memory - starting new history",
+                    "yellow"
+                ))
                 
         except Exception as e:
             logging.error(f"❌ Error loading memory: {e}")

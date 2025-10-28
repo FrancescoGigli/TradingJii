@@ -91,8 +91,13 @@ ADAPTIVE_SIZING_ENABLED = True  # True = Adaptive (learns from results), False =
 # - Punisce monete perdenti bloccandole per 3 cicli
 # - Si auto-adatta al wallet growth
 
+# Session Management
+ADAPTIVE_FRESH_START = True          # ⚠️ True = Reset stats e riparti da capo | False = Continua con stats esistenti
+                                     # Se True: cancella tutte le statistiche storiche e ricomincia
+                                     # Se False: mantiene win/loss rate e continua l'apprendimento
+
 # Wallet structure
-ADAPTIVE_WALLET_BLOCKS = 5           # Divide wallet in N blocks (5 blocks)
+ADAPTIVE_WALLET_BLOCKS = 5           # Divide wallet in N blocks (5 blocks = wallet/5 per position)
 ADAPTIVE_FIRST_CYCLE_FACTOR = 0.5    # First cycle uses 50% of block (prudent start)
 
 # Penalty system
@@ -156,6 +161,36 @@ SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss (if no
 SL_PRICE_PCT_FALLBACK = 0.04         # 4% fallback if ATR not available (was 6%)
 SL_MIN_DISTANCE_PCT = 0.015          # Minimum 1.5% distance from entry (was 2%)
 SL_MAX_DISTANCE_PCT = 0.08           # Maximum 8% distance from entry (was 10%)
+
+# ==============================================================================
+# 🎯 ADAPTIVE STOP LOSS (CONFIDENCE-BASED)
+# ==============================================================================
+# Adjust SL based on confidence levels
+SL_ADAPTIVE_ENABLED = True           # Enable adaptive SL based on confidence
+SL_LOW_CONFIDENCE = 0.025            # 2.5% SL (-25% ROE) for low confidence (<70%)
+SL_MED_CONFIDENCE = 0.03             # 3.0% SL (-30% ROE) for medium confidence (70-80%)
+SL_HIGH_CONFIDENCE = 0.035           # 3.5% SL (-35% ROE) for high confidence (>80%)
+
+# ==============================================================================
+# 🚨 EARLY EXIT SYSTEM
+# ==============================================================================
+# Exit trades early if they show immediate weakness
+EARLY_EXIT_ENABLED = True            # Enable early exit system
+
+# Fast reversal detection (first 15 minutes)
+EARLY_EXIT_FAST_REVERSAL_ENABLED = True
+EARLY_EXIT_FAST_TIME_MINUTES = 15    # Check within first 15 minutes
+EARLY_EXIT_FAST_DROP_ROE = -15       # Exit if drops to -15% ROE quickly
+
+# Immediate reversal detection (first 5 minutes)
+EARLY_EXIT_IMMEDIATE_ENABLED = True
+EARLY_EXIT_IMMEDIATE_TIME_MINUTES = 5  # Check within first 5 minutes
+EARLY_EXIT_IMMEDIATE_DROP_ROE = -10    # Exit if drops to -10% ROE immediately
+
+# Persistent weakness detection (first 60 minutes)
+EARLY_EXIT_PERSISTENT_ENABLED = True
+EARLY_EXIT_PERSISTENT_TIME_MINUTES = 60  # Check within first hour
+EARLY_EXIT_PERSISTENT_DROP_ROE = -5      # Exit if stays -5% ROE persistently
 
 # Take Profit settings (NOT USED - positions managed by trailing only)
 TP_ENABLED = False                   # Take profit disabled (using trailing stop instead)
