@@ -275,6 +275,11 @@ class PositionCore:
                 position.unrealized_pnl_pct = pnl_pct
                 position.unrealized_pnl_usd = pnl_usd
                 position.current_price = exit_price
+                position.exit_price = exit_price  # Set exit price for closed position
+                
+                # Set aliases for dashboard compatibility
+                position.pnl_pct = pnl_pct
+                position.pnl_usd = pnl_usd
                 
                 # Move to closed
                 self._closed_positions[position_id] = position

@@ -35,14 +35,8 @@ import sqlite3
 from pathlib import Path
 import config
 
-# Import dashboard modules (REFACTORED)
-from core.dashboard import (
-    ColorHelper,
-    PositionTablePopulator,
-    ClosedTablePopulator,
-    create_adaptive_memory_table,
-    populate_adaptive_memory_table
-)
+# Import dashboard modules
+from core.dashboard import ColorHelper, create_adaptive_memory_table, populate_adaptive_memory_table
 
 
 class TradingDashboard(QMainWindow):
@@ -651,15 +645,700 @@ class TradingDashboard(QMainWindow):
                 logging.debug(f"Error populating adaptive memory tab: {e}")
     
     def _populate_position_table(self, table: QTableWidget, positions: list, tab_name: str):
-        """Populate a position table with position data - REFACTORED"""
-        # Delegate to dedicated populator module
-        PositionTablePopulator.populate(table, positions, tab_name)
-
+        """Populate a position table with position data"""
+        
+        # PERFORMANCE FIX: Disable ALL expensive operations during populate
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)  # CRITICAL: Disable sorting during updates
+        
+        try:
+            # OPTIMIZATION: Only rebuild table if count changed
+            if table.rowCount() != len(positions):
+                table.setRowCount(0)
+            
+            if not positions:
+                table.setRowCount(1)
+                item = QTableWidgetItem(f"No {tab_name.lower()} positions")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(0, 0, item)
+                table.setSpan(0, 0, 1, 18)  # BUG FIX: 18 columns, not 9
+                return
+            
+            table.setRowCount(len(positions))
+            
+            for row, pos in enumerate(positions):
+                # Symbol
+                symbol_short = pos.symbol.replace('/USDT:USDT', '')
+                table.setItem(row, 0, QTableWidgetItem(symbol_short))
+                
+                # Side with color (IMPROVEMENT 1)
+                side_item = QTableWidgetItem()
+                if pos.side in ['buy', 'long']:
+                    side_item.setText(f"[↑] LONG {pos.leverage}x")
+                    side_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                else:
+                    side_item.setText(f"[↓] SHORT {pos.leverage}x")
+                    side_item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                side_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 1, side_item)
+                
+                # Initial Margin (IM) - RIGHT AFTER SIDE
+                # 🔧 FIX: Use REAL IM from Bybit if available
+                if hasattr(pos, 'real_initial_margin') and pos.real_initial_margin is not None:
+                    # Use real IM from Bybit
+                    initial_margin = pos.real_initial_margin
+                    im_source = "Bybit"
+                else:
+                    # Fallback: calculate from position size
+                    initial_margin = pos.position_size / pos.leverage if pos.position_size > 0 else 0
+                    im_source = "Calculated"
+                
+                im_item = QTableWidgetItem(f"${initial_margin:.2f}")
+                im_item.setToolTip(
+                    f"Initial Margin (IM) [{im_source}]\n\n"
+                    f"Margine bloccato per questa posizione\n"
+                    f"Capital allocato: ${initial_margin:.2f}\n\n"
+                    f"Source: {im_source}\n"
+                    f"{'✅ Read from Bybit (exact value)' if im_source == 'Bybit' else '⚠️ Calculated (may differ slightly from Bybit)'}"
+                )
+                im_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 2, im_item)
+            
+                # Entry & Current (IMPROVEMENT 3 - smart formatting)
+                table.setItem(row, 3, QTableWidgetItem(ColorHelper.format_price(pos.entry_price)))
+                table.setItem(row, 4, QTableWidgetItem(ColorHelper.format_price(pos.current_price)))
+                
+                # Stop Loss - Column 5 - Use REAL SL from Bybit if available
+                if hasattr(pos, 'real_stop_loss') and pos.real_stop_loss is not None:
+                    # Use real SL from Bybit (most accurate)
+                    stop_loss_display = pos.real_stop_loss
+                    sl_source = "Bybit"
+                else:
+                    # Fallback to calculated SL
+                    stop_loss_display = pos.stop_loss
+                    sl_source = "Calculated"
+                
+                sl_item = QTableWidgetItem(ColorHelper.format_price(stop_loss_display))
+                sl_item.setToolTip(
+                    f"Stop Loss Price [{sl_source}]\n"
+                    f"${stop_loss_display:.6f}\n\n"
+                    f"{'✅ Read from Bybit (exact value)' if sl_source == 'Bybit' else '⚠️ Calculated (may differ from Bybit)'}"
+                )
+                sl_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 5, sl_item)
+            
+                # Calculate ROE
+                roe_pct = pos.unrealized_pnl_pct
+                
+                # Check trailing
+                is_trailing_active = (hasattr(pos, 'trailing_data') and 
+                                     pos.trailing_data and 
+                                     pos.trailing_data.enabled)
+                
+                # Type - Column 6 (IMPROVEMENT 4)
+                type_item = QTableWidgetItem()
+                
+                # Calculate REAL SL percentage for tooltip
+                real_sl_price_pct = abs((pos.stop_loss - pos.entry_price) / pos.entry_price) * 100
+                real_sl_roe_pct = real_sl_price_pct * pos.leverage
+                
+                if is_trailing_active:
+                    type_item.setText("TRAILING")
+                    type_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                    type_item.setToolTip(
+                        f"Trailing Stop: Stop loss dinamico\n"
+                        f"Current SL: ${pos.stop_loss:.6f}\n"
+                        f"Risk: -{real_sl_price_pct:.2f}% price = -{real_sl_roe_pct:.1f}% ROE"
+                    )
+                else:
+                    type_item.setText("FIXED")
+                    type_item.setForeground(QBrush(ColorHelper.INFO))
+                    type_item.setToolTip(
+                        f"Fixed Stop Loss\n"
+                        f"SL Price: ${pos.stop_loss:.6f}\n"
+                        f"Risk: -{real_sl_price_pct:.2f}% price × {pos.leverage}x lev = -{real_sl_roe_pct:.1f}% ROE"
+                    )
+                type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 6, type_item)
+            
+                # SL % - Column 7 - ALWAYS show as NEGATIVE protection (intuitive)
+                sl_pct_item = QTableWidgetItem()
+                
+                # Use REAL stop loss from Bybit if available
+                sl_price = pos.real_stop_loss if (hasattr(pos, 'real_stop_loss') and pos.real_stop_loss) else pos.stop_loss
+                
+                # Calculate RISK percentage (always shown as negative for protection)
+                # For LONG: SL is below entry → negative %
+                # For SHORT: SL is above entry → but we show it as negative % for consistency
+                if pos.side in ['buy', 'long']:
+                    # LONG: (SL - Entry) / Entry × 100 = negative value
+                    risk_pct = ((sl_price - pos.entry_price) / pos.entry_price) * 100
+                else:
+                    # SHORT: (Entry - SL) / Entry × 100 = show as negative for consistency
+                    # If SL is above entry (correct for SHORT), this gives negative value
+                    risk_pct = ((pos.entry_price - sl_price) / pos.entry_price) * 100
+                
+                # Check if trailing is active
+                is_trailing_active = (hasattr(pos, 'trailing_data') and 
+                                     pos.trailing_data and 
+                                     pos.trailing_data.enabled)
+                
+                # Display the value (should always be negative or near zero for protection)
+                sl_pct_item.setText(ColorHelper.format_pct(risk_pct))
+                
+                # Build tooltip
+                side_type = "LONG" if pos.side in ['buy', 'long'] else "SHORT"
+                sl_roe_pct = risk_pct * pos.leverage
+                
+                if is_trailing_active:
+                    tooltip_text = (
+                        f"🎪 TRAILING STOP - {side_type}\n\n"
+                        f"Stop Loss: ${sl_price:.6f}\n"
+                        f"Entry: ${pos.entry_price:.6f}\n"
+                        f"Risk: {risk_pct:.2f}% price\n"
+                        f"Impact on Margin: {sl_roe_pct:.1f}% ROE\n\n"
+                        f"✅ Trailing attivo - protegge profitti"
+                    )
+                else:
+                    tooltip_text = (
+                        f"🛡️ FIXED STOP LOSS - {side_type}\n\n"
+                        f"Stop Loss: ${sl_price:.6f}\n"
+                        f"Entry: ${pos.entry_price:.6f}\n"
+                        f"Risk: {risk_pct:.2f}% price\n"
+                        f"Impact on Margin: {sl_roe_pct:.1f}% ROE\n\n"
+                        f"⚠️ Protezione base attiva"
+                    )
+                
+                sl_pct_item.setToolTip(tooltip_text)
+                
+                # Color based on trailing status
+                if is_trailing_active:
+                    sl_pct_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Verde se trailing
+                else:
+                    sl_pct_item.setForeground(QBrush(ColorHelper.NEGATIVE))  # Rosso se fixed
+                
+                sl_pct_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 7, sl_pct_item)
+                
+                # PnL % - Column 8 (IMPROVEMENT 3)
+                pnl_pct_item = QTableWidgetItem(ColorHelper.format_pct(pos.unrealized_pnl_pct))
+                ColorHelper.color_cell(pnl_pct_item, pos.unrealized_pnl_usd)
+                pnl_pct_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 8, pnl_pct_item)
+                
+                # PnL $ - Column 9 (IMPROVEMENT 3)
+                pnl_usd_item = QTableWidgetItem(ColorHelper.format_usd(pos.unrealized_pnl_usd))
+                ColorHelper.color_cell(pnl_usd_item, pos.unrealized_pnl_usd)
+                pnl_usd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 9, pnl_usd_item)
+                
+                # Liquidation Price - Calcolo basato su leverage e direction
+                # Formula: Liq = Entry ± (Entry / Leverage) per LONG/SHORT
+                if pos.side in ['buy', 'long']:
+                    # LONG: liquidation quando price scende troppo
+                    liq_price = pos.entry_price * (1 - 1 / pos.leverage)
+                else:
+                    # SHORT: liquidation quando price sale troppo
+                    liq_price = pos.entry_price * (1 + 1 / pos.leverage)
+                
+                liq_item = QTableWidgetItem(ColorHelper.format_price(liq_price))
+                
+                # Color based on proximity to liquidation
+                distance_to_liq_pct = abs((pos.current_price - liq_price) / liq_price) * 100
+                if distance_to_liq_pct < 5:  # <5% from liquidation
+                    liq_item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                elif distance_to_liq_pct < 15:  # 5-15% from liquidation
+                    liq_item.setForeground(QBrush(ColorHelper.WARNING))
+                else:
+                    liq_item.setForeground(QBrush(ColorHelper.INFO))
+                
+                liq_item.setToolTip(
+                    f"Liquidation Price\n\n"
+                    f"Prezzo a cui la posizione viene liquidata\n"
+                    f"Distanza attuale: {distance_to_liq_pct:.1f}%\n\n"
+                    f"🔴 <5%: Pericolo imminente\n"
+                    f"🟡 5-15%: Attenzione\n"
+                    f"🔵 >15%: Sicuro"
+                )
+                liq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 10, liq_item)
+                
+                # Time in Position - Column 11
+                if pos.entry_time:
+                    entry_dt = datetime.fromisoformat(pos.entry_time)
+                    now = datetime.now()
+                    delta = now - entry_dt
+                    hours = int(delta.total_seconds() // 3600)
+                    minutes = int((delta.total_seconds() % 3600) // 60)
+                    
+                    if hours > 0:
+                        time_str = f"{hours}h {minutes}m"
+                    else:
+                        time_str = f"{minutes}m"
+                    
+                    time_item = QTableWidgetItem(time_str)
+                    time_item.setToolTip(f"Opened at: {entry_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                else:
+                    time_item = QTableWidgetItem("N/A")
+                
+                time_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 11, time_item)
+                
+                # Status with tooltip (IMPROVEMENT 4) - Column 12
+                status_item = QTableWidgetItem()
+                
+                if pos.side in ['buy', 'long']:
+                    price_move_pct = ((pos.current_price - pos.entry_price) / pos.entry_price) * 100
+                else:
+                    price_move_pct = ((pos.entry_price - pos.current_price) / pos.entry_price) * 100
+                
+                if is_trailing_active:
+                    status_item.setText(f"✓ ACTIVE\n+{roe_pct:.0f}%")
+                    status_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                elif roe_pct >= 10.0:
+                    status_item.setText(f"⚠️ STUCK\n+{roe_pct:.0f}%")
+                    status_item.setForeground(QBrush(ColorHelper.WARNING))
+                elif price_move_pct >= 1.0:
+                    status_item.setText(f"⏳ WAIT\n+{roe_pct:.0f}%")
+                    status_item.setForeground(QBrush(ColorHelper.INFO))
+                elif roe_pct >= 0:
+                    status_item.setText(f"📊 OK\n+{roe_pct:.0f}%")
+                    status_item.setForeground(QBrush(ColorHelper.INFO))
+                else:
+                    status_item.setText(f"🔻 LOSS\n{roe_pct:.0f}%")
+                    status_item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                
+                status_item.setToolTip(
+                    "✓ ACTIVE: Trailing attivo e funzionante\n"
+                    "⚠️ STUCK: Dovrebbe essere in trailing ma non è attivo (BUG!)\n"
+                    "⏳ WAIT: In attesa di attivazione trailing (+10% ROE)\n"
+                    "📊 OK: Profit positivo ma sotto soglia trailing\n"
+                    "🔻 LOSS: Posizione in perdita"
+                )
+                status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 12, status_item)
+                
+                # NEW: Risk Parameters (Conf%, Vol%, ADX, Weight) - Columns 13-16
+                # Column 13: Confidence %
+                confidence = getattr(pos, 'confidence', 0.0)
+                conf_item = QTableWidgetItem(f"{confidence:.0%}")
+                if confidence >= 0.75:
+                    conf_item.setForeground(QBrush(ColorHelper.POSITIVE))  # Green for high conf
+                elif confidence >= 0.65:
+                    conf_item.setForeground(QBrush(ColorHelper.INFO))  # Blue for medium
+                else:
+                    conf_item.setForeground(QBrush(ColorHelper.WARNING))  # Orange for low
+                conf_item.setToolTip(f"ML Model Confidence: {confidence:.1%}\nHigher = More confident prediction")
+                conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 13, conf_item)
+                
+                # Column 14: Weight - Simplified (just show confidence as weight proxy)
+                weight_item = QTableWidgetItem(f"{confidence:.0%}")
+                if confidence >= 0.75:
+                    weight_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                elif confidence >= 0.65:
+                    weight_item.setForeground(QBrush(ColorHelper.INFO))
+                else:
+                    weight_item.setForeground(QBrush(ColorHelper.WARNING))
+                weight_item.setToolTip(f"Position Weight (based on ML confidence): {confidence:.0%}")
+                weight_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 14, weight_item)
+                
+                # Column 15: Adaptive Status - Shows if position size is improving/declining
+                adaptive_item = QTableWidgetItem()
+                
+                # Try to get adaptive sizing memory for this symbol
+                try:
+                    if config.ADAPTIVE_SIZING_ENABLED:
+                        from core.adaptive_position_sizing import global_adaptive_sizing
+                        
+                        if global_adaptive_sizing and pos.symbol in global_adaptive_sizing.symbol_memory:
+                            memory = global_adaptive_sizing.symbol_memory[pos.symbol]
+                            
+                            # Check if blocked
+                            if memory.blocked_cycles_left > 0:
+                                adaptive_item.setText(f"🚫 BLOCKED\n{memory.blocked_cycles_left} cycles")
+                                adaptive_item.setForeground(QBrush(ColorHelper.NEGATIVE))
+                                adaptive_item.setToolTip(
+                                    f"Symbol is BLOCKED for {memory.blocked_cycles_left} more cycles\n\n"
+                                    f"Reason: Last trade was a loss ({memory.last_pnl_pct:+.1f}%)\n"
+                                    f"Size reset to base: ${memory.base_size:.2f}\n"
+                                    f"Will be unblocked after {memory.blocked_cycles_left} cycles\n\n"
+                                    f"History: {memory.wins}W / {memory.losses}L"
+                                )
+                            else:
+                                # Calculate size evolution
+                                base_size = memory.base_size
+                                current_size = memory.current_size
+                                size_change_pct = ((current_size - base_size) / base_size * 100) if base_size > 0 else 0
+                                
+                                # Determine status based on size evolution
+                                if size_change_pct > 5:
+                                    # Growing (winning)
+                                    adaptive_item.setText(f"📈 GROWING\n+{size_change_pct:.1f}%")
+                                    adaptive_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                                    adaptive_item.setToolTip(
+                                        f"Symbol size is GROWING (performing well)\n\n"
+                                        f"Current size: ${current_size:.2f}\n"
+                                        f"Base size: ${base_size:.2f}\n"
+                                        f"Growth: +{size_change_pct:.1f}%\n\n"
+                                        f"Last PnL: {memory.last_pnl_pct:+.1f}%\n"
+                                        f"History: {memory.wins}W / {memory.losses}L\n"
+                                        f"Win rate: {(memory.wins / memory.total_trades * 100):.0f}%" if memory.total_trades > 0 else "No trades yet"
+                                    )
+                                elif size_change_pct < -5:
+                                    # Shrinking (not expected, but handle it)
+                                    adaptive_item.setText(f"📉 RESET\n{size_change_pct:.1f}%")
+                                    adaptive_item.setForeground(QBrush(ColorHelper.WARNING))
+                                    adaptive_item.setToolTip(
+                                        f"Symbol was RESET after a loss\n\n"
+                                        f"Current size: ${current_size:.2f}\n"
+                                        f"Base size: ${base_size:.2f}\n"
+                                        f"Change: {size_change_pct:.1f}%\n\n"
+                                        f"History: {memory.wins}W / {memory.losses}L"
+                                    )
+                                else:
+                                    # Stable (at base level)
+                                    adaptive_item.setText(f"📊 STABLE\n${current_size:.2f}")
+                                    adaptive_item.setForeground(QBrush(ColorHelper.INFO))
+                                    win_rate_text = f"{(memory.wins / memory.total_trades * 100):.0f}%" if memory.total_trades > 0 else "New"
+                                    adaptive_item.setToolTip(
+                                        f"Symbol at BASE size level\n\n"
+                                        f"Current size: ${current_size:.2f}\n"
+                                        f"Base size: ${base_size:.2f}\n\n"
+                                        f"Last PnL: {memory.last_pnl_pct:+.1f}%" if memory.last_pnl_pct != 0 else "First trade\n\n"
+                                        f"History: {memory.wins}W / {memory.losses}L\n"
+                                        f"Win rate: {win_rate_text}"
+                                    )
+                        else:
+                            # Symbol not in memory yet (new position)
+                            adaptive_item.setText("🆕 NEW")
+                            adaptive_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                            adaptive_item.setToolTip(
+                                "New symbol - not yet in adaptive memory\n\n"
+                                "Will be tracked after first close\n"
+                                "Starting with base size"
+                            )
+                    else:
+                        # Adaptive sizing disabled
+                        adaptive_item.setText("N/A")
+                        adaptive_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                        adaptive_item.setToolTip("Adaptive sizing is disabled")
+                        
+                except Exception as e:
+                    adaptive_item.setText("ERROR")
+                    adaptive_item.setForeground(QBrush(ColorHelper.WARNING))
+                    adaptive_item.setToolTip(f"Error getting adaptive status: {e}")
+                
+                adaptive_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 15, adaptive_item)
+                
+                # Column 16: Open Reason - Shows ML prediction results for SESSION positions or "Already Open" for SYNCED
+                reason_item = QTableWidgetItem()
+                origin = getattr(pos, 'origin', 'SESSION')
+                open_reason = getattr(pos, 'open_reason', None)
+                confidence = getattr(pos, 'confidence', 0.0)
+                
+                # Try to extract ML data from different possible attributes
+                ml_signal = getattr(pos, 'ml_signal', None)
+                ml_confidence = getattr(pos, 'ml_confidence', confidence)
+                prediction_data = getattr(pos, 'prediction_data', None)
+                
+                # Build debug info for tooltip
+                debug_info = (
+                    f"DEBUG INFO:\n"
+                    f"origin: {origin}\n"
+                    f"open_reason: {open_reason}\n"
+                    f"confidence: {confidence}\n"
+                    f"ml_signal: {ml_signal}\n"
+                    f"ml_confidence: {ml_confidence}\n"
+                    f"prediction_data: {prediction_data}\n"
+                )
+                
+                # Check if position was synced from Bybit or opened in this session
+                if origin == "SYNCED":
+                    # Position was already open on Bybit when bot started
+                    reason_item.setText("🔄 Already Open")
+                    reason_item.setForeground(QBrush(ColorHelper.INFO))
+                    reason_item.setToolTip(
+                        f"Origin: Found on Bybit at bot startup\n"
+                        f"This position was opened before this session started\n\n{debug_info}"
+                    )
+                else:
+                    # Position opened during this session - show ML prediction details
+                    # Check multiple sources for ML data
+                    has_ml_data = (
+                        ml_signal is not None or
+                        (confidence > 0) or
+                        (ml_confidence > 0) or
+                        (open_reason and ("ML" in str(open_reason).upper() or "PREDICTION" in str(open_reason).upper()))
+                    )
+                    
+                    if has_ml_data:
+                        # ML prediction available
+                        side_indicator = "🟢" if pos.side in ['buy', 'long'] else "🔴"
+                        
+                        # Use best available confidence value
+                        best_confidence = ml_confidence if ml_confidence > 0 else confidence
+                        conf_display = f"{best_confidence:.0%}" if best_confidence > 0 else "N/A"
+                        
+                        reason_item.setText(f"🤖 ML {side_indicator} {conf_display}")
+                        reason_item.setForeground(QBrush(ColorHelper.POSITIVE))
+                        
+                        # Detailed tooltip with full prediction info
+                        reason_item.setToolTip(
+                            f"ML Prediction Details:\n"
+                            f"Side: {'LONG' if pos.side in ['buy', 'long'] else 'SHORT'}\n"
+                            f"Confidence: {conf_display}\n"
+                            f"Signal: {ml_signal if ml_signal else 'N/A'}\n"
+                            f"Reason: {open_reason if open_reason else 'N/A'}\n"
+                            f"Entry: ${pos.entry_price:.6f}\n\n{debug_info}"
+                        )
+                    else:
+                        # No ML data found
+                        reason_item.setText("📊 Manual")
+                        reason_item.setForeground(QBrush(ColorHelper.NEUTRAL))
+                        reason_item.setToolTip(
+                            f"Manually opened position (no ML prediction found)\n\n{debug_info}"
+                        )
+                
+                reason_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(row, 16, reason_item)  # Column 16 (last column)
+                
+                # Row highlighting (IMPROVEMENT 2)
+                row_background = None
+                if roe_pct < -40:
+                    row_background = QColor("#3D0000")  # Red
+                elif roe_pct >= 10.0 and not is_trailing_active:
+                    row_background = QColor("#3D3D00")  # Yellow
+                elif is_trailing_active and roe_pct >= 10.0:
+                    row_background = QColor("#003D00")  # Green
+                
+                if row_background:
+                    for col in range(17):  # 17 columns total (0-16)
+                        item = table.item(row, col)
+                        if item:
+                            item.setBackground(QBrush(row_background))
+            
+            # Center align
+            for row in range(table.rowCount()):
+                for col in range(table.columnCount()):
+                    item = table.item(row, col)
+                    if item:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        finally:
+            # Re-enable updates AND sorting
+            table.setSortingEnabled(True)  # CRITICAL: Re-enable sorting AFTER populate
+            table.setUpdatesEnabled(True)
+    
     def _populate_closed_tab(self, table: QTableWidget, closed_positions: list):
-        """Populate closed positions tab - REFACTORED"""
-        # Delegate to dedicated populator module
-        ClosedTablePopulator.populate(table, closed_positions)
-
+        """Populate closed positions tab"""
+        if table.rowCount() != len(closed_positions):
+            table.setRowCount(0)
+            
+            if not closed_positions:
+                table.setRowCount(1)
+                item = QTableWidgetItem("No closed positions")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(0, 0, item)
+                table.setSpan(0, 0, 1, 9)
+                return
+            
+            table.setRowCount(len(closed_positions))
+        
+        if not closed_positions:
+            return
+        
+        for row, pos in enumerate(closed_positions):
+            # Symbol
+            symbol_short = pos.symbol.replace('/USDT:USDT', '')
+            table.setItem(row, 0, QTableWidgetItem(symbol_short))
+            
+            # ID - Extract time from position_id
+            pos_id = getattr(pos, 'position_id', '')
+            if pos_id and '_' in pos_id:
+                parts = pos_id.split('_')
+                if len(parts) >= 3:
+                    time_part = parts[-2]  # "093445"
+                    id_display = time_part[:4]  # "0934" (HH:MM)
+                else:
+                    id_display = pos_id[-8:]
+            else:
+                id_display = "N/A"
+            table.setItem(row, 1, QTableWidgetItem(id_display))
+            
+            # Initial Margin (IM)
+            if hasattr(pos, 'real_initial_margin') and pos.real_initial_margin is not None:
+                initial_margin = pos.real_initial_margin
+                im_source = "Bybit"
+            else:
+                initial_margin = pos.position_size / pos.leverage if pos.position_size > 0 else 0
+                im_source = "Calculated"
+            
+            im_item = QTableWidgetItem(f"${initial_margin:.2f}")
+            im_item.setToolTip(
+                f"Initial Margin (IM) [{im_source}]\n"
+                f"Margine utilizzato per questa posizione\n"
+                f"${initial_margin:.2f}"
+            )
+            im_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(row, 2, im_item)
+            
+            # Entry → Exit
+            entry_exit = f"${pos.entry_price:.4f} → ${pos.current_price:.4f}"
+            table.setItem(row, 3, QTableWidgetItem(entry_exit))
+            
+            # PnL with ROE% clarification
+            roe_pct = pos.unrealized_pnl_pct
+            # Calculate price change % (without leverage)
+            price_change_pct = roe_pct / pos.leverage if hasattr(pos, 'leverage') and pos.leverage > 0 else roe_pct
+            
+            pnl_text = f"ROE {ColorHelper.format_pct(roe_pct)} | {ColorHelper.format_usd(pos.unrealized_pnl_usd)}"
+            pnl_item = QTableWidgetItem(pnl_text)
+            ColorHelper.color_cell(pnl_item, pos.unrealized_pnl_usd)
+            
+            # Tooltip explaining the difference
+            pnl_item.setToolTip(
+                f"💰 PnL Breakdown:\n\n"
+                f"ROE% (Return on Equity): {roe_pct:+.2f}%\n"
+                f"  = Profit/Loss on your margin (with leverage)\n\n"
+                f"Price Change: {price_change_pct:+.2f}%\n"
+                f"  = Actual {pos.symbol} price movement\n\n"
+                f"Leverage: {pos.leverage if hasattr(pos, 'leverage') else 10}x\n"
+                f"Formula: ROE% = Price% × Leverage"
+            )
+            
+            table.setItem(row, 4, pnl_item)
+            
+            # Hold Time
+            if pos.entry_time and pos.close_time:
+                entry_dt = datetime.fromisoformat(pos.entry_time)
+                close_dt = datetime.fromisoformat(pos.close_time)
+                hold_minutes = int((close_dt - entry_dt).total_seconds() / 60)
+                if hold_minutes < 60:
+                    hold_str = f"{hold_minutes}m"
+                else:
+                    hours = hold_minutes // 60
+                    minutes = hold_minutes % 60
+                    hold_str = f"{hours}h {minutes}m"
+            else:
+                hold_str = "N/A"
+            table.setItem(row, 5, QTableWidgetItem(hold_str))
+            
+            # Close Reason with PnL indicator and detailed snapshot tooltip
+            is_profit = pos.unrealized_pnl_usd > 0
+            
+            # Check if this was a stop loss hit
+            if "STOP_LOSS" in pos.status or "MANUAL" in pos.status:
+                # Se è positivo, era un trailing stop che ha protetto i guadagni
+                if is_profit:
+                    reason_str = f"✅ Trailing Stop Hit with Gain {pos.unrealized_pnl_pct:+.1f}%"
+                else:
+                    # Se è negativo, era uno stop loss fisso (circa -50% con leva)
+                    reason_str = f"❌ SL Hit {pos.unrealized_pnl_pct:+.1f}%"
+            elif "TRAILING" in pos.status:
+                # Trailing stop esplicito
+                if is_profit:
+                    reason_str = f"✅ Trailing Stop Hit with Gain {pos.unrealized_pnl_pct:+.1f}%"
+                else:
+                    reason_str = f"🎪 Trailing {pos.unrealized_pnl_pct:+.1f}%"
+            else:
+                reason_str = f"❓ {pos.status} {pos.unrealized_pnl_pct:+.1f}%"
+            
+            reason_item = QTableWidgetItem(reason_str)
+            reason_item.setForeground(QBrush(ColorHelper.POSITIVE if is_profit else ColorHelper.NEGATIVE))
+            table.setItem(row, 6, reason_item)
+            
+            # Opened timestamp with date
+            if pos.entry_time:
+                try:
+                    entry_dt = datetime.fromisoformat(pos.entry_time)
+                    opened_str = entry_dt.strftime("%d/%m %H:%M:%S")
+                except:
+                    opened_str = "N/A"
+            else:
+                opened_str = "N/A"
+            table.setItem(row, 7, QTableWidgetItem(opened_str))
+            
+            # Closed timestamp with date
+            if pos.close_time:
+                try:
+                    close_dt = datetime.fromisoformat(pos.close_time)
+                    closed_str = close_dt.strftime("%d/%m %H:%M:%S")
+                except:
+                    closed_str = "N/A"
+            else:
+                closed_str = "N/A"
+            table.setItem(row, 8, QTableWidgetItem(closed_str))
+            
+            # Build detailed tooltip with close snapshot data
+            if pos.close_snapshot:
+                try:
+                    snapshot = json.loads(pos.close_snapshot)
+                    
+                    tooltip_parts = [
+                        f"📸 CLOSE SNAPSHOT:",
+                        f"",
+                        f"Reason: {snapshot.get('close_reason', 'Unknown')}",
+                        f"Exit Price: ${snapshot.get('exit_price', 0):.6f}",
+                        f"Entry Price: ${snapshot.get('entry_price', 0):.6f}",
+                        f"Price Change: {snapshot.get('price_change_pct', 0):+.2f}%",
+                        f"",
+                        f"⏱️ TIMING:",
+                        f"Duration: {snapshot.get('hold_duration_str', 'N/A')}",
+                    ]
+                    
+                    # Add extreme prices if available
+                    if 'max_price_seen' in snapshot:
+                        tooltip_parts.append(f"")
+                        tooltip_parts.append(f"📊 PRICE EXTREMES:")
+                        tooltip_parts.append(f"Max Seen: ${snapshot.get('max_price_seen', 0):.6f}")
+                        tooltip_parts.append(f"Min Seen: ${snapshot.get('min_price_seen', 0):.6f}")
+                        
+                        if 'distance_from_peak_pct' in snapshot:
+                            tooltip_parts.append(f"Distance from Peak: {snapshot.get('distance_from_peak_pct', 0):.2f}%")
+                        if 'distance_from_bottom_pct' in snapshot:
+                            tooltip_parts.append(f"Distance from Bottom: {snapshot.get('distance_from_bottom_pct', 0):.2f}%")
+                    
+                    # Add recent candles summary
+                    if snapshot.get('recent_candles'):
+                        tooltip_parts.append(f"")
+                        tooltip_parts.append(f"🕯️ RECENT CANDLES (last 5):")
+                        for candle in snapshot['recent_candles']:
+                            tooltip_parts.append(
+                                f"  {candle['time']}: O${candle['open']:.4f} "
+                                f"H${candle['high']:.4f} L${candle['low']:.4f} "
+                                f"C${candle['close']:.4f}"
+                            )
+                    
+                    # Add stop loss info
+                    if 'stop_loss_price' in snapshot:
+                        tooltip_parts.append(f"")
+                        tooltip_parts.append(f"🛡️ STOP LOSS:")
+                        tooltip_parts.append(f"SL Price: ${snapshot.get('stop_loss_price', 0):.6f}")
+                        tooltip_parts.append(f"SL Distance from Entry: {snapshot.get('sl_distance_from_entry_pct', 0):+.2f}%")
+                    
+                    # Add trailing info
+                    if snapshot.get('trailing_was_active'):
+                        tooltip_parts.append(f"")
+                        tooltip_parts.append(f"🎪 TRAILING: Was Active")
+                        if snapshot.get('trailing_activation_time'):
+                            tooltip_parts.append(f"Activated: {snapshot.get('trailing_activation_time', '')}")
+                    
+                    reason_item.setToolTip("\n".join(tooltip_parts))
+                    
+                except Exception as e:
+                    reason_item.setToolTip(f"Close snapshot error: {e}")
+            else:
+                reason_item.setToolTip(f"Status: {pos.status}\nNo snapshot available")
+        
+        # Center align
+        for row in range(table.rowCount()):
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                if item:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    
     def _update_closed_trades(self):
         """Update closed trades table - show ALL session trades"""
         # Get ALL trades from session (not just last 5)

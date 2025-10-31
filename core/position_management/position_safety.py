@@ -22,15 +22,22 @@ class PositionSafety:
         """
         Check all positions and fix incorrect stop losses
         
+        CRITICAL FIX: Usa SOLO set_trading_stop() per consistenza
+        
         Returns:
             int: Number of SLs fixed
         """
         from config import SL_FIXED_PCT
-        from core.price_precision_handler import global_price_precision_handler
         from core.order_manager import global_order_manager
+        import asyncio
         
         TOLERANCE_PCT = 0.005  # ±0.5% tolerance
+        DEBOUNCE_SEC = 300  # 5 minuti invece di 30 secondi
         fixed_count = 0
+        
+        # Track last fix time per symbol
+        if not hasattr(self, '_last_fix_time'):
+            self._last_fix_time = {}
         
         try:
             # Get real positions from Bybit
@@ -59,9 +66,24 @@ class PositionSafety:
                         logging.debug(f"[Auto-Fix] {symbol_short}: Skipping - trailing active")
                         continue
                     
+                    # Debounce: Skip if recently fixed
+                    import time
+                    last_fix = self._last_fix_time.get(symbol, 0)
+                    if time.time() - last_fix < DEBOUNCE_SEC:
+                        logging.debug(f"[Auto-Fix] {symbol_short}: Skipping - fixed {int(time.time() - last_fix)}s ago")
+                        continue
+                    
                     # Get position data
                     entry_price = float(position.get('entryPrice', 0))
                     side_str = position.get('side', '').lower()
+                    position_info = position.get('info', {})
+                    position_idx = position_info.get('positionIdx', 0)
+                    
+                    # Convert position_idx to int
+                    try:
+                        position_idx = int(position_idx)
+                    except:
+                        position_idx = 0
                     
                     # Determine side
                     if side_str in ['buy', 'long']:
@@ -79,50 +101,112 @@ class PositionSafety:
                             side = 'sell'
                             long_position = False
                     
-                    # Get current SL
+                    # Get current SL from position field (NOT from orders)
                     current_sl = float(position.get('stopLoss', 0) or 0)
                     
                     if current_sl == 0:
                         # NO STOP LOSS - Critical!
                         logging.warning(colored(
-                            f"⚠️ {symbol_short}: NO STOP LOSS! Setting -5% SL...",
+                            f"⚠️ {symbol_short}: NO STOP LOSS! Setting SL with VERIFICATION...",
                             "red", attrs=['bold']
                         ))
                         
+                        # Calculate target SL
                         if long_position:
                             target_sl = entry_price * (1 - SL_FIXED_PCT)
                         else:
                             target_sl = entry_price * (1 + SL_FIXED_PCT)
                         
-                        normalized_sl, success = await global_price_precision_handler.normalize_stop_loss_price(
-                            exchange, symbol, side, entry_price, target_sl
+                        # DEBUG: Log full position info BEFORE
+                        logging.warning(colored(
+                            f"🔍 DEBUG PRE-SET: {symbol_short}\n"
+                            f"   position_idx={position_idx}, side={side}, long={long_position}\n"
+                            f"   target_sl=${target_sl:.6f}, entry=${entry_price:.6f}",
+                            "yellow"
+                        ))
+                        
+                        # Use set_trading_stop (NOT stop_market orders!)
+                        result = await global_order_manager.set_trading_stop(
+                            exchange, symbol,
+                            stop_loss=target_sl,
+                            take_profit=None,
+                            position_idx=position_idx,
+                            side=side
                         )
                         
-                        if success:
-                            result = await global_order_manager.set_trading_stop(
-                                exchange, symbol,
-                                stop_loss=normalized_sl,
-                                take_profit=None
-                            )
+                        logging.warning(colored(
+                            f"🔍 DEBUG POST-SET: {symbol_short}\n"
+                            f"   result.success={result.success}\n"
+                            f"   result.order_id={result.order_id}\n"
+                            f"   result.error={result.error}",
+                            "yellow"
+                        ))
+                        
+                        if result.success:
+                            # CRITICAL: Verify SL was actually set
+                            await asyncio.sleep(3)  # Wait 3s instead of 2s
                             
-                            if result.success:
-                                # Update tracked position
-                                with self.core.get_lock():
-                                    for pos in self.core._get_open_positions_unsafe().values():
-                                        if pos.symbol == symbol and pos.status == "OPEN":
-                                            pos.real_stop_loss = normalized_sl
-                                            pos.stop_loss = normalized_sl
-                                            break
-                                
-                                real_sl_pct = abs((normalized_sl - entry_price) / entry_price) * 100
-                                logging.info(colored(
-                                    f"✅ {symbol_short}: SL FIXED - ${normalized_sl:.6f} (-{real_sl_pct:.2f}%)",
-                                    "green"
+                            # Re-fetch position to verify
+                            verify_positions = await exchange.fetch_positions([symbol])
+                            verified = False
+                            for vpos in verify_positions:
+                                if vpos.get('symbol') == symbol and float(vpos.get('contracts', 0)) != 0:
+                                    # CRITICAL FIX: Read stopLoss from 'info' dict, not from top-level
+                                    vpos_info = vpos.get('info', {})
+                                    sl_string = vpos_info.get('stopLoss', '0')
+                                    
+                                    # Parse SL (handle both string and float)
+                                    try:
+                                        if isinstance(sl_string, str):
+                                            verified_sl = float(sl_string) if sl_string else 0.0
+                                        else:
+                                            verified_sl = float(sl_string) if sl_string else 0.0
+                                    except:
+                                        verified_sl = 0.0
+                                    
+                                    # DEBUG: Log full position after set
+                                    logging.warning(colored(
+                                        f"🔍 DEBUG VERIFY: {symbol_short}\n"
+                                        f"   verified_sl={verified_sl}\n"
+                                        f"   positionIdx={vpos_info.get('positionIdx')}\n"
+                                        f"   stopLoss_raw={vpos_info.get('stopLoss')}\n"
+                                        f"   side={vpos.get('side')}",
+                                        "cyan"
+                                    ))
+                                    
+                                    if verified_sl > 0:
+                                        verified = True
+                                        logging.info(colored(
+                                            f"✅ {symbol_short}: SL VERIFIED @ ${verified_sl:.6f}",
+                                            "green", attrs=['bold']
+                                        ))
+                                        
+                                        # Update tracked position
+                                        with self.core.get_lock():
+                                            for pos in self.core._get_open_positions_unsafe().values():
+                                                if pos.symbol == symbol and pos.status == "OPEN":
+                                                    pos.real_stop_loss = verified_sl
+                                                    pos.stop_loss = verified_sl
+                                                    break
+                                        
+                                        # Mark as fixed
+                                        self._last_fix_time[symbol] = time.time()
+                                        fixed_count += 1
+                                        break
+                            
+                            if not verified:
+                                logging.error(colored(
+                                    f"❌ {symbol_short}: SL NOT VERIFIED after set! Check position_idx={position_idx}",
+                                    "red", attrs=['bold']
                                 ))
-                                fixed_count += 1
+                        else:
+                            logging.error(colored(
+                                f"❌ {symbol_short}: SL SET FAILED - {result.error}",
+                                "red"
+                            ))
                         continue
                     
-                    # Check if SL is correct
+                    # Check if SL is correct (with tolerance)
                     if long_position:
                         expected_sl = entry_price * (1 - SL_FIXED_PCT)
                         current_sl_pct = (current_sl - entry_price) / entry_price
@@ -135,7 +219,7 @@ class PositionSafety:
                     sl_deviation = abs(current_sl_pct - expected_sl_pct)
                     
                     if sl_deviation > TOLERANCE_PCT:
-                        # SL INCORRECT - Fix it
+                        # SL INCORRECT - Fix it with verification
                         logging.warning(colored(
                             f"⚠️ {symbol_short}: INCORRECT SL!\n"
                             f"   Current: ${current_sl:.6f} ({current_sl_pct*100:+.2f}%)\n"
@@ -143,26 +227,32 @@ class PositionSafety:
                             "yellow", attrs=['bold']
                         ))
                         
-                        normalized_sl, success = await global_price_precision_handler.normalize_stop_loss_price(
-                            exchange, symbol, side, entry_price, expected_sl
+                        result = await global_order_manager.set_trading_stop(
+                            exchange, symbol,
+                            stop_loss=expected_sl,
+                            take_profit=None,
+                            position_idx=position_idx,
+                            side=side
                         )
                         
-                        if success:
-                            result = await global_order_manager.set_trading_stop(
-                                exchange, symbol,
-                                stop_loss=normalized_sl,
-                                take_profit=None
-                            )
-                            
-                            if result.success:
-                                new_sl_pct = (normalized_sl - entry_price) / entry_price
-                                logging.info(colored(
-                                    f"✅ {symbol_short}: SL CORRECTED!\n"
-                                    f"   ${current_sl:.6f} ({current_sl_pct*100:+.2f}%) → "
-                                    f"${normalized_sl:.6f} ({new_sl_pct*100:+.2f}%)",
-                                    "green"
-                                ))
-                                fixed_count += 1
+                        if result.success:
+                            # Verify correction
+                            await asyncio.sleep(2)
+                            verify_positions = await exchange.fetch_positions([symbol])
+                            for vpos in verify_positions:
+                                if vpos.get('symbol') == symbol and float(vpos.get('contracts', 0)) != 0:
+                                    new_sl = float(vpos.get('stopLoss', 0) or 0)
+                                    if new_sl > 0:
+                                        new_sl_pct = (new_sl - entry_price) / entry_price
+                                        logging.info(colored(
+                                            f"✅ {symbol_short}: SL CORRECTED & VERIFIED!\n"
+                                            f"   ${current_sl:.6f} ({current_sl_pct*100:+.2f}%) → "
+                                            f"${new_sl:.6f} ({new_sl_pct*100:+.2f}%)",
+                                            "green"
+                                        ))
+                                        self._last_fix_time[symbol] = time.time()
+                                        fixed_count += 1
+                                        break
                 
                 except Exception as pos_error:
                     logging.error(f"Error checking SL for {position.get('symbol')}: {pos_error}")

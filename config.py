@@ -129,6 +129,12 @@ POSITION_SIZE_MAX_ABSOLUTE = 50.0   # Massimo assoluto
 # Position sizing target (for backwards compatibility)
 POSITION_SIZING_TARGET_POSITIONS = 10  # Target number of positions
 
+# Position sizing ratios (relative to aggressive tier)
+# Conservative = 60% of aggressive, Moderate = 80% of aggressive, Aggressive = 100%
+POSITION_SIZING_RATIO_CONSERVATIVE = 0.6   # 15/25 = 0.6
+POSITION_SIZING_RATIO_MODERATE = 0.8       # 20/25 = 0.8
+POSITION_SIZING_RATIO_AGGRESSIVE = 1.0     # 25/25 = 1.0
+
 # Thresholds per Position Sizing
 CONFIDENCE_HIGH_THRESHOLD = 0.75    # ≥75% confidence = aggressive
 CONFIDENCE_LOW_THRESHOLD = 0.65     # <65% confidence = conservative

@@ -324,21 +324,41 @@ class OrderManager:
         """
         Imposta SL/TP su Bybit (endpoint: /v5/position/trading-stop)
         
-        CRITICAL FIX: Auto-detect position_idx based on side:
-        - position_idx=1 for LONG (Buy)
-        - position_idx=2 for SHORT (Sell)
-        - position_idx=0 for One-Way Mode (if side not provided)
+        CRITICAL FIX v2: Auto-detect position_idx from actual position if not provided
+        - position_idx=0 for One-Way Mode
+        - position_idx=1 for LONG in Hedge Mode
+        - position_idx=2 for SHORT in Hedge Mode
         """
         try:
             # Converte il simbolo nel formato Bybit (BTC/USDT:USDT → BTCUSDT)
             bybit_symbol = symbol.replace('/USDT:USDT', 'USDT').replace('/', '')
 
-            # CRITICAL FIX: Bybit accounts are typically in One-Way Mode
-            # In One-Way Mode, position_idx MUST ALWAYS be 0, regardless of LONG/SHORT
-            # Only Hedge Mode accounts use position_idx=1 (LONG) or position_idx=2 (SHORT)
+            # CRITICAL FIX: Auto-detect position_idx from actual position
             if position_idx is None:
-                position_idx = 0  # ONE-WAY MODE (default for most accounts)
-                logging.debug(f"🔧 Using position_idx=0 (One-Way Mode) for {symbol}")
+                # Fetch the actual position to get correct positionIdx
+                try:
+                    positions = await exchange.fetch_positions([symbol])
+                    for pos in positions:
+                        if pos.get('symbol') == symbol and float(pos.get('contracts', 0)) != 0:
+                            # Get position_idx from actual position
+                            pos_info = pos.get('info', {})
+                            detected_idx = pos_info.get('positionIdx', 0)
+                            try:
+                                position_idx = int(detected_idx)
+                            except:
+                                position_idx = 0
+                            
+                            mode_name = {0: "One-Way", 1: "Hedge-Long", 2: "Hedge-Short"}.get(position_idx, "Unknown")
+                            logging.debug(f"🔧 Auto-detected position_idx={position_idx} ({mode_name}) for {symbol}")
+                            break
+                except Exception as e:
+                    logging.warning(f"⚠️ Failed to auto-detect position_idx for {symbol}: {e}")
+                    position_idx = 0  # Fallback to One-Way Mode
+                
+                # If still None (no position found), default to 0
+                if position_idx is None:
+                    position_idx = 0
+                    logging.debug(f"🔧 No position found, defaulting to position_idx=0 for {symbol}")
 
             sl_text = f"${stop_loss:.6f}" if stop_loss else "None"
             tp_text = f"${take_profit:.6f}" if take_profit else "None"
@@ -349,6 +369,7 @@ class OrderManager:
                 "yellow", attrs=['bold']
             ))
 
+            # Use ONLY Full mode (Partial requires slSize/tpSize which we don't have)
             params = {
                 'category': 'linear',
                 'symbol': bybit_symbol,
@@ -361,7 +382,7 @@ class OrderManager:
             if take_profit:
                 params['takeProfit'] = str(take_profit)
 
-            # Debug log parametri API (ridotto)
+            # Debug log parametri API
             logging.debug(f"🔧 API params: {params}")
             
             result = await exchange.private_post_v5_position_trading_stop(params)

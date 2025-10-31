@@ -1,115 +1,127 @@
 #!/usr/bin/env python3
 """
-🔍 CHECK BYBIT POSITION MODE
+🔍 VERIFICA POSITION MODE SU BYBIT
 
-Script per verificare se il tuo account è in One-Way Mode o Hedge Mode
+Controlla se l'account è in One-Way o Hedge Mode.
+Questo è CRITICO per capire come impostare gli stop loss.
 """
 
 import asyncio
+import sys
+import os
+import platform
+
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import ccxt.async_support as ccxt
 from config import API_KEY, API_SECRET
+from termcolor import colored
+
+# FIX for Windows: Use SelectorEventLoop instead of ProactorEventLoop
+if platform.system() == 'Windows':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 async def check_position_mode():
-    """Verifica la modalità delle posizioni su Bybit"""
-    
-    exchange = ccxt.bybit({
-        'apiKey': API_KEY,
-        'secret': API_SECRET,
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'swap',
-        }
-    })
-    
+    """
+    Verifica il position mode dell'account Bybit
+    """
+    exchange = None
     try:
-        print("=" * 80)
-        print("🔍 CHECKING BYBIT POSITION MODE")
-        print("=" * 80)
+        # Initialize Bybit exchange
+        exchange = ccxt.bybit({
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',
+                'recvWindow': 10000
+            }
+        })
         
-        # Metodo 1: Query delle impostazioni account
-        try:
-            # Bybit API v5 endpoint per position mode
-            response = await exchange.private_get_v5_position_list({
-                'category': 'linear',
-                'limit': 1
-            })
+        print(colored("=" * 80, "cyan"))
+        print(colored("🔍 CHECKING BYBIT POSITION MODE", "cyan", attrs=['bold']))
+        print(colored("=" * 80, "cyan"))
+        print()
+        
+        # Fetch account info
+        print("📊 Fetching account configuration...")
+        
+        # Method 1: Check via position info
+        positions = await exchange.fetch_positions()
+        
+        if not positions:
+            print(colored("⚠️  No positions found. Creating test...", "yellow"))
+        else:
+            print(colored(f"✅ Found {len(positions)} positions", "green"))
+            print()
             
-            # Estrai info dalle posizioni
-            if response.get('result') and response['result'].get('list'):
-                positions = response['result']['list']
-                if positions:
-                    pos = positions[0]
-                    position_idx = pos.get('positionIdx', 0)
+            # Analyze position mode from positionIdx
+            position_modes = {}
+            for pos in positions[:5]:  # Check first 5
+                if float(pos.get('contracts', 0)) != 0:
+                    symbol = pos.get('symbol', 'N/A')
+                    position_idx = pos.get('info', {}).get('positionIdx', 'N/A')
+                    side = pos.get('side', 'N/A')
                     
-                    print(f"\n📊 ACCOUNT MODE DETECTED:")
-                    print(f"   positionIdx found in response: {position_idx}")
+                    position_modes[symbol] = {
+                        'positionIdx': position_idx,
+                        'side': side,
+                        'contracts': pos.get('contracts', 0)
+                    }
                     
-                    if position_idx == 0:
-                        print("\n✅ MODE: ONE-WAY MODE")
-                        print("   - Puoi avere SOLO Long OPPURE Short per simbolo")
-                        print("   - Non puoi Long e Short contemporaneamente")
-                        print("   - position_idx deve essere SEMPRE 0")
-                        print("   - Più semplice da gestire")
-                    else:
-                        print("\n✅ MODE: HEDGE MODE") 
-                        print("   - Puoi avere Long E Short per simbolo contemporaneamente")
-                        print("   - position_idx=1 per LONG, position_idx=2 per SHORT")
-                        print("   - Più complesso ma più flessibile")
-                    
+                    print(f"  📍 {symbol}")
+                    print(f"      Side: {side}")
+                    print(f"      Position Index: {position_idx}")
+                    print(f"      Contracts: {pos.get('contracts', 0)}")
+                    print()
+            
+            # Determine mode
+            if position_modes:
+                idx_values = [v['positionIdx'] for v in position_modes.values()]
+                
+                if all(idx == 0 or idx == '0' for idx in idx_values):
+                    print(colored("=" * 80, "green"))
+                    print(colored("🎯 POSITION MODE: ONE-WAY MODE", "green", attrs=['bold']))
+                    print(colored("=" * 80, "green"))
+                    print()
+                    print("✅ Correct configuration:")
+                    print("   - Use position_idx = 0 for ALL positions")
+                    print("   - Same stop loss for both LONG and SHORT")
+                    print()
+                    return "oneway"
+                elif any(idx in [1, '1', 2, '2'] for idx in idx_values):
+                    print(colored("=" * 80, "yellow"))
+                    print(colored("🎯 POSITION MODE: HEDGE MODE", "yellow", attrs=['bold']))
+                    print(colored("=" * 80, "yellow"))
+                    print()
+                    print("⚠️  Required configuration:")
+                    print("   - Use position_idx = 1 for LONG positions")
+                    print("   - Use position_idx = 2 for SHORT positions")
+                    print("   - Separate stop losses for LONG/SHORT")
+                    print()
+                    return "hedge"
+        
+        # Method 2: Direct API check (if available)
+        try:
+            # Try to get account configuration
+            result = await exchange.private_get_v5_account_info()
+            print("📋 Account Info:", result)
         except Exception as e:
-            print(f"\n⚠️  Could not query positions: {e}")
+            print(f"ℹ️  Could not fetch account info: {e}")
         
-        # Metodo 2: Dall'errore precedente
-        print("\n" + "=" * 80)
-        print("📝 DIAGNOSIS FROM YOUR ERROR:")
-        print("=" * 80)
-        print("""
-L'errore che hai ricevuto era:
-"position idx(2) not match position mode(0)"
-                  ^^^                      ^^^
-                  |                        |
-           Codice provava           Account è in
-           ad usare idx=2           mode(0)
-
-POSITION MODE(0) = ONE-WAY MODE ✅
-
-Questo significa che il tuo account è configurato in ONE-WAY MODE.
-In questo modo:
-- Puoi avere SOLO Long OPPURE Short per simbolo
-- Devi SEMPRE usare position_idx=0 nelle API calls
-- È la configurazione più comune e più semplice
-""")
-        
-        # Metodo 3: Come verificare su Bybit Web
-        print("=" * 80)
-        print("🌐 COME VERIFICARE SU BYBIT WEB:")
-        print("=" * 80)
-        print("""
-1. Vai su https://www.bybit.com
-2. Login al tuo account
-3. Clicca su "Derivatives" → "USDT Perpetual"
-4. Clicca sull'icona ⚙️ (Settings) in alto a destra
-5. Cerca "Position Mode":
-   
-   📍 ONE-WAY MODE:
-      - Vedi toggle "One-Way Mode" ATTIVO
-      - Descrizione: "Only Long or Short positions"
-   
-   📍 HEDGE MODE:
-      - Vedi toggle "Hedge Mode" ATTIVO
-      - Descrizione: "Both Long and Short positions"
-
-NOTA: Cambiare mode richiede chiusura di tutte le posizioni!
-""")
-        
-        print("=" * 80)
-        print("✅ CHECK COMPLETE")
-        print("=" * 80)
+        print(colored("=" * 80, "cyan"))
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(colored(f"❌ ERROR: {e}", "red", attrs=['bold']))
+        import traceback
+        traceback.print_exc()
+        
     finally:
-        await exchange.close()
+        if exchange:
+            await exchange.close()
+
 
 if __name__ == "__main__":
     asyncio.run(check_position_mode())

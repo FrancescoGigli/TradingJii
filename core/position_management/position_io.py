@@ -61,6 +61,15 @@ class PositionIO:
                     pos_data.pop('trailing_data', None)
                 
                 position = ThreadSafePosition(**pos_data)
+                
+                # Migrate old closed positions: set pnl_* and exit_price if missing
+                if position.pnl_pct == 0.0 and position.unrealized_pnl_pct != 0.0:
+                    position.pnl_pct = position.unrealized_pnl_pct
+                if position.pnl_usd == 0.0 and position.unrealized_pnl_usd != 0.0:
+                    position.pnl_usd = position.unrealized_pnl_usd
+                if position.exit_price is None and position.current_price != 0.0:
+                    position.exit_price = position.current_price
+                
                 closed_positions[pos_id] = position
             
             # Load balance data

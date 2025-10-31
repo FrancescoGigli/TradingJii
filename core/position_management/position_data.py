@@ -43,6 +43,11 @@ class ThreadSafePosition:
     unrealized_pnl_pct: float = 0.0
     unrealized_pnl_usd: float = 0.0
     max_favorable_pnl: float = 0.0
+    exit_price: Optional[float] = None  # Set when position closes
+    
+    # Aliases for closed positions (for dashboard compatibility)
+    pnl_pct: float = 0.0  # Alias for unrealized_pnl_pct
+    pnl_usd: float = 0.0  # Alias for unrealized_pnl_usd
     
     # Trailing stop system (OPTIMIZED)
     trailing_data: Optional[TrailingStopData] = None
