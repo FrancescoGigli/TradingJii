@@ -271,6 +271,8 @@ class PositionSafety:
         """
         Check and close positions that are too small or unsafe
         
+        CRITICAL FIX: Safe access to all position fields with None handling
+        
         Returns:
             int: Number of positions closed
         """
@@ -281,14 +283,39 @@ class PositionSafety:
         try:
             # Get real positions from Bybit
             bybit_positions = await exchange.fetch_positions(None, {'limit': 100, 'type': 'swap'})
-            active_positions = [p for p in bybit_positions if float(p.get('contracts', 0)) != 0]
+            
+            # Safe filtering: handle None values in contracts
+            active_positions = []
+            for p in bybit_positions:
+                contracts_raw = p.get('contracts', 0)
+                try:
+                    contracts_float = float(contracts_raw) if contracts_raw else 0
+                    if contracts_float != 0:
+                        active_positions.append(p)
+                except (ValueError, TypeError):
+                    continue
             
             for position in active_positions:
                 try:
                     symbol = position.get('symbol')
-                    contracts = abs(float(position.get('contracts', 0)))
-                    entry_price = float(position.get('entryPrice', 0))
-                    leverage = float(position.get('leverage', 10))
+                    
+                    # CRITICAL FIX: Safe access with None handling
+                    contracts_raw = position.get('contracts', 0)
+                    entry_raw = position.get('entryPrice', 0)
+                    leverage_raw = position.get('leverage', 10)
+                    
+                    # Safe float conversion
+                    try:
+                        contracts = abs(float(contracts_raw) if contracts_raw else 0)
+                        entry_price = float(entry_raw) if entry_raw else 0
+                        leverage = float(leverage_raw) if leverage_raw else 10
+                    except (ValueError, TypeError) as e:
+                        logging.warning(f"⚠️ {symbol}: Invalid position data (contracts={contracts_raw}, entry={entry_raw}) - skipping safety check")
+                        continue
+                    
+                    # Skip if any critical value is zero/invalid
+                    if contracts == 0 or entry_price == 0 or leverage == 0:
+                        continue
                     
                     # Calculate metrics
                     position_usd = contracts * entry_price

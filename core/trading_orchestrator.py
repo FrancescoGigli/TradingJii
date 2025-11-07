@@ -26,10 +26,18 @@ from core.risk_calculator import global_risk_calculator, MarketData
 from core.thread_safe_position_manager import global_thread_safe_position_manager, ThreadSafePosition as Position
 from core.price_precision_handler import global_price_precision_handler
 
+# Import Trade Analyzer for prediction vs reality tracking
+try:
+    from core.trade_analyzer import global_trade_analyzer
+    TRADE_ANALYZER_AVAILABLE = True
+except ImportError:
+    TRADE_ANALYZER_AVAILABLE = False
+    global_trade_analyzer = None
+    logging.debug("⚠️ Trade Analyzer not available in orchestrator")
+
 # CRITICAL FIX: Import new unified managers
 try:
     from core.thread_safe_position_manager import global_thread_safe_position_manager
-    from core.unified_balance_manager import get_global_balance_manager
     from core.smart_api_manager import global_smart_api_manager
     UNIFIED_MANAGERS_AVAILABLE = True
     logging.debug("🔧 Unified managers integration enabled in TradingOrchestrator")
@@ -94,9 +102,8 @@ class TradingOrchestrator:
         
         # Initialize unified managers
         if UNIFIED_MANAGERS_AVAILABLE:
-            self.balance_manager = get_global_balance_manager()
             self.api_manager = global_smart_api_manager
-            logging.debug("🔧 TradingOrchestrator: Unified managers initialized (no SL calculator)")
+            logging.debug("🔧 TradingOrchestrator: Unified managers initialized")
 
     # --------------------------------------------------------------------- #
     #                      NEW TRADE (open + SL 6%)                         #
@@ -113,9 +120,26 @@ class TradingOrchestrator:
             margin_override: Se fornito, usa questo margin invece di calcolarlo (portfolio sizing)
         """
         try:
-            symbol = signal_data['symbol']
-            side = signal_data['signal_name'].lower()  # 'buy' | 'sell'
-            confidence = signal_data.get('confidence', 0.7)
+            # 🔧 FIX #3: DEFENSIVE GUARDS - Validate signal_data inputs
+            symbol = signal_data.get('symbol', 'UNKNOWN')
+            if symbol == 'UNKNOWN' or not symbol:
+                return TradingResult(False, "", "Invalid signal_data: missing or empty symbol")
+            
+            side = signal_data.get('signal_name', 'buy')
+            if not side:
+                return TradingResult(False, "", f"Invalid signal_data: missing signal_name for {symbol}")
+            side = side.lower()
+            
+            if side not in ['buy', 'sell', 'long', 'short']:
+                return TradingResult(False, "", f"Invalid signal side '{side}' for {symbol}")
+            
+            # Normalize to buy/sell
+            if side == 'long':
+                side = 'buy'
+            elif side == 'short':
+                side = 'sell'
+            
+            confidence = float(signal_data.get('confidence', 0.7) or 0.7)
 
             logging.info(colored(f"🎯 EXECUTING NEW TRADE: {symbol} {side.upper()}", "cyan", attrs=['bold']))
 
@@ -194,21 +218,39 @@ class TradingOrchestrator:
                 logging.warning(f"⚠️ {symbol}: Size normalization failed, using original")
                 normalized_size = levels.position_size
             
-            # Check minimum amount requirements
+            # 🔧 FIX #2: PRE-FLIGHT VALIDATION - Check size requirements BEFORE placing order
             precision_info = await global_price_precision_handler.get_symbol_precision(exchange, symbol)
             min_amount = precision_info.get('min_amount', 0.001)
+            max_amount = precision_info.get('max_amount', 1000000)
             
+            # Check minimum - CRITICAL FIX: Skip expensive symbols instead of forcing minimum
             if normalized_size < min_amount:
-                error_msg = f"Position size {normalized_size:.6f} < minimum {min_amount} for {symbol}"
-                logging.error(colored(f"❌ {error_msg}", "red"))
+                # Calculate what margin would be needed
+                required_margin = (min_amount * market_data.price) / config.LEVERAGE
+                error_msg = f"Symbol too expensive: need ${required_margin:.2f} margin but have ${levels.margin:.2f} - SKIPPING"
+                logging.warning(colored(f"⏭️ {symbol}: {error_msg}", "yellow"))
+                logging.warning(colored(f"   Size {normalized_size:.6f} < minimum {min_amount}", "yellow"))
                 return TradingResult(False, "", error_msg)
             
+            # Check maximum
+            if normalized_size > max_amount:
+                error_msg = f"Position size {normalized_size:.6f} exceeds maximum {max_amount} for {symbol}"
+                logging.error(colored(f"❌ PRE-FLIGHT FAILED: {error_msg}", "red"))
+                return TradingResult(False, "", error_msg)
+            
+            # ✅ VALIDATION PASSED
+            logging.info(colored(f"✅ Pre-flight OK: size {normalized_size:.6f} within [{min_amount}, {max_amount}]", "green"))
             logging.info(colored(f"📏 Position size: {levels.position_size:.6f} → {normalized_size:.6f}", "cyan"))
             
             # 6) Market order with normalized size
             market_result = await self.order_manager.place_market_order(exchange, symbol, side, normalized_size)
             if not market_result.success:
                 return TradingResult(False, "", f"Market order failed: {market_result.error}")
+
+            # 🔧 FIX #6: RACE CONDITION - Wait for Bybit to process the position before setting SL
+            # Critical: Without this wait, position may not exist yet when we try to set SL
+            logging.debug(f"⏳ {symbol}: Waiting 3s for Bybit to process market order...")
+            await asyncio.sleep(3)
 
             # 7) Calculate and apply FIXED Stop Loss (-5%)
             stop_loss_price = self.risk_calculator.calculate_stop_loss_fixed(
@@ -318,6 +360,53 @@ class TradingOrchestrator:
                         logging.debug(f"🎯 Adaptive sizing: Registered opening for {symbol}")
             except Exception as adaptive_error:
                 logging.debug(f"⚠️ Failed to register opening in adaptive sizing: {adaptive_error}")
+            
+            # 🤖 NEW: SAVE TRADE SNAPSHOT for AI analysis (Prediction vs Reality)
+            if TRADE_ANALYZER_AVAILABLE and global_trade_analyzer:
+                try:
+                    # Extract ensemble votes from signal_data
+                    ensemble_votes = {}
+                    tf_predictions = signal_data.get('tf_predictions', {})
+                    for tf, pred_data in tf_predictions.items():
+                        if isinstance(pred_data, dict):
+                            pred = pred_data.get('prediction', -1)
+                            if pred == 1:
+                                ensemble_votes[tf] = 'BUY'
+                            elif pred == 0:
+                                ensemble_votes[tf] = 'SELL'
+                            else:
+                                ensemble_votes[tf] = 'NEUTRAL'
+                    
+                    # Get dataframes for features extraction
+                    dataframes = signal_data.get('dataframes', {})
+                    entry_features = {}
+                    
+                    if dataframes and '1h' in dataframes:
+                        df_1h = dataframes['1h']
+                        if len(df_1h) > 0:
+                            entry_features = {
+                                'rsi': float(df_1h['rsi_fast'].iloc[-1]) if 'rsi_fast' in df_1h.columns else 50.0,
+                                'macd': float(df_1h['macd'].iloc[-1]) if 'macd' in df_1h.columns else 0.0,
+                                'adx': float(df_1h['adx'].iloc[-1]) if 'adx' in df_1h.columns else adx_value,
+                                'atr': float(df_1h['atr'].iloc[-1]) if 'atr' in df_1h.columns else market_data.atr,
+                                'volume': float(df_1h['volume'].iloc[-1]) if 'volume' in df_1h.columns else 0.0,
+                                'volatility': market_data.volatility
+                            }
+                    
+                    # Save snapshot via position_manager
+                    self.position_manager.save_trade_snapshot(
+                        position_id=position_id,
+                        symbol=symbol,
+                        signal=side_name,
+                        confidence=confidence,
+                        ensemble_votes=ensemble_votes,
+                        entry_price=market_data.price,
+                        entry_features=entry_features
+                    )
+                    logging.debug(f"📸 Trade snapshot saved for AI analysis: {symbol}")
+                    
+                except Exception as snapshot_error:
+                    logging.debug(f"⚠️ Failed to save trade snapshot: {snapshot_error}")
             
             # 💰 SAVE REAL IM: Store actual margin used (will be updated by sync)
             try:

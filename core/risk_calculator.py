@@ -53,13 +53,41 @@ class PositionLevels:
     reward_pct: float       # Reward percentage
     risk_reward_ratio: float # Risk:Reward ratio
 
-@dataclass 
+@dataclass
 class MarketData:
-    """Market data for risk calculations"""
+    """Market data for risk calculations with defensive validation"""
     price: float
     atr: float
     volatility: float
     adx: float = 0.0  # Trend strength (optional, default 0)
+    
+    def __post_init__(self):
+        """🔧 FIX #3: DEFENSIVE GUARDS - Validate and sanitize inputs"""
+        # Ensure all values are floats (handle None, "", etc.)
+        self.price = float(self.price or 0)
+        self.atr = float(self.atr or 0)
+        self.volatility = float(self.volatility or 0.03)  # Default 3% volatility
+        self.adx = float(self.adx or 0)
+        
+        # Sanity checks
+        if self.price <= 0:
+            raise ValueError(f"Invalid price: {self.price}. Price must be > 0")
+        
+        # Negative values don't make sense, set to 0
+        if self.atr < 0:
+            logging.warning(f"Negative ATR {self.atr} detected, setting to 0")
+            self.atr = 0
+        
+        if self.volatility < 0:
+            logging.warning(f"Negative volatility {self.volatility} detected, setting to default 0.03")
+            self.volatility = 0.03
+        
+        if self.adx < 0:
+            self.adx = 0
+        
+        # Log if using defaults
+        if self.atr == 0:
+            logging.debug("ATR is 0, risk calculations may use fallbacks")
     
 class RiskCalculator:
     """

@@ -19,6 +19,15 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from termcolor import colored
 
+# Import LLM Failure Analyzer
+try:
+    from core.failure_analyzer import global_failure_analyzer
+    FAILURE_ANALYZER_AVAILABLE = True
+except ImportError:
+    FAILURE_ANALYZER_AVAILABLE = False
+    global_failure_analyzer = None
+    logging.warning("⚠️ Failure Analyzer not available")
+
 
 @dataclass
 class SymbolMemory:
@@ -198,9 +207,83 @@ class AdaptivePositionSizing:
         logging.debug(f"📏 Base size: ${slot_value:.2f} × {self.first_cycle_factor} = ${base_size:.2f}")
         return base_size
     
+    def _calculate_kelly_size(self, memory: SymbolMemory, wallet_equity: float, base_size: float) -> float:
+        """
+        Calculate position size using Kelly Criterion
+        
+        FIX #4: Kelly Criterion implementation
+        
+        Kelly formula: f* = (p * b - q) / b
+        where:
+        - p = win probability
+        - q = loss probability (1 - p)
+        - b = payoff ratio (avg_win / avg_loss)
+        - f* = Kelly fraction of bankroll
+        
+        Args:
+            memory: Symbol memory with trade history
+            wallet_equity: Total wallet equity
+            base_size: Fallback base size
+            
+        Returns:
+            float: Kelly-based position size
+        """
+        try:
+            # Need minimum trades for Kelly
+            if memory.total_trades < 10:
+                # Not enough data, use base size
+                return base_size
+            
+            # Calculate win rate
+            win_rate = memory.wins / memory.total_trades
+            loss_rate = 1 - win_rate
+            
+            # Estimate payoff ratio from config
+            # Use expected values: TP at +60% ROE, SL at -25% ROE
+            avg_win_roe = getattr(self.config, 'TP_ROE_TARGET', 0.60) * 100
+            avg_loss_roe = abs(self.config.STOP_LOSS_PCT * self.config.LEVERAGE * 100)
+            
+            # Add costs
+            from core.cost_calculator import global_cost_calculator
+            costs = global_cost_calculator.calculate_total_round_trip_cost(1000)
+            
+            # Effective values after costs
+            effective_win = avg_win_roe - costs['total_cost_roe']
+            effective_loss = avg_loss_roe + costs['total_cost_roe']
+            
+            # Payoff ratio
+            payoff_ratio = effective_win / effective_loss if effective_loss > 0 else 1.5
+            
+            # Kelly Criterion: f* = (p * b - q) / b
+            kelly_fraction = (win_rate * payoff_ratio - loss_rate) / payoff_ratio
+            
+            # Apply conservative Kelly multiplier (default 25%)
+            kelly_multiplier = getattr(self.config, 'ADAPTIVE_KELLY_FRACTION', 0.25)
+            conservative_kelly = kelly_fraction * kelly_multiplier
+            
+            # Ensure positive and reasonable
+            conservative_kelly = max(0.05, min(conservative_kelly, 0.30))  # 5% to 30%
+            
+            # Calculate size
+            kelly_size = wallet_equity * conservative_kelly
+            
+            logging.debug(
+                f"📊 Kelly for {memory.symbol}: WR={win_rate:.1%}, "
+                f"Payoff={payoff_ratio:.2f}:1, Kelly={kelly_fraction:.2%}, "
+                f"Conservative={conservative_kelly:.2%}, Size=${kelly_size:.2f}"
+            )
+            
+            return kelly_size
+            
+        except Exception as e:
+            logging.debug(f"Kelly calculation error: {e}")
+            return base_size
+    
     def get_symbol_size(self, symbol: str, wallet_equity: float) -> Tuple[float, bool, str]:
         """
         Ottieni size per simbolo (con memoria)
+        
+        FIX #4: Now uses Kelly Criterion when enough data available
         
         Args:
             symbol: Simbolo trading
@@ -229,18 +312,39 @@ class AdaptivePositionSizing:
         # Aggiorna base_size nella memoria (dinamica)
         memory.base_size = base_size
         
-        # Usa current_size con cap
-        size = min(memory.current_size, slot_value * self.cap_multiplier)
-        
-        # Log se cappato
-        if memory.current_size > size:
+        # FIX #4: Use Kelly Criterion if enabled and enough data
+        if getattr(self.config, 'ADAPTIVE_USE_KELLY', False) and memory.total_trades >= 10:
+            # Calculate Kelly-based size
+            kelly_size = self._calculate_kelly_size(memory, wallet_equity, base_size)
+            
+            # Use Kelly as base, then apply performance multipliers
+            # If symbol has been rewarded with higher size, scale Kelly accordingly
+            size_multiplier = memory.current_size / memory.base_size if memory.base_size > 0 else 1.0
+            size = kelly_size * size_multiplier
+            
+            # Apply cap
+            size = min(size, slot_value * self.cap_multiplier)
+            
             logging.debug(
-                f"⚠️ {symbol}: Size capped ${memory.current_size:.2f} → ${size:.2f} "
-                f"(max: ${slot_value * self.cap_multiplier:.2f})"
+                f"💎 {symbol}: Kelly-based size ${size:.2f} "
+                f"(Kelly: ${kelly_size:.2f} × multiplier: {size_multiplier:.2f}x, "
+                f"W:{memory.wins} L:{memory.losses})"
             )
-        
-        logging.debug(f"💎 {symbol}: Using memory size ${size:.2f} (W:{memory.wins} L:{memory.losses})")
-        return size, False, "from_memory"
+            
+            return size, False, "kelly_criterion"
+        else:
+            # Use current_size with cap (legacy adaptive system)
+            size = min(memory.current_size, slot_value * self.cap_multiplier)
+            
+            # Log se cappato
+            if memory.current_size > size:
+                logging.debug(
+                    f"⚠️ {symbol}: Size capped ${memory.current_size:.2f} → ${size:.2f} "
+                    f"(max: ${slot_value * self.cap_multiplier:.2f})"
+                )
+            
+            logging.debug(f"💎 {symbol}: Using memory size ${size:.2f} (W:{memory.wins} L:{memory.losses})")
+            return size, False, "from_memory"
     
     def register_opening(self, symbol: str, margin_used: float, wallet_equity: float):
         """
@@ -366,6 +470,13 @@ class AdaptivePositionSizing:
                     f"BLOCKED for {self.block_cycles} cycles",
                     "red", attrs=['bold']
                 ))
+                
+                # 🤖 NEW: Trigger LLM Failure Analysis for significant losses
+                if FAILURE_ANALYZER_AVAILABLE and global_failure_analyzer:
+                    # Note: Entry/exit data should be passed from position close
+                    # For now, we'll trigger it but full data integration needs
+                    # position management to store entry/exit details
+                    logging.debug(f"🤖 Loss registered for {symbol} - LLM analysis available")
             
             # Salva memoria
             self._save_memory()

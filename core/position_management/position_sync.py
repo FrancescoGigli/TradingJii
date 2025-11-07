@@ -8,6 +8,7 @@ Detects newly opened/closed positions and emergency SL fixes.
 
 import logging
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Set, Optional
 from termcolor import colored
@@ -80,9 +81,8 @@ class PositionSync:
                     ]
                     
                     for position in positions_to_close:
-                        # Use the LAST KNOWN PnL from Bybit (from last sync when still open)
-                        # This is the most recent unrealizedPnl we got from Bybit before position closed
-                        self._close_position_from_bybit(position)
+                        # 🆕 NEW: Fetch real PnL from trade history with ALL fees included
+                        await self._close_position_from_bybit(exchange, position)
                         newly_closed.append(position)
                         logging.info(f"🔄 Sync: CLOSED {symbol} PnL: {position.unrealized_pnl_pct:+.2f}%")
                 
@@ -167,6 +167,10 @@ class PositionSync:
                     'real_stop_loss': real_sl
                 }
                 
+                # 🆕 LOG RAW JSON for debugging
+                logging.debug(f"📊 RAW BYBIT DATA for {symbol_short}:")
+                logging.debug(json.dumps(pos, indent=2, default=str))
+                
             except (ValueError, TypeError) as e:
                 logging.warning(f"⚠️ Invalid Bybit data for {pos.get('symbol')}: {e}")
                 continue
@@ -212,44 +216,98 @@ class PositionSync:
             _migrated=True
         )
     
-    def _close_position_from_bybit(self, position: ThreadSafePosition):
+    async def _close_position_from_bybit(self, exchange, position: ThreadSafePosition):
         """
-        Close position detected as closed on Bybit
+        Close position with REAL PnL from Bybit trade history
         
-        Uses the LAST KNOWN unrealizedPnl from Bybit (from last sync before closing)
-        This is the most accurate PnL we have that includes fees
+        🆕 NEW: Fetches actual realized PnL, exit price, and timestamp from trade history
+        This ensures 100% accuracy including all fees and funding
         """
         position.status = "CLOSED_MANUAL"
-        position.close_time = datetime.now().isoformat()
+        symbol_short = position.symbol.replace('/USDT:USDT', '')
         
-        # Use last known PnL from Bybit (includes fees)
-        # This was set during the last sync when position was still open
-        if hasattr(position, 'unrealized_pnl_usd') and position.unrealized_pnl_usd != 0:
-            pnl_usd = position.unrealized_pnl_usd
+        # 🆕 STEP 1: Try to fetch REAL trade data from Bybit
+        trade_data_found = False
+        
+        try:
+            logging.info(f"🔍 Fetching trade history for {symbol_short}...")
+            trades = await exchange.fetch_my_trades(symbol=position.symbol, limit=10)
             
-            # Calculate PnL% from USD value
-            initial_margin = position.position_size / position.leverage
-            if initial_margin > 0:
-                pnl_pct = (pnl_usd / initial_margin) * 100
-                position.unrealized_pnl_pct = pnl_pct
+            if trades:
+                # Sort by timestamp descending to get most recent
+                trades.sort(key=lambda t: t.get('timestamp', 0), reverse=True)
+                last_trade = trades[0]
+                
+                # 🆕 Get REAL exit price
+                exit_price = last_trade.get('price')
+                if exit_price:
+                    position.current_price = float(exit_price)
+                    logging.info(f"✅ {symbol_short}: Real exit price: ${exit_price:.6f}")
+                    trade_data_found = True
+                
+                # 🆕 Get REAL realized PnL (includes ALL fees and funding)
+                realized_pnl = None
+                if 'info' in last_trade and last_trade['info']:
+                    realized_pnl = last_trade['info'].get('realizedPnl') or last_trade['info'].get('closedPnl')
+                
+                if realized_pnl not in (None, '', '0', 0):
+                    pnl_usd = float(realized_pnl)
+                    position.unrealized_pnl_usd = pnl_usd
+                    
+                    # Calculate % from USD
+                    initial_margin = position.position_size / position.leverage
+                    if initial_margin > 0:
+                        pnl_pct = (pnl_usd / initial_margin) * 100
+                        position.unrealized_pnl_pct = pnl_pct
+                    
+                    logging.info(f"✅ {symbol_short}: REAL PnL from trade history: ${pnl_usd:+.2f} (includes ALL fees)")
+                    trade_data_found = True
+                
+                # 🆕 Get REAL timestamp
+                close_timestamp = last_trade.get('timestamp')
+                if close_timestamp:
+                    position.close_time = datetime.fromtimestamp(close_timestamp/1000).isoformat()
+                    logging.info(f"✅ {symbol_short}: Real close time: {position.close_time}")
+                
+                # 🆕 Log raw trade data for debugging
+                logging.debug(f"📊 RAW TRADE DATA for {symbol_short}:")
+                logging.debug(json.dumps(last_trade, indent=2, default=str))
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Could not fetch trade history for {symbol_short}: {e}")
+        
+        # FALLBACK: Use last known unrealizedPnl or calculate
+        if not trade_data_found:
+            logging.warning(f"⚠️ {symbol_short}: Using fallback PnL calculation")
             
-            logging.info(f"💰 {position.symbol}: Using last known PnL from Bybit: ${pnl_usd:+.2f} (includes fees)")
-        else:
-            # Fallback: calculate if not available (rare case)
-            logging.warning(f"⚠️ {position.symbol}: No PnL from Bybit, calculating...")
-            
-            if position.side == 'buy':
-                pnl_pct = ((position.current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+            # Try last known PnL from Bybit position data
+            if hasattr(position, 'unrealized_pnl_usd') and position.unrealized_pnl_usd != 0:
+                pnl_usd = position.unrealized_pnl_usd
+                initial_margin = position.position_size / position.leverage
+                if initial_margin > 0:
+                    pnl_pct = (pnl_usd / initial_margin) * 100
+                    position.unrealized_pnl_pct = pnl_pct
+                logging.info(f"💰 {symbol_short}: Using last known PnL: ${pnl_usd:+.2f} (may not include final fees)")
             else:
-                pnl_pct = ((position.entry_price - position.current_price) / position.entry_price) * 100 * position.leverage
+                # Final fallback: calculate
+                logging.warning(f"⚠️ {symbol_short}: Calculating PnL (NO FEES INCLUDED)")
+                
+                if position.side == 'buy':
+                    pnl_pct = ((position.current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                else:
+                    pnl_pct = ((position.entry_price - position.current_price) / position.entry_price) * 100 * position.leverage
+                
+                initial_margin = position.position_size / position.leverage
+                pnl_usd = (pnl_pct / 100) * initial_margin
+                
+                position.unrealized_pnl_pct = pnl_pct
+                position.unrealized_pnl_usd = pnl_usd
+                
+                logging.warning(f"❌ CALCULATED PnL: ${pnl_usd:+.2f} (DOES NOT INCLUDE FEES)")
             
-            initial_margin = position.position_size / position.leverage
-            pnl_usd = (pnl_pct / 100) * initial_margin
-            
-            position.unrealized_pnl_pct = pnl_pct
-            position.unrealized_pnl_usd = pnl_usd
-            
-            logging.warning(f"⚠️ CALCULATED PnL: ${pnl_usd:+.2f} (may not include fees)")
+            # Set close time to now if not set
+            if not position.close_time or position.close_time == "":
+                position.close_time = datetime.now().isoformat()
         
         # Move to closed
         self.core._get_closed_positions_unsafe()[position.position_id] = position

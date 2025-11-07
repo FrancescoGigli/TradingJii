@@ -20,7 +20,6 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 from termcolor import colored
-from core.confidence_calibrator import global_calibrator
 
 class RLSignalFilter(nn.Module):
     """
@@ -169,15 +168,9 @@ class RLTrainingManager:
             # Get model prediction with error checking
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                raw_execution_prob = self.model(state_tensor).item()
+                execution_prob = self.model(state_tensor).item()
             
-            # CALIBRATE RL confidence (convert raw to realistic win rate)
-            execution_prob = global_calibrator.calibrate_rl_confidence(raw_execution_prob)
-            
-            if global_calibrator.is_calibrated:
-                logging.debug(f"🤖 RL model prediction: {raw_execution_prob:.3f} → calibrated: {execution_prob:.3f}")
-            else:
-                logging.debug(f"🤖 RL model prediction: {execution_prob:.3f}")
+            logging.debug(f"🤖 RL model prediction: {execution_prob:.3f}")
             
             # Analyze decision factors for detailed feedback
             decision_details = self._analyze_decision_factors(signal_data, market_context, portfolio_state, execution_prob)

@@ -131,6 +131,169 @@ def label_with_future_returns(df, lookforward_steps=3, buy_threshold=0.02, sell_
     return labels
 
 # ----------------------------------------------------------------------
+# SL-AWARE LABELING (PRODUCTION READY)
+# ----------------------------------------------------------------------
+def label_with_sl_awareness_v2(df, lookforward_steps=3, sl_percentage=0.05,
+                                percentile_buy=80, percentile_sell=80):
+    """
+    🎯 PRODUCTION: Stop Loss Aware Labeling con Feature Engineering
+    
+    Invece di eliminare sample con SL hit, li mantiene e aggiunge features
+    che insegnano al modello a riconoscere situazioni a rischio SL.
+    
+    FEATURES AVANZATE:
+    - NO survivorship bias (mantiene tutti i sample)
+    - Feature engineering (5 nuove features per ogni sample)
+    - Borderline asimmetrici (pump vs dump)
+    - Risoluzione ambiguità BUY/SELL
+    - Percentili configurabili
+    - Vectorizzato NumPy per performance
+    
+    Args:
+        df: DataFrame con OHLCV columns
+        lookforward_steps: Candele future per label
+        sl_percentage: Stop loss % (default 0.05 = 5%)
+        percentile_buy: Percentile per BUY (default 80 = top 20%)
+        percentile_sell: Percentile per SELL (default 80 = top 20%)
+    
+    Returns:
+        tuple: (labels, sl_features_dict)
+    """
+    labels = np.full(len(df), 2)  # Default NEUTRAL
+    
+    # Feature engineering (manteniamo tutti i sample!)
+    sl_features = {
+        'sl_hit_buy': np.zeros(len(df)),
+        'sl_hit_sell': np.zeros(len(df)),
+        'max_drawdown_pct': np.zeros(len(df)),
+        'max_drawup_pct': np.zeros(len(df)),
+        'volatility_path': np.zeros(len(df))
+    }
+    
+    buy_returns_data = []
+    sell_returns_data = []
+    
+    # Vectorized arrays
+    close_prices = df['close'].values
+    low_prices = df['low'].values
+    high_prices = df['high'].values
+    
+    # Statistics
+    sl_hit_count = {'buy': 0, 'sell': 0, 'both': 0}
+    borderline_count = {'buy': 0, 'sell': 0}
+    
+    for i in range(len(df) - lookforward_steps):
+        entry_price = close_prices[i]
+        
+        # Path slices
+        path_lows = low_prices[i:i+lookforward_steps]
+        path_highs = high_prices[i:i+lookforward_steps]
+        path_closes = close_prices[i:i+lookforward_steps]
+        
+        # BUY SCENARIO
+        buy_sl_price = entry_price * (1 - sl_percentage)
+        buy_sl_hit = np.any(path_lows <= buy_sl_price)
+        max_drawdown = np.min(path_lows)
+        max_drawdown_pct = (max_drawdown - entry_price) / entry_price
+        buy_borderline = (max_drawdown_pct < -config.SL_AWARENESS_BORDERLINE_BUY and 
+                         max_drawdown_pct > -sl_percentage)
+        
+        # SELL SCENARIO
+        sell_sl_price = entry_price * (1 + sl_percentage)
+        sell_sl_hit = np.any(path_highs >= sell_sl_price)
+        max_drawup = np.max(path_highs)
+        max_drawup_pct = (max_drawup - entry_price) / entry_price
+        sell_borderline = (max_drawup_pct > config.SL_AWARENESS_BORDERLINE_SELL and 
+                          max_drawup_pct < sl_percentage)
+        
+        # VOLATILITY
+        volatility = np.std(path_closes) / (np.mean(path_closes) + 1e-8)
+        
+        # Store features
+        sl_features['sl_hit_buy'][i] = 1.0 if buy_sl_hit else 0.0
+        sl_features['sl_hit_sell'][i] = 1.0 if sell_sl_hit else 0.0
+        sl_features['max_drawdown_pct'][i] = max_drawdown_pct
+        sl_features['max_drawup_pct'][i] = max_drawup_pct
+        sl_features['volatility_path'][i] = volatility
+        
+        # Statistics
+        if buy_sl_hit and sell_sl_hit:
+            sl_hit_count['both'] += 1
+        elif buy_sl_hit:
+            sl_hit_count['buy'] += 1
+        elif sell_sl_hit:
+            sl_hit_count['sell'] += 1
+        
+        if buy_borderline:
+            borderline_count['buy'] += 1
+        if sell_borderline:
+            borderline_count['sell'] += 1
+        
+        # Calculate returns
+        future_price = close_prices[i + lookforward_steps]
+        buy_return = (future_price - entry_price) / entry_price
+        sell_return = (entry_price - future_price) / entry_price
+        
+        # FIX: Add to BOTH lists, let percentile decide (no ambiguity resolution)
+        # This fixes the bug where abs_buy > abs_sell is almost always FALSE
+        if not buy_borderline:
+            buy_returns_data.append((i, buy_return, buy_sl_hit))
+        
+        if not sell_borderline:
+            sell_returns_data.append((i, sell_return, sell_sl_hit))
+    
+    # PERCENTILE LABELING - FIXED: Include anche sample con SL hit
+    # DEBUG: Log size dei dataset
+    _LOG.debug(f"buy_returns_data size: {len(buy_returns_data)}, sell_returns_data size: {len(sell_returns_data)}")
+    
+    if buy_returns_data:
+        # Usa TUTTI i returns (safe + risky) per percentile
+        all_returns = np.array([r for _, r, _ in buy_returns_data])
+        buy_threshold = np.percentile(all_returns, percentile_buy)
+        
+        _LOG.debug(f"BUY threshold (percentile {percentile_buy}): {buy_threshold:.6f}")
+        
+        # Label sia safe che risky, ma con threshold uguale
+        labeled_count = 0
+        for idx, return_val, sl_hit in buy_returns_data:
+            if return_val >= buy_threshold:
+                labels[idx] = 1  # BUY (anche se ha SL hit nel path)
+                labeled_count += 1
+        
+        _LOG.debug(f"BUY labeled: {labeled_count}/{len(buy_returns_data)}")
+    else:
+        _LOG.warning(f"⚠️ buy_returns_data is EMPTY! All samples filtered or went to SELL")
+    
+    if sell_returns_data:
+        # Usa TUTTI i returns (safe + risky) per percentile
+        all_returns = np.array([r for _, r, _ in sell_returns_data])
+        sell_threshold = np.percentile(all_returns, percentile_sell)
+        
+        _LOG.debug(f"SELL threshold (percentile {percentile_sell}): {sell_threshold:.6f}")
+        
+        # Label sia safe che risky
+        labeled_count = 0
+        for idx, return_val, sl_hit in sell_returns_data:
+            if return_val >= sell_threshold:
+                labels[idx] = 0  # SELL  
+                labeled_count += 1
+        
+        _LOG.debug(f"SELL labeled: {labeled_count}/{len(sell_returns_data)}")
+    
+    # Log statistics
+    buy_count = np.sum(labels == 1)
+    sell_count = np.sum(labels == 0)
+    neutral_count = np.sum(labels == 2)
+    total = len(labels)
+    
+    _LOG.info(f"🎯 SL-Aware Labeling:")
+    _LOG.info(f"   SL hits: BUY={sl_hit_count['buy']}, SELL={sl_hit_count['sell']}, BOTH={sl_hit_count['both']}")
+    _LOG.info(f"   Borderline: BUY={borderline_count['buy']}, SELL={borderline_count['sell']}")
+    _LOG.info(f"   Labels: BUY={buy_count}({buy_count/total*100:.1f}%), SELL={sell_count}({sell_count/total*100:.1f}%), NEUTRAL={neutral_count}({neutral_count/total*100:.1f}%)")
+    
+    return labels, sl_features
+
+# ----------------------------------------------------------------------
 # XGBOOST TRAINING
 # ----------------------------------------------------------------------
 
@@ -418,17 +581,27 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
                 
             successful_symbols += 1
             
-            # ======= UNIFIED LABELING: Only Future Returns with Dynamic Thresholds =======
-            # CRITICAL FIX: Use timeframe-specific thresholds for better class balance
-            buy_threshold, sell_threshold = config.get_thresholds_for_timeframe(timeframe)
-            labels = label_with_future_returns(
-                df_with_indicators,
-                lookforward_steps=config.FUTURE_RETURN_STEPS,
-                buy_threshold=buy_threshold,
-                sell_threshold=sell_threshold
-            )
-            
-            _LOG.debug(f"Using thresholds for {timeframe}: BUY={buy_threshold:.1%}, SELL={sell_threshold:.1%}")
+            # ======= UNIFIED LABELING: SL-Aware OR Standard =======
+            if config.SL_AWARENESS_ENABLED:
+                # NEW: Stop Loss Aware labeling
+                labels, sl_features = label_with_sl_awareness_v2(
+                    df_with_indicators,
+                    lookforward_steps=config.FUTURE_RETURN_STEPS,
+                    sl_percentage=config.SL_AWARENESS_PERCENTAGE,
+                    percentile_buy=config.SL_AWARENESS_PERCENTILE_BUY,
+                    percentile_sell=config.SL_AWARENESS_PERCENTILE_SELL
+                )
+                _LOG.debug(f"🎯 Using SL-Aware labeling for {timeframe} (SL={config.SL_AWARENESS_PERCENTAGE*100:.1f}%)")
+            else:
+                # LEGACY: Standard future returns labeling
+                buy_threshold, sell_threshold = config.get_thresholds_for_timeframe(timeframe)
+                labels = label_with_future_returns(
+                    df_with_indicators,
+                    lookforward_steps=config.FUTURE_RETURN_STEPS,
+                    buy_threshold=buy_threshold,
+                    sell_threshold=sell_threshold
+                )
+                _LOG.debug(f"Using standard thresholds for {timeframe}: BUY={buy_threshold:.1%}, SELL={sell_threshold:.1%}")
             
             # Calculate label distribution for display
             buy_count = np.sum(labels == 1)

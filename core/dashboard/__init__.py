@@ -30,6 +30,7 @@ from .adaptive_tab import create_adaptive_memory_table, populate_adaptive_memory
 # Renderers
 from .position_renderer import PositionCellRenderer, PositionTablePopulator
 from .closed_renderer import ClosedCellRenderer, ClosedTablePopulator
+from .ai_analysis_tab import AIAnalysisTabPopulator, create_ai_analysis_table
 
 __all__ = [
     # Core utilities
@@ -41,10 +42,12 @@ __all__ = [
     'TableFactory',
     'create_adaptive_memory_table',
     'populate_adaptive_memory_table',
+    'create_ai_analysis_table',
     
     # Renderers
     'PositionCellRenderer',
     'PositionTablePopulator',
     'ClosedCellRenderer',
     'ClosedTablePopulator',
+    'AIAnalysisTabPopulator',
 ]

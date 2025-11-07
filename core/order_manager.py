@@ -32,6 +32,40 @@ class OrderManager:
         # Track SL order IDs for verification
         self._sl_order_ids = {}  # {symbol: order_id}
         self._last_sl_updates = {}  # {symbol: timestamp} for debouncing
+        
+        # 🔧 FIX #4: Symbol blacklist management
+        import config
+        self._sl_retry_count = {}  # {symbol: retry_count}
+        self._sl_blacklist = set(config.SYMBOL_BLACKLIST)  # Load from config
+        self._blacklist_cooldown = {}  # {symbol: timestamp}
+        logging.info(f"🚫 Loaded {len(self._sl_blacklist)} symbols in blacklist")
+    
+    def _is_blacklisted(self, symbol: str) -> bool:
+        """
+        🔧 FIX #4: Check if symbol is blacklisted (with cooldown expiration)
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            bool: True if blacklisted
+        """
+        if symbol not in self._sl_blacklist:
+            return False
+        
+        # Check cooldown expiration
+        import config
+        cooldown_end = self._blacklist_cooldown.get(symbol, 0)
+        if time.time() > cooldown_end:
+            # Cooldown expired, remove from blacklist
+            self._sl_blacklist.remove(symbol)
+            self._sl_retry_count.pop(symbol, None)
+            logging.info(f"✅ {symbol}: Removed from blacklist (cooldown expired)")
+            return False
+        
+        remaining = int(cooldown_end - time.time())
+        logging.debug(f"🚫 {symbol}: Still in blacklist ({remaining}s remaining)")
+        return True
     
     def _normalize_price(self, price: float, symbol: str, exchange) -> float:
         """
@@ -199,10 +233,11 @@ class OrderManager:
             positions = await exchange.fetch_positions([symbol])
             position_size = 0
             position_side = None
+            # 🔧 FIX #3: DEFENSIVE GUARDS for Bybit API responses
             for pos in positions:
-                if pos['symbol'] == symbol and pos['contracts'] > 0:
-                    position_size = pos['contracts']
-                    position_side = pos['side']
+                if pos.get('symbol') == symbol and float(pos.get('contracts', 0) or 0) > 0:
+                    position_size = float(pos.get('contracts', 0) or 0)
+                    position_side = pos.get('side')
                     break
             
             if position_size == 0:
@@ -324,22 +359,40 @@ class OrderManager:
         """
         Imposta SL/TP su Bybit (endpoint: /v5/position/trading-stop)
         
-        CRITICAL FIX v2: Auto-detect position_idx from actual position if not provided
-        - position_idx=0 for One-Way Mode
-        - position_idx=1 for LONG in Hedge Mode
-        - position_idx=2 for SHORT in Hedge Mode
+        FIX #1: Enhanced with automatic TP calculation and R/R verification
+        - Calculates TP based on config.TP_ROE_TARGET if not provided
+        - Verifies minimum R/R ratio (config.TP_MIN_DISTANCE_FROM_SL)
+        - Validates TP covers all trading costs
+        
+        FIX #4: Blacklist management for problematic symbols
         """
         try:
+            import config
+            from core.cost_calculator import global_cost_calculator
+            from core.price_precision_handler import global_price_precision_handler
+            
+            # 🔧 FIX #4: Check blacklist BEFORE attempting
+            if self._is_blacklisted(symbol):
+                logging.warning(f"🚫 {symbol}: In blacklist, skipping SL")
+                return OrderExecutionResult(False, None, "symbol_blacklisted")
+            
             # Converte il simbolo nel formato Bybit (BTC/USDT:USDT → BTCUSDT)
             bybit_symbol = symbol.replace('/USDT:USDT', 'USDT').replace('/', '')
 
-            # CRITICAL FIX: Auto-detect position_idx from actual position
-            if position_idx is None:
-                # Fetch the actual position to get correct positionIdx
+            # Get position details for TP calculation
+            entry_price = None
+            position_side = None
+            
+            # CRITICAL FIX: Auto-detect position_idx and get entry price
+            if position_idx is None or entry_price is None:
                 try:
                     positions = await exchange.fetch_positions([symbol])
                     for pos in positions:
                         if pos.get('symbol') == symbol and float(pos.get('contracts', 0)) != 0:
+                            # Get entry price for TP calculation
+                            entry_price = float(pos.get('entryPrice', 0))
+                            position_side = pos.get('side')
+                            
                             # Get position_idx from actual position
                             pos_info = pos.get('info', {})
                             detected_idx = pos_info.get('positionIdx', 0)
@@ -359,6 +412,94 @@ class OrderManager:
                 if position_idx is None:
                     position_idx = 0
                     logging.debug(f"🔧 No position found, defaulting to position_idx=0 for {symbol}")
+            
+            # FIX #5: COST-AWARE TP Calculation 
+            if take_profit is None and getattr(config, 'TP_ENABLED', False) and entry_price:
+                # Determine position side if not provided
+                if side is None:
+                    side = position_side
+                
+                if side and stop_loss:
+                    # CRITICAL: Normalize side format (handle both 'long'/'short' and 'buy'/'sell')
+                    normalized_side = side.lower()
+                    is_long = normalized_side in ['long', 'buy']
+                    
+                    # 🔧 FIX #5: Calculate trading costs (TP exit via limit order)
+                    costs = global_cost_calculator.calculate_total_round_trip_cost(
+                        1000,  # Dummy notional value
+                        is_sl_exit=False,  # TP = limit order
+                        is_volatile=False  # Assume normal conditions
+                    )
+                    costs_roe = costs['total_cost_roe']
+                    
+                    # Calculate SL distance in ROE
+                    sl_distance_pct = abs(entry_price - stop_loss) / entry_price
+                    sl_roe = sl_distance_pct * config.LEVERAGE * 100
+                    
+                    # Calculate minimum TP ROE that covers: SL risk + costs + min profit
+                    min_rr = getattr(config, 'TP_MIN_DISTANCE_FROM_SL', 2.5)
+                    min_profit_roe = getattr(config, 'MIN_PROFIT_AFTER_COSTS', 8.0)
+                    
+                    # TP ROE = (SL ROE × R/R) + costs + min profit
+                    tp_roe = (sl_roe * min_rr) + costs_roe + min_profit_roe
+                    
+                    # Convert ROE back to price %
+                    tp_distance_pct = tp_roe / (config.LEVERAGE * 100)
+                    
+                    if is_long:
+                        take_profit = entry_price * (1 + tp_distance_pct)
+                    else:  # short/sell
+                        take_profit = entry_price * (1 - tp_distance_pct)
+                    
+                    # Round to exchange precision
+                    take_profit = round(take_profit, 6)
+                    
+                    # CRITICAL VALIDATION: Verify TP is in correct direction
+                    if is_long and take_profit <= entry_price:
+                        logging.error(f"❌ {symbol}: Invalid TP for LONG (${take_profit} <= ${entry_price}), disabling TP")
+                        take_profit = None
+                    elif not is_long and take_profit >= entry_price:
+                        logging.error(f"❌ {symbol}: Invalid TP for SHORT (${take_profit} >= ${entry_price}), disabling TP")
+                        take_profit = None
+                    else:
+                        net_profit_roe = tp_roe - sl_roe - costs_roe
+                        logging.info(colored(
+                            f"💰 {symbol}: COST-AWARE TP ${take_profit:.6f}\n"
+                            f"   TP ROE: +{tp_roe:.1f}% | SL ROE: -{sl_roe:.1f}% | Costs: -{costs_roe:.1f}%\n"
+                            f"   Net Profit: +{net_profit_roe:.1f}% ROE (after all costs)",
+                            "cyan"
+                        ))
+            
+            # FIX #1: Verify R/R ratio if both SL and TP are set
+            if stop_loss and take_profit and entry_price:
+                sl_distance_pct = abs(entry_price - stop_loss) / entry_price
+                tp_distance_pct = abs(take_profit - entry_price) / entry_price
+                
+                actual_rr = tp_distance_pct / sl_distance_pct if sl_distance_pct > 0 else 0
+                min_rr = getattr(config, 'TP_MIN_DISTANCE_FROM_SL', 2.5)
+                
+                if actual_rr < min_rr:
+                    logging.warning(
+                        f"⚠️ {symbol}: R/R ratio {actual_rr:.2f}:1 < minimum {min_rr}:1. "
+                        f"Adjusting TP to maintain proper risk/reward."
+                    )
+                    
+                    # Adjust TP to maintain minimum R/R
+                    required_tp_distance = sl_distance_pct * min_rr
+                    
+                    if side and side.lower() in ['long', 'buy']:
+                        take_profit = entry_price * (1 + required_tp_distance)
+                    else:
+                        take_profit = entry_price * (1 - required_tp_distance)
+                    
+                    # Round to exchange precision
+                    take_profit = round(take_profit, 2)
+                    
+                    # Recalculate actual R/R
+                    tp_distance_pct = abs(take_profit - entry_price) / entry_price
+                    actual_rr = tp_distance_pct / sl_distance_pct
+                    
+                    logging.info(f"✅ {symbol}: TP adjusted to ${take_profit:.6f} (R/R: {actual_rr:.2f}:1)")
 
             sl_text = f"${stop_loss:.6f}" if stop_loss else "None"
             tp_text = f"${take_profit:.6f}" if take_profit else "None"
@@ -396,7 +537,9 @@ class OrderManager:
             # FIXED: Proper handling of Bybit API responses
             # retCode 0 = SUCCESS, retCode 34040 = already set correctly
             if ret_code == 0 or (isinstance(ret_code, str) and ret_code == "0"):
-                # SUCCESS: Stop loss was set successfully
+                # ✅ SUCCESS: Reset retry counter
+                self._sl_retry_count[symbol] = 0
+                
                 if "ok" in ret_msg.lower():
                     logging.info(colored(
                         f"✅ TRADING STOP SUCCESS: {bybit_symbol} | Bybit confirmed: {ret_msg}",
@@ -410,13 +553,28 @@ class OrderManager:
                 return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}", None)
             elif ret_code == 34040 and "not modified" in ret_msg.lower():
                 # ACCEPTABLE: Stop loss already exists and is correct
+                self._sl_retry_count[symbol] = 0  # Reset on success
                 logging.debug(colored(f"📝 {bybit_symbol}: Stop loss already set correctly ({ret_msg})", "cyan"))
                 return OrderExecutionResult(True, f"trading_stop_{bybit_symbol}_existing", None)
             else:
+                # 🔧 FIX #4: INCREMENT RETRY on error
+                retry = self._sl_retry_count.get(symbol, 0) + 1
+                self._sl_retry_count[symbol] = retry
+                
                 # ACTUAL ERROR: Only log as critical if it's a real error
                 if ret_code != 0:
                     error_msg = f"Stop loss setting failed - Bybit error {ret_code}: {ret_msg}"
-                    logging.warning(colored(f"⚠️ {error_msg}", "yellow"))
+                    logging.warning(colored(f"⚠️ {error_msg} (retry {retry}/{config.SL_MAX_RETRIES})", "yellow"))
+                    
+                    # Check if max retries reached
+                    if retry >= config.SL_MAX_RETRIES:
+                        self._sl_blacklist.add(symbol)
+                        self._blacklist_cooldown[symbol] = time.time() + config.SL_RETRY_COOLDOWN
+                        logging.error(colored(
+                            f"❌ {symbol}: Max retries reached, blacklisted for {config.SL_RETRY_COOLDOWN}s",
+                            "red", attrs=['bold']
+                        ))
+                    
                     return OrderExecutionResult(False, None, error_msg)
                 else:
                     # Fallback for edge cases

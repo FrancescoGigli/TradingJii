@@ -165,15 +165,20 @@ class RealTimePositionDisplay:
             total_im += initial_margin
 
             sl_price = bybit_sl_map.get(row["symbol"])
-            if sl_price:
+            if sl_price and sl_price > 0:
+                # Calculate SL as PRICE percentage (not ROE)
                 if side == "long":
-                    sl_pct = ((sl_price - row["entry_price"]) / row["entry_price"]) * row["leverage"]
-                    delta_usd = (sl_pct / 100.0) * initial_margin
+                    sl_price_pct = ((sl_price - row["entry_price"]) / row["entry_price"]) * 100.0
                 else:
-                    sl_pct = ((row["entry_price"] - sl_price) / row["entry_price"]) * row["leverage"]
-                    delta_usd = (sl_pct / 100.0) * initial_margin
-                sl_txt = f"{sl_pct:+.1f}% ({fmt_money(delta_usd)})"
-                sl_col = "yellow" if sl_pct < 0 else "green"
+                    sl_price_pct = ((sl_price - row["entry_price"]) / row["entry_price"]) * 100.0
+                
+                # Calculate ROE impact (price% × leverage)
+                sl_roe = sl_price_pct * row["leverage"]
+                delta_usd = (sl_roe / 100.0) * initial_margin
+                
+                # Display PRICE% with ROE in parentheses
+                sl_txt = f"{sl_price_pct:+.2f}% ({fmt_money(delta_usd)})"
+                sl_col = "red" if delta_usd < 0 else "green"
             else:
                 sl_txt = "NO SL"
                 sl_col = "yellow"

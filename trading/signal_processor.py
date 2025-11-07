@@ -53,6 +53,8 @@ class SignalProcessor:
         """
         Process ML prediction results into trading signals
         
+        FIX #3: Dynamic confidence threshold filtering
+        
         Args:
             prediction_results: Results from ML predictions
             all_symbol_data: Market data for all symbols
@@ -63,6 +65,10 @@ class SignalProcessor:
         all_signals = []
         
         logging.info(colored("🔧 Processing prediction results for execution...", "yellow"))
+        
+        # FIX #3: Calculate dynamic confidence threshold
+        confidence_threshold = self._calculate_dynamic_confidence_threshold()
+        logging.info(colored(f"📊 Dynamic confidence threshold: {confidence_threshold:.1%}", "cyan"))
         
         for symbol, (ensemble_value, final_signal, tf_predictions) in prediction_results.items():
             try:
@@ -94,6 +100,14 @@ class SignalProcessor:
                     'price': current_price,
                     'dataframes': all_symbol_data[symbol]  # Use pre-fetched data
                 }
+                
+                # FIX #3: Dynamic confidence filter (before RL)
+                if ensemble_value < confidence_threshold:
+                    logging.debug(
+                        f"⏭️ {symbol_short}: Confidence {ensemble_value:.1%} < "
+                        f"threshold {confidence_threshold:.1%}"
+                    )
+                    continue
                 
                 # Apply RL filter
                 if self.rl_agent_available:
@@ -286,6 +300,72 @@ class SignalProcessor:
     def is_position_manager_available(self):
         """Check if position manager is available"""
         return self.position_manager_available
+    
+    def _calculate_dynamic_confidence_threshold(self):
+        """
+        Calculate dynamic confidence threshold based on market and performance
+        
+        FIX #3: Adapts threshold based on:
+        - Market volatility (from market regime detector)
+        - Recent performance (from session statistics)
+        
+        Returns:
+            float: Dynamic confidence threshold (0.65-0.85)
+        """
+        import config
+        
+        # Start with base threshold
+        threshold = getattr(config, 'MIN_CONFIDENCE_BASE', 0.65)
+        
+        # Adjust for market volatility
+        try:
+            from core.market_regime_detector import global_market_filter
+            
+            if hasattr(global_market_filter, 'last_volatility'):
+                volatility = global_market_filter.last_volatility
+                
+                # High volatility = higher threshold required
+                if volatility > 0.05:  # > 5% daily volatility
+                    threshold = getattr(config, 'MIN_CONFIDENCE_VOLATILE', 0.75)
+                    logging.debug(
+                        f"📊 High volatility ({volatility:.1%}) - "
+                        f"threshold increased to {threshold:.1%}"
+                    )
+        except Exception as e:
+            logging.debug(f"Could not check market volatility: {e}")
+        
+        # Adjust based on recent performance
+        if getattr(config, 'CONFIDENCE_ADAPTIVE_ENABLED', False):
+            try:
+                if self.position_manager_available:
+                    # Get recent closed positions
+                    session_summary = self.position_manager.get_session_summary()
+                    
+                    # Get win rate from recent trades
+                    # Note: This is simplified - full implementation would track last N trades
+                    total_trades = session_summary.get('closed_positions', 0)
+                    
+                    if total_trades >= 10:
+                        # Calculate approximate recent win rate
+                        winning_trades = session_summary.get('winning_trades', 0)
+                        recent_wr = winning_trades / total_trades if total_trades > 0 else 0.5
+                        
+                        min_wr = getattr(config, 'CONFIDENCE_ADAPTIVE_MIN_WR', 0.55)
+                        
+                        if recent_wr < min_wr:
+                            # Performance is poor, increase threshold
+                            old_threshold = threshold
+                            increase = getattr(config, 'CONFIDENCE_ADAPTIVE_INCREASE', 0.10)
+                            threshold = min(0.85, threshold + increase)
+                            
+                            logging.warning(
+                                f"⚠️ Recent win rate ({recent_wr:.1%}) < target ({min_wr:.1%}) - "
+                                f"threshold increased: {old_threshold:.1%} → {threshold:.1%}"
+                            )
+            except Exception as e:
+                logging.debug(f"Could not check recent performance: {e}")
+        
+        return threshold
 
 
 # Global instance for easy access

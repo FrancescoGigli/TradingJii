@@ -29,12 +29,19 @@ except ModuleNotFoundError:  # libreria non installata
 # ----------------------------------------------------------------------
 # Modalità Demo/Test
 # ----------------------------------------------------------------------
-DEMO_MODE = False  # Default: False (LIVE mode), può essere modificato da ConfigManager
-DEMO_BALANCE = 1000.0  # Balance USDT fittizio per modalità demo
+DEMO_MODE = False  # LIVE MODE - Trading con soldi veri (CONFERMATO)
+DEMO_BALANCE = 1000.0  # Balance USDT fittizio per modalità demo (non usato in live)
 
 # ----------------------------------------------------------------------
-# Logging Mode
+# Logging Mode - NEW: Multi-level verbosity
 # ----------------------------------------------------------------------
+# Possible values: "MINIMAL", "NORMAL", "DETAILED"
+# MINIMAL: Only critical events (trades opened/closed, P&L summary)
+# NORMAL: Standard operations (signals, risk checks, trailing updates)
+# DETAILED: Full debug information (all operations, calculations, API calls)
+LOG_VERBOSITY = "NORMAL"  # Changed to NORMAL for detailed tables
+
+# Legacy QUIET_MODE (deprecated, use LOG_VERBOSITY instead)
 QUIET_MODE = True  # True = minimal logs (summary only), False = detailed logs
 
 # ----------------------------------------------------------------------
@@ -74,7 +81,7 @@ exchange_config = {
 }
 
 # Trading parameters
-LEVERAGE = 10
+LEVERAGE = 5  # REDUCED from 10x to 5x for better risk management
 
 # ==============================================================================
 # 🎯 POSITION SIZING SYSTEM SELECTOR
@@ -159,10 +166,13 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # ==============================================================================
 # 🛡️ STOP LOSS & TAKE PROFIT CONFIGURATION
 # ==============================================================================
+# MASTER STOP LOSS PARAMETER (used by both training and runtime)
+# This ensures ML learns with the same SL that will be used in live trading
+STOP_LOSS_PCT = 0.05                 # 5% stop loss = -25% ROE with 5x leverage (optimal balance)
+
 # Stop Loss settings (OPTIMIZED FOR BETTER RISK/REWARD)
-# NEW: -3% price = -30% ROE with 10x leverage (was -50% ROE)
 SL_USE_FIXED = True                  # Use fixed percentage SL (True) or ATR-based (False)
-SL_FIXED_PCT = 0.03                  # IMPROVED: 3% stop loss (was 5%) = -30% ROE max risk
+SL_FIXED_PCT = STOP_LOSS_PCT         # Uses master SL parameter
 SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss (if not using fixed)
 SL_PRICE_PCT_FALLBACK = 0.04         # 4% fallback if ATR not available (was 6%)
 SL_MIN_DISTANCE_PCT = 0.015          # Minimum 1.5% distance from entry (was 2%)
@@ -198,11 +208,18 @@ EARLY_EXIT_PERSISTENT_ENABLED = True
 EARLY_EXIT_PERSISTENT_TIME_MINUTES = 60  # Check within first hour
 EARLY_EXIT_PERSISTENT_DROP_ROE = -5      # Exit if stays -5% ROE persistently
 
-# Take Profit settings (NOT USED - positions managed by trailing only)
-TP_ENABLED = False                   # Take profit disabled (using trailing stop instead)
-TP_RISK_REWARD_RATIO = 2.0          # 2:1 reward:risk ratio
-TP_MAX_PROFIT_PCT = 0.15            # Maximum 15% profit target
-TP_MIN_PROFIT_PCT = 0.03            # Minimum 3% profit target
+# ==============================================================================
+# 🎯 TAKE PROFIT SYSTEM (FIX #1: CRITICAL!)
+# ==============================================================================
+TP_ENABLED = True                    # FIX: Take profit ENABLED for proper R/R ratio
+TP_ROE_TARGET = 0.60                 # FIX: +60% ROE = +6% price with 10x leverage
+TP_MIN_DISTANCE_FROM_SL = 2.5        # FIX: TP must be 2.5x farther than SL (minimum R/R)
+TP_PERCENTAGE_TO_CLOSE = 1.0         # Close 100% of position at TP
+
+# Take Profit settings (LEGACY - kept for compatibility)
+TP_RISK_REWARD_RATIO = 2.5           # Updated to match TP_MIN_DISTANCE_FROM_SL
+TP_MAX_PROFIT_PCT = 0.15             # Maximum 15% profit target
+TP_MIN_PROFIT_PCT = 0.03             # Minimum 3% profit target
 
 # ==============================================================================
 # 🎪 TRAILING STOP CONFIGURATION (OPTIMIZED FOR BETTER R/R)
@@ -213,9 +230,10 @@ TP_MIN_PROFIT_PCT = 0.03            # Minimum 3% profit target
 TRAILING_ENABLED = True              # Enable trailing stop system
 TRAILING_SILENT_MODE = True          # Minimal logging (only important events)
 
-# Activation trigger (IMPROVED: Let winners run more)
-# NEW: +1.5% price = +15% ROE activation (was +10% ROE)
-TRAILING_TRIGGER_PCT = 0.015         # IMPROVED: Activate at +1.5% price (+15% ROE with 10x leverage)
+# Activation trigger (FIX: Only for big winners beyond TP)
+# Activate trailing AFTER TP is hit, to let extreme winners run
+TRAILING_TRIGGER_PCT = 0.015         # Activate at +1.5% price (+15% ROE with 10x leverage)
+TRAILING_TRIGGER_ROE = 0.40          # FIX: Better - activate at +40% ROE (beyond TP)
 
 # Protection strategy (ROE-BASED SYSTEM)
 # CRITICAL: Distances are in ROE% (Return On Equity), NOT price%!
@@ -409,7 +427,7 @@ MIN_TRAIN_SIZE = 0.6
 # Backtest
 # ----------------------------------------------------------------------
 BACKTEST_INITIAL_BALANCE = 10000
-BACKTEST_LEVERAGE = 10
+BACKTEST_LEVERAGE = 5  # Aligned with live leverage
 BACKTEST_BASE_RISK_PCT = 3.0
 BACKTEST_SLIPPAGE_PCT = 0.05
 BACKTEST_TRAILING_ATR_MULTIPLIER = 1.5
@@ -475,3 +493,148 @@ CACHE_API_SAVINGS_TARGET = 80
 # 🧠 ADAPTIVE LEARNING SYSTEM - DISABLED
 # ==============================================================================
 ADAPTIVE_LEARNING_ENABLED = False  # Sistema disabilitato - rimosso codice complesso
+
+# ==============================================================================
+# 🎯 STOP LOSS AWARENESS TRAINING (NEW)
+# ==============================================================================
+# Training ML che considera se SL viene hit durante il path
+# Uses same SL as runtime for perfect alignment
+SL_AWARENESS_ENABLED = True               # Enable SL-aware labeling
+SL_AWARENESS_PERCENTAGE = STOP_LOSS_PCT   # Uses master SL parameter (2.5% aligned with runtime)
+SL_AWARENESS_PERCENTILE_BUY = 80          # Top 20% returns for BUY labels
+SL_AWARENESS_PERCENTILE_SELL = 80         # Top 20% returns for SELL labels
+SL_AWARENESS_BORDERLINE_BUY = 0.025       # Borderline threshold for BUY (-2.5%, 83% of SL)
+SL_AWARENESS_BORDERLINE_SELL = 0.025      # Borderline threshold for SELL (-2.5%, symmetric)
+
+# ==============================================================================
+# 🌍 MARKET REGIME FILTER (FIX #2: CRITICAL!)
+# ==============================================================================
+MARKET_FILTER_ENABLED = False        # DISABLED: Let bot work in all market conditions
+MARKET_FILTER_BENCHMARK = 'BTC/USDT:USDT'  # Benchmark symbol for market health
+MARKET_FILTER_EMA_PERIOD = 200       # EMA period for trend detection
+MARKET_FILTER_EMA_TIMEFRAME = '4h'   # Timeframe for EMA calculation
+MARKET_FILTER_MAX_VOLATILITY = 0.06  # Max 6% daily volatility allowed
+MARKET_FILTER_MIN_VOLUME_RATIO = 0.7  # Min 70% of average volume
+MARKET_FILTER_MAX_CORRELATION = 0.85  # Max 85% average correlation
+
+# ==============================================================================
+# 🎯 DYNAMIC CONFIDENCE THRESHOLDS (FIX #3: CRITICAL!)
+# ==============================================================================
+MIN_CONFIDENCE_BASE = 0.65           # FIX: Base threshold 65% (was 50%)
+MIN_CONFIDENCE_VOLATILE = 0.75       # In volatile markets: 75%
+MIN_CONFIDENCE_BEAR = 0.80           # In downtrend: 80%
+
+# Adaptive based on recent performance
+CONFIDENCE_ADAPTIVE_ENABLED = True
+CONFIDENCE_ADAPTIVE_WINDOW = 20      # Last 20 trades for performance check
+CONFIDENCE_ADAPTIVE_MIN_WR = 0.55    # Min 55% win rate required
+CONFIDENCE_ADAPTIVE_INCREASE = 0.10  # Increase threshold by 10% if underperforming
+
+# ==============================================================================
+# 🎯 KELLY CRITERION SIZING (FIX #4: CRITICAL!)
+# ==============================================================================
+ADAPTIVE_USE_KELLY = True            # FIX: Use Kelly Criterion formula
+ADAPTIVE_KELLY_FRACTION = 0.25       # Use 25% of Kelly (conservative)
+ADAPTIVE_MAX_POSITION_PCT = 0.25     # Max 25% of wallet per position
+ADAPTIVE_MIN_POSITION_PCT = 0.05     # Min 5% of wallet per position
+
+# Expected values for Kelly when no history
+KELLY_DEFAULT_WIN_RATE = 0.52        # Default 52% win rate
+KELLY_DEFAULT_AVG_WIN = 0.56         # Default +56% ROE
+KELLY_DEFAULT_AVG_LOSS = 0.33        # Default -33% ROE
+
+# ==============================================================================
+# 💰 COST ACCOUNTING (FIX #5: CRITICAL!)
+# ==============================================================================
+BYBIT_TAKER_FEE = 0.00075           # 0.075% taker fee
+BYBIT_MAKER_FEE = 0.00055           # 0.055% maker fee
+SLIPPAGE_NORMAL = 0.003             # 0.3% normal conditions
+SLIPPAGE_VOLATILE = 0.010           # 1.0% high volatility
+SLIPPAGE_SL_PANIC = 0.008           # 0.8% on SL triggers
+
+# Minimum profit after all costs
+MIN_PROFIT_AFTER_COSTS = 8.0        # Min +8% ROE profit target after costs
+
+# ==============================================================================
+# 🚫 PROBLEMATIC SYMBOLS MANAGEMENT (FIX #4)
+# ==============================================================================
+# Symbols known to cause issues (e.g., XAUT with SL infinite loops)
+SYMBOL_BLACKLIST = [
+    'XAUT/USDT:USDT',  # Gold-backed token - known SL issues
+    'PAXG/USDT:USDT',  # Gold-backed token - known SL issues
+]
+
+# Stop Loss retry management
+SL_MAX_RETRIES = 3                  # Max attempts before blacklisting
+SL_RETRY_COOLDOWN = 300             # Seconds in blacklist (5 minutes)
+
+# ==============================================================================
+# 🤖 TRADE ANALYZER - PREDICTION VS REALITY (NEW & IMPROVED!)
+# ==============================================================================
+# AI-powered analysis of ALL trades (wins AND losses) comparing prediction vs reality
+LLM_ANALYSIS_ENABLED = True          # Enable LLM-based trade analysis
+LLM_MODEL = 'gpt-4o-mini'           # OpenAI model (gpt-4o-mini is cost-effective)
+
+# What to analyze
+LLM_ANALYZE_ALL_TRADES = False      # Analyze EVERY trade (comprehensive learning)
+LLM_ANALYZE_WINS = True             # Analyze winning trades (learn what works)
+LLM_ANALYZE_LOSSES = True           # Analyze losing trades (learn what fails)
+LLM_MIN_TRADE_DURATION = 5          # Min 5 minutes duration to analyze
+
+# Price path tracking
+TRACK_PRICE_SNAPSHOTS = True        # Record price every 15min for path analysis
+PRICE_SNAPSHOT_INTERVAL = 900       # Seconds between snapshots (15min)
+
+# Cost estimate: ~$0.0006 per trade with gpt-4o-mini
+# Expected: ~100 trades/month = $0.06/month | 500 trades/month = $0.30/month
+
+# ==============================================================================
+# 🚨 VOLUME SURGE DETECTOR (NEW!)
+# ==============================================================================
+# Real-time pump detection via volume spikes
+VOLUME_SURGE_DETECTION = True        # Enable volume surge detection
+VOLUME_SURGE_MULTIPLIER = 3.0        # Alert when volume is 3x+ normal
+VOLUME_SURGE_COOLDOWN = 60           # Cooldown minutes between surges for same symbol
+VOLUME_SURGE_MIN_PRICE_CHANGE = 0.02  # Min 2% price movement required
+VOLUME_SURGE_PRIORITY = True         # Give priority to surge symbols in analysis
+
+# Pump catching optimization
+PUMP_CATCHING_MODE = True            # Enable aggressive pump catching
+if PUMP_CATCHING_MODE:
+    TOP_SYMBOLS_COUNT = 75           # Analyze more symbols for better coverage
+    MIN_CONFIDENCE_BASE = 0.70       # Slightly lower threshold for pumps (was 0.65)
+    VOLUME_SURGE_MIN_CONFIDENCE = 0.65  # Even lower for volume surge detection
+
+# ==============================================================================
+# 💰 PARTIAL EXIT MANAGER (NEW!)
+# ==============================================================================
+# Progressive profit taking on big winners
+PARTIAL_EXIT_ENABLED = True          # Enable partial exits
+PARTIAL_EXIT_MIN_SIZE = 10.0         # Minimum $10 USDT per partial exit
+
+# Multi-level exit strategy (with 5x leverage, ROE values adjusted)
+# With 5x leverage: +10% price = +50% ROE, +20% price = +100% ROE
+PARTIAL_EXIT_LEVELS = [
+    {'roe': 50, 'pct': 0.30},        # Exit 30% at +50% ROE (+10% price with 5x)
+    {'roe': 100, 'pct': 0.30},       # Exit 30% at +100% ROE (+20% price with 5x)
+    {'roe': 150, 'pct': 0.20},       # Exit 20% at +150% ROE (+30% price with 5x)
+    # Remaining 20% = runner with trailing stop
+]
+
+# Note: Total exits = 80%, leaving 20% runner for extreme pumps
+
+# ==============================================================================
+# 🌍 MARKET FILTER OPTIMIZED (RE-ENABLED!)
+# ==============================================================================
+# Protects against bear market extremes while allowing pump catching
+MARKET_FILTER_ENABLED = True         # RE-ENABLED with relaxed settings
+MARKET_FILTER_RELAXED = True         # Relaxed mode: only blocks extreme conditions
+MARKET_FILTER_ONLY_EXTREME = True    # Only block in extreme bear/high volatility
+
+# Relaxed thresholds (more lenient)
+MARKET_FILTER_MAX_VOLATILITY = 0.08  # 8% volatility allowed (was 6%)
+MARKET_FILTER_MIN_VOLUME_RATIO = 0.6  # 60% volume OK (was 70%)
+MARKET_FILTER_MAX_CORRELATION = 0.90  # 90% correlation OK (was 85%)
+
+# Smart bypass: Don't block if volume surge detected
+MARKET_FILTER_BYPASS_ON_SURGE = True  # Allow trading if volume surge active

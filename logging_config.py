@@ -4,9 +4,10 @@ from pathlib import Path
 from termcolor import colored
 
 
-class EmojiFormatter(logging.Formatter):
+class CleanFormatter(logging.Formatter):
     """
-    Formatter console con emoji + colori
+    Enhanced formatter with emoji, colors, and clean output
+    Adapts verbosity based on LOG_VERBOSITY setting
     """
     LEVEL_EMOJI = {
         "DEBUG": "🐛",
@@ -26,112 +27,196 @@ class EmojiFormatter(logging.Formatter):
     def format(self, record):
         emoji = self.LEVEL_EMOJI.get(record.levelname, "")
         color = self.LEVEL_COLOR.get(record.levelname, "white")
-        record.msg = f"{colored(emoji, color)} {record.getMessage()}"
+        
+        # Clean message without timestamp in MINIMAL mode
+        if hasattr(self, 'minimal') and self.minimal:
+            record.msg = f"{colored(emoji, color)} {record.getMessage()}"
+        else:
+            record.msg = f"{colored(emoji, color)} {record.getMessage()}"
+        
         record.args = ()
         return super().format(record)
 
 
+class VerbosityFilter(logging.Filter):
+    """
+    Smart filter based on LOG_VERBOSITY level
+    
+    MINIMAL: Only critical events (trades, P&L, errors)
+    NORMAL: Standard operations (signals, risk checks, trailing)
+    DETAILED: Everything (debug info, API calls, calculations)
+    """
+    
+    # Keywords for each verbosity level
+    CRITICAL_EVENTS = [
+        "TRADE #",
+        "Position opened",
+        "Position closed",
+        "CYCLE COMPLETED",
+        "EXECUTION SUMMARY",
+        "P&L:",
+        "Balance synced",
+        "FINAL DECISION",
+        "❌",  # Errors
+        "🚨",  # Critical issues
+    ]
+    
+    STANDARD_OPERATIONS = [
+        "Consensus:",
+        "ML Confidence:",
+        "RL Filter:",
+        "Risk Manager:",
+        "TRAILING ACTIVATED",
+        "Stop Loss",
+        "Dynamic confidence",
+        "Signals Ready:",
+        "ADAPTIVE SIZING",
+    ]
+    
+    VERBOSE_DEBUG = [
+        "Pre-flight",
+        "normalized:",
+        "DEBUG",
+        "Using PORTFOLIO",
+        "CALCULATED LEVELS",
+        "Distance from",
+        "Thread-safe",
+        "Cache",
+        "API call",
+        "Fetching",
+        "Processing prediction",
+    ]
+    
+    ALWAYS_BLOCK = [
+        "Added to execution queue",
+        "leverage not modified",
+        "Decision logged:",
+        "unrealizedPnl missing",
+        "Calculated PnL",
+        "Processing prediction results",
+        "🔍 DEBUG PRE-SET",
+        "🔍 DEBUG POST-SET",
+        "🔍 DEBUG VERIFY",
+        "🔧 AUTO-FIX: Corrected",
+        "Checking stop losses for correctness",
+    ]
+    
+    def __init__(self, verbosity_level="MINIMAL"):
+        super().__init__()
+        self.verbosity = verbosity_level.upper()
+    
+    def filter(self, record):
+        msg = record.getMessage()
+        
+        # Always block these annoying logs
+        for keyword in self.ALWAYS_BLOCK:
+            if keyword in msg:
+                return False
+        
+        # MINIMAL: Only critical events
+        if self.verbosity == "MINIMAL":
+            # Allow errors and warnings always
+            if record.levelno >= logging.WARNING:
+                return True
+            
+            # Allow critical trading events
+            for keyword in self.CRITICAL_EVENTS:
+                if keyword in msg:
+                    return True
+            
+            # Block everything else
+            return False
+        
+        # NORMAL: Standard + Critical
+        elif self.verbosity == "NORMAL":
+            # Block verbose debug
+            for keyword in self.VERBOSE_DEBUG:
+                if keyword in msg:
+                    return False
+            
+            return True  # Allow everything except verbose debug
+        
+        # DETAILED: Everything
+        else:
+            return True
 
 
 # ==============================
-# HANDLER
+# HANDLER SETUP
 # ==============================
-# Console
+import config
+
+# Determine verbosity level
+verbosity = config.LOG_VERBOSITY.upper() if hasattr(config, 'LOG_VERBOSITY') else "MINIMAL"
+
+# Console handler with clean formatter
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(EmojiFormatter("%(asctime)s %(levelname)s %(message)s"))
 
+if verbosity == "MINIMAL":
+    # Minimal mode: no timestamp, just clean messages
+    formatter = CleanFormatter("%(message)s")
+    formatter.minimal = True
+else:
+    # Normal/Detailed: include timestamp
+    formatter = CleanFormatter("%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
+console_handler.setFormatter(formatter)
 
-
+# Apply verbosity filter
+console_handler.addFilter(VerbosityFilter(verbosity))
 
 # ==============================
 # ROOT LOGGER
 # ==============================
 logging.basicConfig(
-    level=logging.INFO,  # base rimane INFO
+    level=logging.INFO,  # Base level INFO
     handlers=[console_handler],
-    format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    format="%(message)s"
 )
 
 # ==============================
-# QUIET MODE FILTER
+# MODULE-SPECIFIC SETTINGS
 # ==============================
-import config
-
-class QuietModeFilter(logging.Filter):
-    """Filter che blocca log dettagliati in QUIET_MODE"""
-    
-    # Parole chiave da bloccare in QUIET_MODE
-    BLOCK_KEYWORDS = [
-        "Added to execution queue",
-        "Using PORTFOLIO SIZING",
-        "CALCULATED LEVELS",
-        "Position size normalized",
-        "PLACING MARKET",
-        "normalized:",
-        "leverage/margin setup failed",
-        "leverage not modified",
-        "Distance from current",
-        "Profit protected from entry",
-        "Thread-safe position created",
-        "Decision logged:",
-        "Trailing updated:",
-        "[Trailing]",
-        "Sync: NEW position",
-        "Sync: CLOSED position",
-        "unrealizedPnl missing",
-        "Calculated PnL",
-        "Processing prediction results"
-    ]
-    
-    def filter(self, record):
-        if not config.QUIET_MODE:
-            return True  # Passa tutti i log se non in quiet mode
-        
-        # Blocca log dettagliati
-        for keyword in self.BLOCK_KEYWORDS:
-            if keyword.lower() in record.getMessage().lower():
-                return False
-        
-        return True  # Passa i log importanti
-
-# Applica filtro a console handler
-if config.QUIET_MODE:
-    console_handler.addFilter(QuietModeFilter())
-
-
-# ==============================
-# RIDUZIONE VERBOSITÀ SOLO MODULI "CHIACCHIERONI"
-# ==============================
+# These modules are extra noisy, silence them in MINIMAL/NORMAL mode
 noisy_modules = [
-    # Core systems (only show warnings/errors)
     "core.thread_safe_position_manager",
     "core.smart_api_manager",
     "core.order_manager",
     "trade_manager",
-    
-    # Adaptive Learning System (silent initialization)
     "core.trade_decision_logger",
-    
-    # Session & Display
     "core.session_statistics",
     "core.trading_dashboard",
     "core.symbol_exclusion_manager",
-    
-    # Signal processing
     "trading.signal_processor",
-    
-    # Orchestrator
-    "core.trading_orchestrator",
-    
-    # Trading execution (silent details)
     "core.risk_calculator",
     "core.integrated_trailing_monitor",
     "trading.market_analyzer",
-    
-    # Realtime display
-    "core.realtime_display"
+    "core.realtime_display",
+    "core.position_management.position_sync",
+    "core.position_management.position_trailing",
+    "core.position_management.position_safety",
 ]
 
-for module in noisy_modules:
-    logging.getLogger(module).setLevel(logging.WARNING)
+# Set appropriate level based on verbosity
+if verbosity == "MINIMAL":
+    # In MINIMAL mode, these modules should only show warnings/errors
+    for module in noisy_modules:
+        logging.getLogger(module).setLevel(logging.WARNING)
+elif verbosity == "NORMAL":
+    # In NORMAL mode, allow INFO but not DEBUG
+    for module in noisy_modules:
+        logging.getLogger(module).setLevel(logging.INFO)
+else:
+    # DETAILED: Show everything
+    for module in noisy_modules:
+        logging.getLogger(module).setLevel(logging.DEBUG)
+
+# ==============================
+# STARTUP MESSAGE
+# ==============================
+if verbosity == "MINIMAL":
+    logging.info(f"📊 Logging: MINIMAL mode (only trades & P&L)")
+elif verbosity == "NORMAL":
+    logging.info(f"📊 Logging: NORMAL mode (standard operations)")
+else:
+    logging.info(f"📊 Logging: DETAILED mode (full debug)")
