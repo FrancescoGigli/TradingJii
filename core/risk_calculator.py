@@ -31,11 +31,6 @@ from config import (
     MARGIN_MIN,
     MARGIN_MAX,
     MARGIN_BASE,
-    # Stop Loss
-    SL_ATR_MULTIPLIER,
-    SL_PRICE_PCT_FALLBACK,
-    SL_MIN_DISTANCE_PCT,
-    SL_MAX_DISTANCE_PCT,
     # Take Profit
     TP_RISK_REWARD_RATIO,
     TP_MAX_PROFIT_PCT,
@@ -113,12 +108,6 @@ class RiskCalculator:
         self.min_margin = MARGIN_MIN
         self.max_margin = MARGIN_MAX
         self.base_margin = MARGIN_BASE
-        
-        # Stop Loss from config
-        self.atr_multiplier = SL_ATR_MULTIPLIER
-        self.sl_fallback = SL_PRICE_PCT_FALLBACK
-        self.sl_min_distance = SL_MIN_DISTANCE_PCT
-        self.sl_max_distance = SL_MAX_DISTANCE_PCT
         
         # Take Profit from config
         self.risk_reward_ratio = TP_RISK_REWARD_RATIO
@@ -322,14 +311,14 @@ class RiskCalculator:
             float: Prezzo stop loss
         """
         try:
-            from config import SL_FIXED_PCT
+            from config import STOP_LOSS_PCT
             
             if side.lower() in ['buy', 'long']:
                 # LONG: Stop loss sotto entry (-5%)
-                stop_loss = entry_price * (1 - SL_FIXED_PCT)
+                stop_loss = entry_price * (1 - STOP_LOSS_PCT)
             else:  # SELL/SHORT
                 # SHORT: Stop loss sopra entry (+5%)
-                stop_loss = entry_price * (1 + SL_FIXED_PCT)
+                stop_loss = entry_price * (1 + STOP_LOSS_PCT)
             
             logging.debug(
                 f"🛡️ Fixed SL: Entry ${entry_price:.6f} | "

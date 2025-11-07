@@ -81,7 +81,7 @@ exchange_config = {
 }
 
 # Trading parameters
-LEVERAGE = 5  # REDUCED from 10x to 5x for better risk management
+LEVERAGE = 8  # REDUCED from 10x to 5x for better risk management
 
 # ==============================================================================
 # 🎯 POSITION SIZING SYSTEM SELECTOR
@@ -89,6 +89,37 @@ LEVERAGE = 5  # REDUCED from 10x to 5x for better risk management
 # Choose between FIXED (legacy) or ADAPTIVE (new) position sizing
 
 ADAPTIVE_SIZING_ENABLED = True  # True = Adaptive (learns from results), False = Fixed 3-tier
+
+# ==============================================================================
+# 🎯 LEGACY PARAMETERS (Used as fallbacks by risk_calculator)
+# ==============================================================================
+# These are kept for backward compatibility with risk_calculator.py
+# NOTE: These are NOT used in adaptive sizing (which is the primary system)
+
+# Position sizes (fallback values for risk calculator)
+POSITION_SIZE_CONSERVATIVE = 15.0
+POSITION_SIZE_MODERATE = 20.0  
+POSITION_SIZE_AGGRESSIVE = 25.0
+
+# Thresholds (fallback values)
+CONFIDENCE_HIGH_THRESHOLD = 0.75
+CONFIDENCE_LOW_THRESHOLD = 0.65
+VOLATILITY_SIZING_LOW = 0.015
+VOLATILITY_SIZING_HIGH = 0.035
+ADX_STRONG_TREND = 25.0
+
+# Margin ranges (fallback values)
+MARGIN_MIN = 15.0
+MARGIN_MAX = 150.0
+MARGIN_BASE = 40.0
+
+# Position sizing ratios (fallback values)
+POSITION_SIZING_TARGET_POSITIONS = 10
+POSITION_SIZING_RATIO_CONSERVATIVE = 0.6
+POSITION_SIZING_RATIO_MODERATE = 0.8
+POSITION_SIZING_RATIO_AGGRESSIVE = 1.0
+POSITION_SIZE_MIN_ABSOLUTE = 15.0
+POSITION_SIZE_MAX_ABSOLUTE = 50.0
 
 # ==============================================================================
 # 🎯 ADAPTIVE POSITION SIZING (NEW SYSTEM)
@@ -119,42 +150,6 @@ ADAPTIVE_LOSS_MULTIPLIER = 0.30      # Stop loss = 30% of margin (with 10x lever
 ADAPTIVE_MEMORY_FILE = "adaptive_sizing_memory.json"  # File for symbol memory
 
 # ==============================================================================
-# 🎯 FIXED POSITION SIZING (LEGACY SYSTEM)
-# ==============================================================================
-# Sistema semplice con sizing fisso basato su confidence
-# (Used only if ADAPTIVE_SIZING_ENABLED = False)
-
-# Fixed position sizes (margin per trade)
-POSITION_SIZE_CONSERVATIVE = 15.0   # Low confidence (<65%)
-POSITION_SIZE_MODERATE = 20.0       # Medium confidence (65-75%)
-POSITION_SIZE_AGGRESSIVE = 25.0     # High confidence (>75%)
-
-# Limiti assoluti
-POSITION_SIZE_MIN_ABSOLUTE = 15.0   # Minimo assoluto
-POSITION_SIZE_MAX_ABSOLUTE = 50.0   # Massimo assoluto
-
-# Position sizing target (for backwards compatibility)
-POSITION_SIZING_TARGET_POSITIONS = 10  # Target number of positions
-
-# Position sizing ratios (relative to aggressive tier)
-# Conservative = 60% of aggressive, Moderate = 80% of aggressive, Aggressive = 100%
-POSITION_SIZING_RATIO_CONSERVATIVE = 0.6   # 15/25 = 0.6
-POSITION_SIZING_RATIO_MODERATE = 0.8       # 20/25 = 0.8
-POSITION_SIZING_RATIO_AGGRESSIVE = 1.0     # 25/25 = 1.0
-
-# Thresholds per Position Sizing
-CONFIDENCE_HIGH_THRESHOLD = 0.75    # ≥75% confidence = aggressive
-CONFIDENCE_LOW_THRESHOLD = 0.65     # <65% confidence = conservative
-VOLATILITY_SIZING_LOW = 0.015       # <1.5% volatilità = aggressive
-VOLATILITY_SIZING_HIGH = 0.035      # >3.5% volatilità = conservative
-ADX_STRONG_TREND = 25.0             # ADX ≥25 = trend forte
-
-# Dynamic Margin Range (per calcoli interni RiskCalculator)
-MARGIN_MIN = 15.0                   # Margine minimo assoluto (coerente con POSITION_SIZE_MIN_ABSOLUTE)
-MARGIN_MAX = 150.0                  # Margine massimo assoluto (coerente con POSITION_SIZE_MAX_ABSOLUTE)
-MARGIN_BASE = 40.0                  # Margine base di partenza (valore medio realistico)
-
-# ==============================================================================
 # 📊 VOLATILITY THRESHOLDS
 # ==============================================================================
 # Soglie per classificare la volatilità del mercato
@@ -168,24 +163,22 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # ==============================================================================
 # MASTER STOP LOSS PARAMETER (used by both training and runtime)
 # This ensures ML learns with the same SL that will be used in live trading
-STOP_LOSS_PCT = 0.05                 # 5% stop loss = -25% ROE with 5x leverage (optimal balance)
-
-# Stop Loss settings (OPTIMIZED FOR BETTER RISK/REWARD)
-SL_USE_FIXED = True                  # Use fixed percentage SL (True) or ATR-based (False)
-SL_FIXED_PCT = STOP_LOSS_PCT         # Uses master SL parameter
-SL_ATR_MULTIPLIER = 1.5              # Multiplier for ATR-based stop loss (if not using fixed)
-SL_PRICE_PCT_FALLBACK = 0.04         # 4% fallback if ATR not available (was 6%)
-SL_MIN_DISTANCE_PCT = 0.015          # Minimum 1.5% distance from entry (was 2%)
-SL_MAX_DISTANCE_PCT = 0.08           # Maximum 8% distance from entry (was 10%)
+STOP_LOSS_PCT = 0.05                 # 5% stop loss = -40% ROE with 8x leverage
 
 # ==============================================================================
-# 🎯 ADAPTIVE STOP LOSS (CONFIDENCE-BASED)
+# Stop Loss: ALWAYS FIXED at 5%
 # ==============================================================================
-# Adjust SL based on confidence levels
-SL_ADAPTIVE_ENABLED = True           # Enable adaptive SL based on confidence
-SL_LOW_CONFIDENCE = 0.025            # 2.5% SL (-25% ROE) for low confidence (<70%)
-SL_MED_CONFIDENCE = 0.03             # 3.0% SL (-30% ROE) for medium confidence (70-80%)
-SL_HIGH_CONFIDENCE = 0.035           # 3.5% SL (-35% ROE) for high confidence (>80%)
+# Simple and predictable stop loss system:
+# - LONG positions: SL = entry_price × 0.95 (-5% from entry)
+# - SHORT positions: SL = entry_price × 1.05 (+5% from entry)
+# - With 8x leverage: -5% price = -40% ROE
+# 
+# Protection layers (in order):
+# 1. Early Exit: Exits before SL if rapid crash detected (-10%/-15% ROE)
+# 2. Fixed SL: Hard stop at -5% price / -40% ROE
+# 3. Trailing Stop: Locks profits when trade goes >+40% ROE
+#
+# NO adaptive/confidence-based SL - keeps system simple and predictable
 
 # ==============================================================================
 # 🚨 EARLY EXIT SYSTEM
@@ -209,15 +202,13 @@ EARLY_EXIT_PERSISTENT_TIME_MINUTES = 60  # Check within first hour
 EARLY_EXIT_PERSISTENT_DROP_ROE = -5      # Exit if stays -5% ROE persistently
 
 # ==============================================================================
-# 🎯 TAKE PROFIT SYSTEM (FIX #1: CRITICAL!)
+# 🎯 TAKE PROFIT SYSTEM
 # ==============================================================================
-TP_ENABLED = True                    # FIX: Take profit ENABLED for proper R/R ratio
-TP_ROE_TARGET = 0.60                 # FIX: +60% ROE = +6% price with 10x leverage
-TP_MIN_DISTANCE_FROM_SL = 2.5        # FIX: TP must be 2.5x farther than SL (minimum R/R)
+TP_ENABLED = True                    # Take profit enabled for proper R/R ratio
+TP_ROE_TARGET = 0.60                 # +60% ROE target
+TP_RISK_REWARD_RATIO = 2.5           # TP must be 2.5x farther than SL (R/R ratio)
+TP_MIN_DISTANCE_FROM_SL = TP_RISK_REWARD_RATIO  # Alias for compatibility
 TP_PERCENTAGE_TO_CLOSE = 1.0         # Close 100% of position at TP
-
-# Take Profit settings (LEGACY - kept for compatibility)
-TP_RISK_REWARD_RATIO = 2.5           # Updated to match TP_MIN_DISTANCE_FROM_SL
 TP_MAX_PROFIT_PCT = 0.15             # Maximum 15% profit target
 TP_MIN_PROFIT_PCT = 0.03             # Minimum 3% profit target
 
@@ -424,19 +415,6 @@ CV_N_SPLITS = 3
 MIN_TRAIN_SIZE = 0.6
 
 # ----------------------------------------------------------------------
-# Backtest
-# ----------------------------------------------------------------------
-BACKTEST_INITIAL_BALANCE = 10000
-BACKTEST_LEVERAGE = 5  # Aligned with live leverage
-BACKTEST_BASE_RISK_PCT = 3.0
-BACKTEST_SLIPPAGE_PCT = 0.05
-BACKTEST_TRAILING_ATR_MULTIPLIER = 1.5
-
-if BACKTEST_LEVERAGE != LEVERAGE:
-    logging.warning("⚠️ Backtest leverage (%s) diverso da live leverage (%s)", 
-                    BACKTEST_LEVERAGE, LEVERAGE)
-
-# ----------------------------------------------------------------------
 # Ensemble Weights
 # ----------------------------------------------------------------------
 TIMEFRAME_WEIGHTS = {
@@ -489,33 +467,18 @@ CACHE_AUTO_CLEANUP = True
 CACHE_EXPECTED_HIT_RATE = 70        
 CACHE_API_SAVINGS_TARGET = 80
 
-# ==============================================================================
-# 🧠 ADAPTIVE LEARNING SYSTEM - DISABLED
-# ==============================================================================
-ADAPTIVE_LEARNING_ENABLED = False  # Sistema disabilitato - rimosso codice complesso
+# ADAPTIVE LEARNING: Sistema rimosso (non più utilizzato)
 
 # ==============================================================================
-# 🎯 STOP LOSS AWARENESS TRAINING (NEW)
+# 🎯 STOP LOSS AWARENESS TRAINING
 # ==============================================================================
 # Training ML che considera se SL viene hit durante il path
-# Uses same SL as runtime for perfect alignment
 SL_AWARENESS_ENABLED = True               # Enable SL-aware labeling
-SL_AWARENESS_PERCENTAGE = STOP_LOSS_PCT   # Uses master SL parameter (2.5% aligned with runtime)
+SL_AWARENESS_PERCENTAGE = STOP_LOSS_PCT   # Uses master SL parameter
 SL_AWARENESS_PERCENTILE_BUY = 80          # Top 20% returns for BUY labels
 SL_AWARENESS_PERCENTILE_SELL = 80         # Top 20% returns for SELL labels
-SL_AWARENESS_BORDERLINE_BUY = 0.025       # Borderline threshold for BUY (-2.5%, 83% of SL)
-SL_AWARENESS_BORDERLINE_SELL = 0.025      # Borderline threshold for SELL (-2.5%, symmetric)
-
-# ==============================================================================
-# 🌍 MARKET REGIME FILTER (FIX #2: CRITICAL!)
-# ==============================================================================
-MARKET_FILTER_ENABLED = False        # DISABLED: Let bot work in all market conditions
-MARKET_FILTER_BENCHMARK = 'BTC/USDT:USDT'  # Benchmark symbol for market health
-MARKET_FILTER_EMA_PERIOD = 200       # EMA period for trend detection
-MARKET_FILTER_EMA_TIMEFRAME = '4h'   # Timeframe for EMA calculation
-MARKET_FILTER_MAX_VOLATILITY = 0.06  # Max 6% daily volatility allowed
-MARKET_FILTER_MIN_VOLUME_RATIO = 0.7  # Min 70% of average volume
-MARKET_FILTER_MAX_CORRELATION = 0.85  # Max 85% average correlation
+SL_AWARENESS_BORDERLINE_BUY = STOP_LOSS_PCT * 0.5   # 50% of SL (borderline threshold)
+SL_AWARENESS_BORDERLINE_SELL = STOP_LOSS_PCT * 0.5  # Symmetric borderline
 
 # ==============================================================================
 # 🎯 DYNAMIC CONFIDENCE THRESHOLDS (FIX #3: CRITICAL!)
@@ -604,37 +567,3 @@ if PUMP_CATCHING_MODE:
     TOP_SYMBOLS_COUNT = 75           # Analyze more symbols for better coverage
     MIN_CONFIDENCE_BASE = 0.70       # Slightly lower threshold for pumps (was 0.65)
     VOLUME_SURGE_MIN_CONFIDENCE = 0.65  # Even lower for volume surge detection
-
-# ==============================================================================
-# 💰 PARTIAL EXIT MANAGER (NEW!)
-# ==============================================================================
-# Progressive profit taking on big winners
-PARTIAL_EXIT_ENABLED = True          # Enable partial exits
-PARTIAL_EXIT_MIN_SIZE = 10.0         # Minimum $10 USDT per partial exit
-
-# Multi-level exit strategy (with 5x leverage, ROE values adjusted)
-# With 5x leverage: +10% price = +50% ROE, +20% price = +100% ROE
-PARTIAL_EXIT_LEVELS = [
-    {'roe': 50, 'pct': 0.30},        # Exit 30% at +50% ROE (+10% price with 5x)
-    {'roe': 100, 'pct': 0.30},       # Exit 30% at +100% ROE (+20% price with 5x)
-    {'roe': 150, 'pct': 0.20},       # Exit 20% at +150% ROE (+30% price with 5x)
-    # Remaining 20% = runner with trailing stop
-]
-
-# Note: Total exits = 80%, leaving 20% runner for extreme pumps
-
-# ==============================================================================
-# 🌍 MARKET FILTER OPTIMIZED (RE-ENABLED!)
-# ==============================================================================
-# Protects against bear market extremes while allowing pump catching
-MARKET_FILTER_ENABLED = True         # RE-ENABLED with relaxed settings
-MARKET_FILTER_RELAXED = True         # Relaxed mode: only blocks extreme conditions
-MARKET_FILTER_ONLY_EXTREME = True    # Only block in extreme bear/high volatility
-
-# Relaxed thresholds (more lenient)
-MARKET_FILTER_MAX_VOLATILITY = 0.08  # 8% volatility allowed (was 6%)
-MARKET_FILTER_MIN_VOLUME_RATIO = 0.6  # 60% volume OK (was 70%)
-MARKET_FILTER_MAX_CORRELATION = 0.90  # 90% correlation OK (was 85%)
-
-# Smart bypass: Don't block if volume surge detected
-MARKET_FILTER_BYPASS_ON_SURGE = True  # Allow trading if volume surge active

@@ -27,12 +27,13 @@ from core.thread_safe_position_manager import global_thread_safe_position_manage
 from core.price_precision_handler import global_price_precision_handler
 
 # Import Trade Analyzer for prediction vs reality tracking
+# NOTE: Import dynamically to avoid None issue with initialization order
+TRADE_ANALYZER_AVAILABLE = True
 try:
-    from core.trade_analyzer import global_trade_analyzer
-    TRADE_ANALYZER_AVAILABLE = True
+    from core.trade_analyzer import TradeSnapshot
 except ImportError:
     TRADE_ANALYZER_AVAILABLE = False
-    global_trade_analyzer = None
+    TradeSnapshot = None
     logging.debug("⚠️ Trade Analyzer not available in orchestrator")
 
 # CRITICAL FIX: Import new unified managers
@@ -362,8 +363,16 @@ class TradingOrchestrator:
                 logging.debug(f"⚠️ Failed to register opening in adaptive sizing: {adaptive_error}")
             
             # 🤖 NEW: SAVE TRADE SNAPSHOT for AI analysis (Prediction vs Reality)
-            if TRADE_ANALYZER_AVAILABLE and global_trade_analyzer:
+            if TRADE_ANALYZER_AVAILABLE:
+                logging.info(f"🤖 Attempting to save trade snapshot for {symbol}...")
                 try:
+                    from core.trade_analyzer import global_trade_analyzer
+                    if not global_trade_analyzer:
+                        logging.warning(f"⚠️ global_trade_analyzer is None - not initialized yet")
+                        raise ImportError("Trade analyzer not initialized")
+                    if not global_trade_analyzer.enabled:
+                        logging.warning(f"⚠️ global_trade_analyzer.enabled = False")
+                        raise ImportError("Trade analyzer disabled")
                     # Extract ensemble votes from signal_data
                     ensemble_votes = {}
                     tf_predictions = signal_data.get('tf_predictions', {})

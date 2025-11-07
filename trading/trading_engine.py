@@ -245,25 +245,6 @@ class TradingEngine:
                 enhanced_logger.display_table("⚠️ No symbols with complete data this cycle", "yellow")
                 return
 
-            # FIX #2: MARKET REGIME FILTER CHECK - DISABLED
-            # Filter completamente disabilitato per permettere trading in tutte le condizioni
-            # from core.market_regime_detector import global_market_filter
-            # 
-            # is_tradeable, reason = await global_market_filter.is_market_tradeable(
-            #     exchange,
-            #     all_symbol_data
-            # )
-            # 
-            # if not is_tradeable:
-            #     enhanced_logger.display_table(f"🚫 TRADING PAUSED: {reason}", "red", attrs=['bold'])
-            #     enhanced_logger.display_table("⏸️  Market conditions unfavorable - skipping this cycle", "yellow")
-            #     enhanced_logger.display_table(f"⏳ Next check in {config.TRADE_CYCLE_INTERVAL//60} minutes", "cyan")
-            #     log_separator("═", 100, "red")
-            #     return
-
-            # Market filter DISABLED - proceed with cycle
-            enhanced_logger.display_table("✅ Market filter DISABLED - proceeding with cycle", "green")
-
             # Phase 2: ML Predictions
             cycle_logger.log_phase(2, "ML PREDICTIONS & AI ANALYSIS", "magenta")
             prediction_results, ml_time = await self.market_analyzer.generate_ml_predictions(

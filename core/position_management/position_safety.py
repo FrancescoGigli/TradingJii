@@ -27,7 +27,7 @@ class PositionSafety:
         Returns:
             int: Number of SLs fixed
         """
-        from config import SL_FIXED_PCT
+        from config import STOP_LOSS_PCT
         from core.order_manager import global_order_manager
         import asyncio
         
@@ -113,9 +113,9 @@ class PositionSafety:
                         
                         # Calculate target SL
                         if long_position:
-                            target_sl = entry_price * (1 - SL_FIXED_PCT)
+                            target_sl = entry_price * (1 - STOP_LOSS_PCT)
                         else:
-                            target_sl = entry_price * (1 + SL_FIXED_PCT)
+                            target_sl = entry_price * (1 + STOP_LOSS_PCT)
                         
                         # DEBUG: Log full position info BEFORE
                         logging.warning(colored(
@@ -208,13 +208,13 @@ class PositionSafety:
                     
                     # Check if SL is correct (with tolerance)
                     if long_position:
-                        expected_sl = entry_price * (1 - SL_FIXED_PCT)
+                        expected_sl = entry_price * (1 - STOP_LOSS_PCT)
                         current_sl_pct = (current_sl - entry_price) / entry_price
-                        expected_sl_pct = -SL_FIXED_PCT
+                        expected_sl_pct = -STOP_LOSS_PCT
                     else:
-                        expected_sl = entry_price * (1 + SL_FIXED_PCT)
+                        expected_sl = entry_price * (1 + STOP_LOSS_PCT)
                         current_sl_pct = (current_sl - entry_price) / entry_price
-                        expected_sl_pct = +SL_FIXED_PCT
+                        expected_sl_pct = +STOP_LOSS_PCT
                     
                     sl_deviation = abs(current_sl_pct - expected_sl_pct)
                     

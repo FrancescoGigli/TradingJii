@@ -16,6 +16,15 @@ from termcolor import colored
 from .position_data import ThreadSafePosition
 from .position_core import PositionCore
 
+# Import Trade Analyzer for price tracking
+# NOTE: Import dynamically to avoid None issue with initialization order
+TRADE_ANALYZER_AVAILABLE = True
+try:
+    from core.trade_analyzer import TradeAnalyzer
+except ImportError:
+    TRADE_ANALYZER_AVAILABLE = False
+    logging.debug("⚠️ Trade Analyzer not available in sync")
+
 
 class PositionSync:
     """Handles Bybit synchronization operations"""
@@ -59,6 +68,29 @@ class PositionSync:
                     
                     self.core._get_open_positions_unsafe()[position.position_id] = position
                     newly_opened.append(position)
+                    
+                    # 🤖 NEW: Save trade snapshot for synced positions too!
+                    # This enables GPT analysis even for positions opened directly on Bybit
+                    if TRADE_ANALYZER_AVAILABLE:
+                        try:
+                            from core.trade_analyzer import global_trade_analyzer, TradeSnapshot
+                            if global_trade_analyzer and global_trade_analyzer.enabled:
+                                # Create snapshot with SYNCED origin
+                                snapshot = TradeSnapshot(
+                                    symbol=symbol,
+                                    timestamp=datetime.now().isoformat(),
+                                    prediction_signal="SYNCED",  # Mark as synced (unknown ML prediction)
+                                    ml_confidence=0.0,  # Unknown confidence
+                                    ensemble_votes={},  # No ensemble data
+                                    entry_price=data['entry_price'],
+                                    entry_features={},  # No ML features available
+                                    expected_target=0.10,  # Default target
+                                    expected_risk=0.025  # Default risk
+                                )
+                                global_trade_analyzer.save_trade_snapshot(position.position_id, snapshot)
+                                logging.info(f"📸 Trade snapshot saved for SYNCED position: {symbol.replace('/USDT:USDT', '')}")
+                        except Exception as e:
+                            logging.warning(f"⚠️ Failed to save trade snapshot for synced position: {e}")
                     
                     # Check if SL is missing
                     if data.get('real_stop_loss') is None:
@@ -223,7 +255,6 @@ class PositionSync:
         🆕 NEW: Fetches actual realized PnL, exit price, and timestamp from trade history
         This ensures 100% accuracy including all fees and funding
         """
-        position.status = "CLOSED_MANUAL"
         symbol_short = position.symbol.replace('/USDT:USDT', '')
         
         # 🆕 STEP 1: Try to fetch REAL trade data from Bybit
@@ -309,21 +340,27 @@ class PositionSync:
             if not position.close_time or position.close_time == "":
                 position.close_time = datetime.now().isoformat()
         
-        # Move to closed
-        self.core._get_closed_positions_unsafe()[position.position_id] = position
-        del self.core._get_open_positions_unsafe()[position.position_id]
+        # Use close_position to trigger analysis and proper cleanup
+        # Extract exit price and close reason
+        exit_price = position.current_price
+        close_reason = "SYNC_CLOSED"
         
-        # Update balance with PnL
-        self.core._session_balance += position.unrealized_pnl_usd
+        # Call close_position which will trigger trade analysis
+        self.core.close_position(
+            position_id=position.position_id,
+            exit_price=exit_price,
+            close_reason=close_reason
+        )
     
     async def _update_existing_position(self, exchange, symbol: str, data: Optional[Dict]):
-        """Update existing position with current price"""
+        """Update existing position with current price and track for AI analysis"""
         if not data:
             return
         
         try:
             ticker = await exchange.fetch_ticker(symbol)
             current_price = float(ticker['last'])
+            current_volume = float(ticker.get('quoteVolume', 0))
             
             for position in self.core._get_open_positions_unsafe().values():
                 if position.symbol == symbol and position.status == "OPEN":
@@ -349,6 +386,22 @@ class PositionSync:
                         position.real_stop_loss = real_sl
                         position.stop_loss = real_sl
                     
+                    # 🤖 NEW: Save price snapshot for AI analysis
+                    # This tracks how price moved during trade lifecycle
+                    if TRADE_ANALYZER_AVAILABLE:
+                        try:
+                            from core.trade_analyzer import global_trade_analyzer
+                            if global_trade_analyzer and global_trade_analyzer.enabled:
+                                global_trade_analyzer.add_price_snapshot(
+                                    position_id=position.position_id,
+                                    price=current_price,
+                                    volume=current_volume,
+                                    timestamp=datetime.now().isoformat()
+                                )
+                                logging.debug(f"📸 Price snapshot saved for {symbol.replace('/USDT:USDT', '')}: ${current_price:.6f}")
+                        except Exception as snapshot_err:
+                            logging.debug(f"⚠️ Failed to save price snapshot: {snapshot_err}")
+                    
                     break
                     
         except Exception as e:
@@ -357,7 +410,7 @@ class PositionSync:
     async def _emergency_fix_missing_sl(self, exchange, symbol: str, data: Dict):
         """Emergency fix for positions without stop loss"""
         try:
-            from config import SL_FIXED_PCT
+            from config import STOP_LOSS_PCT
             from core.price_precision_handler import global_price_precision_handler
             from core.order_manager import global_order_manager
             
@@ -372,9 +425,9 @@ class PositionSync:
             
             # Calculate correct SL
             if side == 'buy':
-                target_sl = entry_price * (1 - SL_FIXED_PCT)
+                target_sl = entry_price * (1 - STOP_LOSS_PCT)
             else:
-                target_sl = entry_price * (1 + SL_FIXED_PCT)
+                target_sl = entry_price * (1 + STOP_LOSS_PCT)
             
             # Normalize to tick size
             normalized_sl, success = await global_price_precision_handler.normalize_stop_loss_price(

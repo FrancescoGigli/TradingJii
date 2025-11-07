@@ -48,7 +48,7 @@ class TradeSnapshot:
 
 @dataclass
 class TradeAnalysis:
-    """Risultato analisi completa trade"""
+    """Risultato analisi completa trade con feedback quantitativo"""
     symbol: str
     timestamp: str
     outcome: str  # WIN or LOSS
@@ -58,7 +58,7 @@ class TradeAnalysis:
     # Predizione vs Realtà
     predicted_signal: str
     prediction_confidence: float
-    prediction_accuracy: str  # correct, overconfident, underconfident, wrong
+    prediction_accuracy: str  # correct_confident, overconfident, underconfident, completely_wrong
     
     # Analisi LLM
     analysis_category: str
@@ -68,6 +68,11 @@ class TradeAnalysis:
     recommendations: List[str]
     ml_model_feedback: Dict[str, any]
     confidence: float
+    
+    # 🆕 Quantitative feedback (for auto-tuning)
+    risk_level: float = 0.5  # 0.0-1.0 (how risky this trade was)
+    confidence_adjustment: float = 0.0  # -0.2 to +0.2 (suggested adjustment for future)
+    features_weight_adjustment: Dict[str, float] = None  # Feature -> weight change percentage
 
 
 class TradeAnalyzer:
@@ -325,13 +330,21 @@ class TradeAnalyzer:
                 "cyan", attrs=['bold']
             ))
             
-            # Build comprehensive prompt
+            # 🆕 Get market context (BTC trend, volatility, etc)
+            market_context = await self._get_market_context(snapshot_data['timestamp'])
+            
+            # 🆕 Get previous trades for this symbol
+            previous_trades = self._get_previous_trades(symbol, limit=3)
+            
+            # Build comprehensive prompt with enhanced context
             prompt = self._build_comprehensive_prompt(
                 snapshot_data,
                 outcome,
                 pnl_roe,
                 exit_price,
-                duration_minutes
+                duration_minutes,
+                market_context,
+                previous_trades
             )
             
             # Call OpenAI API
@@ -379,6 +392,9 @@ class TradeAnalyzer:
             
             # Save to database
             self._save_analysis(position_id, analysis)
+            
+            # 🆕 Save to JSON file
+            self._save_analysis_file(position_id, analysis, snapshot_data)
             
             return analysis
             
@@ -438,15 +454,76 @@ class TradeAnalyzer:
             logging.error(f"Failed to get trade snapshot: {e}")
             return None
     
+    async def _get_market_context(self, trade_timestamp: str) -> Dict:
+        """
+        Get market context at trade time (BTC trend, volatility, etc)
+        
+        Returns:
+            Dict with market context data
+        """
+        try:
+            # For now return placeholder - can be enhanced to fetch real BTC data
+            return {
+                'btc_trend': 'neutral',
+                'market_volatility': 'moderate',
+                'global_sentiment': 'neutral'
+            }
+        except Exception as e:
+            logging.debug(f"Failed to get market context: {e}")
+            return {}
+    
+    def _get_previous_trades(self, symbol: str, limit: int = 3) -> List[Dict]:
+        """
+        Get previous trades for the same symbol
+        
+        Args:
+            symbol: Symbol to query
+            limit: Max number of previous trades
+            
+        Returns:
+            List of previous trade analyses
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT outcome, pnl_roe, prediction_accuracy, analysis_category
+                FROM trade_analyses
+                WHERE symbol = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (symbol, limit))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            previous_trades = []
+            for row in rows:
+                previous_trades.append({
+                    'outcome': row[0],
+                    'pnl_roe': row[1],
+                    'accuracy': row[2],
+                    'category': row[3]
+                })
+            
+            return previous_trades
+            
+        except Exception as e:
+            logging.debug(f"Failed to get previous trades: {e}")
+            return []
+    
     def _build_comprehensive_prompt(
         self,
         snapshot: Dict,
         outcome: str,
         pnl_roe: float,
         exit_price: float,
-        duration_minutes: int
+        duration_minutes: int,
+        market_context: Dict,
+        previous_trades: List[Dict]
     ) -> str:
-        """Costruisce prompt completo per LLM"""
+        """Costruisce prompt completo per LLM con enhanced context"""
         
         symbol_short = snapshot['symbol'].replace('/USDT:USDT', '')
         entry_features = snapshot.get('entry_features', {})
@@ -458,6 +535,19 @@ class TradeAnalyzer:
         
         # Build price path visualization
         price_path_str = self._format_price_path(price_snapshots, entry_price, exit_price)
+        
+        # Build previous trades context
+        prev_trades_str = ""
+        if previous_trades:
+            prev_trades_str = "\n\nPREVIOUS TRADES (Same Symbol):\n"
+            for i, trade in enumerate(previous_trades, 1):
+                outcome_emoji = "✅" if trade['outcome'] == 'WIN' else "❌"
+                prev_trades_str += f"  {i}. {outcome_emoji} {trade['outcome']}: {trade['pnl_roe']:+.1f}% ROE | Accuracy: {trade.get('accuracy', 'N/A')}\n"
+        
+        # Build market context
+        market_ctx_str = ""
+        if market_context:
+            market_ctx_str = f"\n\nMARKET CONTEXT:\n  BTC Trend: {market_context.get('btc_trend', 'unknown')}\n  Volatility: {market_context.get('market_volatility', 'unknown')}\n  Sentiment: {market_context.get('global_sentiment', 'unknown')}"
         
         prompt = f"""
 Analyze this COMPLETE TRADE comparing PREDICTION vs REALITY:
@@ -639,6 +729,48 @@ Focus on LEARNING both from wins and losses. Be specific and actionable.
             
         except Exception as e:
             logging.error(f"Failed to save analysis: {e}")
+    
+    def _save_analysis_file(self, position_id: str, analysis: TradeAnalysis, snapshot: Dict):
+        """Save analysis to JSON file for easy access"""
+        try:
+            # Create directory if doesn't exist
+            os.makedirs("trade_analysis", exist_ok=True)
+            
+            # Build complete data
+            analysis_data = {
+                'position_id': position_id,
+                'symbol': analysis.symbol,
+                'timestamp': analysis.timestamp,
+                'outcome': analysis.outcome,
+                'pnl_roe': analysis.pnl_roe,
+                'duration_minutes': analysis.duration_minutes,
+                'prediction': {
+                    'signal': analysis.predicted_signal,
+                    'confidence': analysis.prediction_confidence,
+                    'ensemble_votes': snapshot.get('ensemble_votes', {}),
+                    'entry_features': snapshot.get('entry_features', {})
+                },
+                'analysis': {
+                    'accuracy': analysis.prediction_accuracy,
+                    'category': analysis.analysis_category,
+                    'summary': analysis.explanation,
+                    'what_went_right': analysis.what_went_right,
+                    'what_went_wrong': analysis.what_went_wrong,
+                    'recommendations': analysis.recommendations,
+                    'ml_feedback': analysis.ml_model_feedback,
+                    'confidence': analysis.confidence
+                }
+            }
+            
+            # Save to file
+            filepath = f"trade_analysis/{position_id}_analysis.json"
+            with open(filepath, 'w') as f:
+                json.dump(analysis_data, f, indent=2)
+            
+            logging.info(f"📄 Analysis file saved: {filepath}")
+            
+        except Exception as e:
+            logging.error(f"Failed to save analysis file: {e}")
     
     def get_learning_insights(self, lookback_days: int = 30) -> Dict:
         """

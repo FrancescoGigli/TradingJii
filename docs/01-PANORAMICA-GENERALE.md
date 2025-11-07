@@ -1,14 +1,19 @@
-# 📖 01 - Panoramica Generale
+# 📖 01 - Panoramica Generale del Sistema
 
-## 🎯 Cos'è questo Trading Bot?
+> **Data aggiornamento**: Gennaio 2025  
+> **Versione sistema**: v3.0 - Adaptive + AI Analysis
 
-Questo è un **bot di trading automatico per criptovalute** che opera su **Bybit Perpetual Futures** utilizzando intelligenza artificiale e machine learning per:
+---
 
-1. ✅ **Analizzare il mercato** in tempo reale (top 50 crypto per volume)
-2. ✅ **Predire movimenti di prezzo** con XGBoost (ensemble multi-timeframe)
-3. ✅ **Eseguire trade automatici** con leva 10x
-4. ✅ **Gestire rischio dinamicamente** con adaptive position sizing
-5. ✅ **Proteggere i profitti** con trailing stops intelligenti
+## 🎯 Cos'è Questo Trading Bot?
+
+Sistema di **trading algoritmico automatico** per cryptocurrency futures su **Bybit**, che combina:
+
+1. ✅ **Machine Learning** (XGBoost ensemble multi-timeframe)
+2. ✅ **Adaptive Position Sizing** (Kelly Criterion con learning)
+3. ✅ **AI-Powered Analysis** (GPT-4o-mini per post-trade analysis)
+4. ✅ **Risk Management Avanzato** (Stop Loss adattivi, early exit, partial exits)
+5. ✅ **Real-time Dashboard** (PyQt6 GUI con statistiche live)
 
 ---
 
@@ -16,197 +21,320 @@ Questo è un **bot di trading automatico per criptovalute** che opera su **Bybit
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    TRADING BOT SYSTEM                        │
+│                  TRADING BOT SYSTEM v3.0                     │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │   Bybit API  │  │  Market Data │  │  ML Models   │     │
-│  │  (Exchange)  │◄─┤  Analyzer    │◄─┤  (XGBoost)   │     │
+│  │  Bybit API   │  │  Market Data │  │  ML Models   │     │
+│  │  (5x Leva)   │◄─┤  Top 50      │◄─┤  XGBoost     │     │
 │  └──────┬───────┘  └──────────────┘  └──────────────┘     │
 │         │                                                    │
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │         TRADING ENGINE (Orchestrator)                 │  │
+│  │         TRADING ENGINE (Main Orchestrator)            │  │
 │  │  • Data Collection    • ML Predictions                │  │
 │  │  • Signal Processing  • Trade Execution               │  │
 │  │  • Position Mgmt      • Risk Management               │  │
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          │                                   │
-│         ┌────────────────┼────────────────┐                │
-│         ▼                ▼                ▼                 │
-│  ┌───────────┐  ┌───────────────┐  ┌──────────┐          │
-│  │ Position  │  │  Adaptive      │  │ Trailing │          │
-│  │ Manager   │  │  Sizing        │  │ Stops    │          │
-│  │(Thread-   │  │  (Learning)    │  │ (Dynamic)│          │
-│  │ Safe)     │  └───────────────┘  └──────────┘          │
-│  └───────────┘                                             │
-│         │                                                   │
-│         ▼                                                   │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │         PyQt6 Dashboard (Real-time GUI)              │ │
-│  └──────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
+│         ┌────────────────┼────────────────────┐            │
+│         ▼                ▼                    ▼             │
+│  ┌─────────────┐  ┌─────────────────┐  ┌──────────────┐  │
+│  │  Adaptive   │  │  Trade Analyzer  │  │  Thread-Safe │  │
+│  │  Sizing     │  │  (GPT-4o-mini)   │  │  Position    │  │
+│  │  (Kelly)    │  │  AI Learning     │  │  Manager     │  │
+│  └─────────────┘  └─────────────────┘  └──────────────┘  │
+│         │                                        │          │
+│         └────────────────────┬───────────────────┘          │
+│                              ▼                               │
+│                    ┌──────────────────┐                     │
+│                    │  PyQt6 Dashboard │                     │
+│                    │  Real-time GUI   │                     │
+│                    └──────────────────┘                     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔄 Ciclo di Funzionamento
+## 💰 Parametri Operativi Principali
 
-### **Loop Principale (15 minuti)**
+### **Trading Mode**
+- **Leva**: 5x (ridotta da 10x per migliore risk/reward)
+- **Margine Isolato**: Ogni posizione indipendente
+- **Max Posizioni**: 5 simultanee (adaptive wallet blocks)
+- **Ciclo Trading**: 15 minuti
+
+### **Position Sizing**
+- **Sistema**: Adaptive con Kelly Criterion
+- **Wallet Blocks**: 5 (20% wallet per block)
+- **Base Size**: 50% del block (primo ciclo prudente)
+- **Premi/Blocchi**: +size per winners, -3 cicli per losers
+
+### **Risk Management**
+- **Stop Loss**: -5% prezzo fisso = -25% ROE
+- **Take Profit**: DISABLED (partial exits preferiti)
+- **Partial Exits**: 30% a +50% ROE, 30% a +100% ROE, 20% a +150% ROE
+- **Early Exit**: -10% ROE entro 5min, -15% ROE entro 15min
+
+---
+
+## 🔄 Ciclo Operativo (Loop 15 Minuti)
 
 ```
-START
+INIZIO CICLO
   │
-  ├─► FASE 1: Data Collection (45s)
-  │   • Fetch candele da Bybit (15m, 30m, 1h)
-  │   • Calcola indicatori tecnici
-  │   • Cache DB per efficienza
+  ├─► 1. DATA COLLECTION (60s)
+  │   • Fetch OHLCV da Bybit (15m, 30m, 1h)
+  │   • Calcola 66 temporal features
+  │   • Cache SQLite (70-90% hit rate)
   │
-  ├─► FASE 2: ML Predictions (3-4min)
-  │   • Crea 66 temporal features
-  │   • Predice con XGBoost (per timeframe)
+  ├─► 2. ML PREDICTIONS (3-4min)
+  │   • XGBoost per ogni timeframe
   │   • Ensemble voting pesato
-  │   • Calibra confidence
+  │   • Confidence calibration
   │
-  ├─► FASE 3: Signal Processing (10s)
-  │   • Filtra con RL agent
-  │   • Rank per confidence
-  │   • Valida condizioni portfolio
+  ├─► 3. SIGNAL PROCESSING (10s)
+  │   • Filtra segnali > 65% confidence
+  │   • Rank per confidence × volume
+  │   • Adaptive sizing calculation
   │
-  ├─► FASE 4: Trade Execution (30s)
-  │   • Calcola position sizing (adaptive)
-  │   • Esegue market orders
-  │   • Applica Stop Loss (-5%)
-  │   • Registra posizioni
+  ├─► 4. TRADE EXECUTION (30s)
+  │   • Piazza market orders
+  │   • Applica Stop Loss -5%
+  │   • Registra in tracker + snapshot AI
   │
-  ├─► FASE 5: Position Management (ongoing)
-  │   • Sync con Bybit
-  │   • Update trailing stops (ogni 60s)
-  │   • Monitor PnL
-  │   • Safety checks
+  ├─► 5. POSITION MONITORING (continuo)
+  │   • Balance sync (ogni 60s)
+  │   • Dashboard update (ogni 30s)
+  │   • Partial exit checks (quando ROE targets)
   │
-  └─► WAIT 15 MIN → REPEAT
+  └─► WAIT 15 MIN → RICOMINCIA
 ```
 
 ---
 
-## 🤖 Tecnologie Utilizzate
+## 🤖 Tecnologie Core
 
-### **Core Stack:**
-- **Python 3.11+** - Linguaggio principale
-- **asyncio + qasync** - Programmazione asincrona + Qt integration
-- **PyQt6** - Dashboard grafica real-time
-- **ccxt** - Libreria exchange (Bybit API)
+### **Python Stack**
+- **Python 3.11+** - Linguaggio base
+- **asyncio + qasync** - Async programming + PyQt6 integration
+- **PyQt6** - Dashboard GUI
+- **ccxt** - Bybit API wrapper
 
-### **Machine Learning:**
-- **XGBoost** - Gradient boosting per predizioni
+### **Machine Learning**
+- **XGBoost** - Gradient boosting classifier
 - **scikit-learn** - Preprocessing (StandardScaler)
 - **pandas** - Data manipulation
-- **ta (technical analysis)** - Indicatori tecnici
+- **ta** - Technical indicators (50+ indicators)
 
-### **Data & Persistence:**
-- **SQLite** - Cache dati di mercato
-- **JSON** - Persistenza posizioni, memory adaptive
-- **joblib** - Serializzazione modelli ML
+### **AI Analysis**
+- **OpenAI GPT-4o-mini** - Post-trade analysis (~$0.0006/trade)
+- **LangChain** (opzionale) - LLM orchestration
 
-### **Utility:**
-- **termcolor** - Output colorato
-- **python-dotenv** - Gestione credenziali
+### **Data Storage**
+- **SQLite** - Market data cache + trade analysis
+- **JSON** - Positions persistence + adaptive memory
+- **joblib** - ML models serialization
 
 ---
 
-## 📊 Caratteristiche Principali
+## 🎯 Feature Principali del Sistema
 
-### **1. Multi-Timeframe Analysis**
-- Analizza **3 timeframes** simultaneamente (15m, 30m, 1h)
-- **Ensemble voting** pesato per decisione finale
-- Coherence check tra timeframes
+### **1. Adaptive Position Sizing 🎯**
+- Sistema che **impara dalle performance reali**
+- **Kelly Criterion** per sizing ottimale (quando 10+ trades)
+- **Premia winners**: aumenta size proporzionalmente al gain
+- **Blocca losers**: -3 cicli penalty dopo loss
+- **Fresh Start Mode**: reset completo stats se necessario
 
-### **2. Adaptive Position Sizing** 🎯
-- Sistema di **apprendimento automatico**
-- Premia simboli vincenti (aumenta size)
-- Blocca simboli perdenti (3 cicli penalty)
-- Si adatta al crescita del wallet
+```python
+ADAPTIVE_SIZING_ENABLED = True
+ADAPTIVE_WALLET_BLOCKS = 5
+ADAPTIVE_KELLY_FRACTION = 0.25  # 25% Kelly conservativo
+```
 
-### **3. Risk Management Avanzato**
-- Stop Loss fisso **-5%** (= -50% ROE con 10x leva)
-- Stop Loss **adattivo** basato su confidence
-- **Trailing stops** dinamici (+15% ROE activation)
-- **Early exit** per posizioni deboli
+### **2. AI-Powered Trade Analysis 🤖**
+- **OpenAI GPT-4o-mini** analizza OGNI trade chiuso
+- Confronta **predizione ML vs realtà**
+- Traccia **price path** ogni 15 minuti
+- Identifica **pattern perdenti** per auto-tuning
+- Fornisce **feedback actionable** per miglioramenti
 
-### **4. Thread-Safe Architecture**
-- Gestione posizioni **thread-safe** con lock
-- **4 task paralleli** (asyncio):
+```python
+LLM_ANALYSIS_ENABLED = True
+LLM_MODEL = 'gpt-4o-mini'  # Cost-effective
+LLM_ANALYZE_WINS = True
+LLM_ANALYZE_LOSSES = True
+```
+
+### **3. Multi-Timeframe ML Ensemble 📊**
+- Analizza **3 timeframes** (15m, 30m, 1h)
+- **66 temporal features** per prediction
+- **Ensemble voting** pesato con coherence check
+- **XGBoost** models per timeframe
+- Confidence calibration dinamica
+
+### **4. Risk Management Avanzato 🛡️**
+- **Stop Loss Fisso**: -5% prezzo = -25% ROE con 5x leva
+- **Adaptive SL**: Varia con confidence (2.5%-3.5%)
+- **Early Exit System**:
+  - Immediate: -10% ROE in 5 minuti → EXIT
+  - Fast: -15% ROE in 15 minuti → EXIT
+  - Persistent: -5% ROE in 60 minuti → EXIT
+- **Partial Exits**:
+  - 30% posizione a +50% ROE
+  - 30% posizione a +100% ROE
+  - 20% posizione a +150% ROE
+  - 20% runner con trailing stop
+
+### **5. Thread-Safe Architecture 🔒**
+- **Position Manager** thread-safe con lock
+- **4 task asyncio paralleli**:
   - Trading loop (15 min)
-  - Trailing monitor (60s)  
-  - Dashboard update (30s)
   - Balance sync (60s)
+  - Dashboard update (30s)
+  - Partial exit monitor (30s)
+- **SmartAPIManager** con cache (70-90% hit rate)
 
-### **5. Real-time Dashboard**
-- GUI **PyQt6** responsive
-- 4 tab: Active, Closed, Stats, Adaptive Memory
-- Aggiornamento automatico ogni 30s
-
----
-
-## 💰 Modalità Operative
-
-### **DEMO MODE** 🧪
-```python
-DEMO_MODE = True
-DEMO_BALANCE = 1000.0  # USDT virtuali
-```
-- **Paper trading** (no real money)
-- Balance virtuale $1000
-- Perfetto per **testing e learning**
-- Nessuna connessione API richiesta
-
-### **LIVE MODE** 💵
-```python
-DEMO_MODE = False
-# Richiede API keys Bybit in .env
-```
-- **Trading reale** su Bybit
-- Usa balance effettivo
-- Rischio capitale reale
-- ⚠️ **Usa con cautela!**
+### **6. Real-time PyQt6 Dashboard 📺**
+- **4 tabs**: Active Positions, Closed Trades, Statistics, Adaptive Memory
+- **Auto-update**: ogni 30 secondi
+- **Color-coded**:
+  - Verde: posizioni profittevoli
+  - Rosso: posizioni in loss
+  - Giallo: breakeven
+- **Metriche real-time**:
+  - P&L totale sessione
+  - Win rate
+  - Avg win/loss
+  - Margin utilizzato
 
 ---
 
 ## 📈 Performance Tipiche
 
-### **Timing Ciclo (15 min):**
+### **Timing Operativo**
 ```
-Data Collection:     45-50s
+Data Collection:     60s
 ML Predictions:      3-4 min
 Signal Processing:   10s
-Trade Execution:     20-30s
-Position Management: 10s
+Trade Execution:     30s
+Position Sync:       10s
 ---------------------------------
-TOTALE:             ~5-6 min
+TOTALE ATTIVO:      ~5-6 min
 IDLE WAIT:          ~9-10 min
 ```
 
-### **API Efficiency:**
+### **Efficienza API**
 ```
 Cache Hit Rate:     70-90%
-API Calls Saved:    80% (con cache)
-Concurrent Threads: 5 (download dati)
+API Calls Saved:    80% (con SmartAPIManager)
+Concurrent Requests: 5 (paralleli)
 Max Positions:      5 simultanee
 ```
 
-### **Resource Usage:**
+### **Resource Usage**
 ```
-CPU:      10-30% (durante predictions)
-RAM:      ~500MB
-Network:  Moderate (batch requests)
-Disk:     ~100MB (cache + models)
+CPU:      15-40% (durante predictions)
+RAM:      ~500-700MB
+Network:  Moderate (batch API calls)
+Disk:     ~150MB (cache + models + DB)
+```
+
+### **Costi OpenAI**
+```
+Cost per Trade:     ~$0.0006 (GPT-4o-mini)
+Trades/Month:       100-500 trades
+Monthly Cost:       $0.06 - $0.30
 ```
 
 ---
 
-## 🎓 Livello di Complessità
+## 💡 Modalità Operative
 
-### **Beginner-Friendly:**
-- ✅ Configurazione via menu interattivo
-- ✅ DEMO mode per testing sicuro
-- ✅ Dashboard visuale intuitiva
+### **DEMO MODE** 🧪
+```python
+DEMO_MODE = True
+DEMO_BALANCE = 1000.0
+```
+- Paper trading (no soldi reali)
+- Balance virtuale $1,000
+- Testing features senza rischio
+- NO API keys richieste
+
+### **LIVE MODE** 💵
+```python
+DEMO_MODE = False
+# Richiede .env con credenziali:
+# BYBIT_API_KEY=xxx
+# BYBIT_API_SECRET=xxx
+# OPENAI_API_KEY=xxx (per AI analysis)
+```
+- Trading reale su Bybit
+- Usa balance effettivo
+- ⚠️ **RISCHIO CAPITALE REALE**
+- Richiede API keys valide
+
+---
+
+## 📊 Statistiche Sistema (Esempio Sessione)
+
+```
+═════════════════════════════════════════════════════════
+📊 SESSION STATISTICS
+═════════════════════════════════════════════════════════
+Total Trades:        45 trades
+Win Rate:            58.9% (27W / 18L)
+Avg Win:             +48.2% ROE
+Avg Loss:            -18.5% ROE
+Total PnL:           +$385.50 (+38.5% balance growth)
+
+Active Positions:    3 / 5 slots
+Margin Used:         $125.00 / $500.00 (25%)
+Largest Win:         +125% ROE (ETH/USDT)
+Largest Loss:        -25% ROE (SL triggered)
+
+Adaptive:            2 symbols blocked, 12 growing
+AI Analysis:         45 trades analyzed
+Top Pattern:         False breakout (12 occurrences)
+═════════════════════════════════════════════════════════
+```
+
+---
+
+## 🎓 Livello Complessità
+
+### **User-Friendly** ✅
+- Menu interattivo configurazione
+- DEMO mode per testing sicuro
+- Dashboard visuale intuitiva
+- Logging chiaro e strutturato
+
+### **Advanced** 🎯
+- ML ensemble multi-timeframe
+- Adaptive sizing con Kelly Criterion
+- AI-powered learning system
+- Risk management sofisticato
+
+### **Expert** 🚀
+- Modular architecture estendibile
+- Thread-safe async operations
+- API optimization avanzata
+- Feature engineering complesso
+
+---
+
+## 📚 Prossimi Documenti
+
+1. **02-STARTUP-INIZIALIZZAZIONE.md** - Processo startup dettagliato
+2. **03-CICLO-TRADING.md** - Loop trading completo
+3. **04-ML-SYSTEM.md** - Sistema XGBoost predictions
+4. **05-ADAPTIVE-SIZING.md** - Adaptive position sizing + Kelly
+5. **06-RISK-MANAGEMENT.md** - Stop loss, early exit, partial exits
+6. **07-TRADE-ANALYZER.md** - AI analysis system (GPT-4o-mini)
+7. **08-POSITION-MANAGEMENT.md** - Gestione posizioni thread-safe
+8. **09-DASHBOARD.md** - PyQt6 GUI real-time
+9. **10-CONFIGURAZIONE.md** - Guida completa config.py
+
+---
+
+**🎯 READY TO TRADE**: Il sistema è production-ready e ottimizzato per trading crypto futures con risk management avanzato e AI learning integrato.
