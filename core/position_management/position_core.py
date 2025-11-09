@@ -16,15 +16,6 @@ from copy import deepcopy
 from .position_data import ThreadSafePosition, TrailingStopData
 from .position_io import PositionIO
 
-# Import Trade Analyzer (Prediction vs Reality)
-# NOTE: Import TradeSnapshot at module level, but get global_trade_analyzer dynamically
-try:
-    from core.trade_analyzer import TradeSnapshot
-    TRADE_ANALYZER_AVAILABLE = True
-except ImportError:
-    TRADE_ANALYZER_AVAILABLE = False
-    TradeSnapshot = None
-    logging.debug("⚠️ Trade Analyzer not available")
 
 
 class PositionCore:
@@ -307,9 +298,6 @@ class PositionCore:
                 # Notify adaptive sizing
                 self._notify_adaptive_sizing(position.symbol, pnl_pct)
                 
-                # 🤖 NEW: Trigger LLM Trade Analysis (Prediction vs Reality)
-                # Analizza TUTTI i trade (win E loss) per learning completo
-                self._trigger_trade_analysis(position, exit_price, pnl_pct)
                 
                 logging.info(f"✅ Position closed: {position.symbol} PnL: {pnl_pct:+.2f}%")
                 return True
@@ -413,150 +401,6 @@ class PositionCore:
         except Exception as e:
             logging.debug(f"Adaptive sizing notification failed: {e}")
     
-    def _trigger_trade_analysis(self, position: ThreadSafePosition, exit_price: float, pnl_pct: float):
-        """
-        🤖 Trigger LLM Trade Analysis (Prediction vs Reality)
-        
-        Analizza il trade completo confrontando predizione ML con realtà.
-        Funziona sia per WIN che per LOSS!
-        
-        Args:
-            position: Position that was closed
-            exit_price: Exit price
-            pnl_pct: PnL percentage (can be positive or negative)
-        """
-        logging.info(f"🤖 _trigger_trade_analysis called for {position.symbol}")
-        
-        if not TRADE_ANALYZER_AVAILABLE:
-            logging.warning("⚠️ TRADE_ANALYZER_AVAILABLE = False")
-            return
-        
-        # Import dynamically to avoid None issue
-        try:
-            from core.trade_analyzer import global_trade_analyzer
-            logging.info(f"🤖 global_trade_analyzer imported: {global_trade_analyzer is not None}")
-            
-            if not global_trade_analyzer:
-                logging.warning("⚠️ global_trade_analyzer is None!")
-                return
-            
-            if not global_trade_analyzer.enabled:
-                logging.warning(f"⚠️ global_trade_analyzer.enabled = {global_trade_analyzer.enabled}")
-                return
-                
-            logging.info("✅ Trade analyzer checks passed, proceeding...")
-            
-        except (ImportError, AttributeError) as e:
-            logging.error(f"❌ Failed to import global_trade_analyzer: {e}")
-            return
-        
-        try:
-            logging.info("🤖 Calculating trade duration...")
-            # Calculate duration
-            entry_time = datetime.fromisoformat(position.entry_time)
-            close_time = datetime.fromisoformat(position.close_time)
-            duration_minutes = int((close_time - entry_time).total_seconds() / 60)
-            
-            # Determine outcome
-            outcome = "WIN" if pnl_pct > 0 else "LOSS"
-            logging.info(f"🤖 Trade outcome: {outcome}, PnL: {pnl_pct:.2f}%, Duration: {duration_minutes}m")
-            
-            # Schedule async trade analysis with robust event loop handling
-            logging.info("🤖 Setting up async analysis...")
-            def run_analysis_async():
-                """Run analysis in separate thread with its own event loop"""
-                try:
-                    logging.info("🧵 Thread started for GPT analysis")
-                    # Create new event loop for this thread
-                    new_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(new_loop)
-                    logging.info("🧵 Event loop created in thread")
-                    
-                    # Run the analysis
-                    logging.info("🧵 Calling analyze_complete_trade()...")
-                    new_loop.run_until_complete(
-                        global_trade_analyzer.analyze_complete_trade(
-                            position_id=position.position_id,
-                            outcome=outcome,
-                            pnl_roe=pnl_pct,
-                            exit_price=exit_price,
-                            duration_minutes=duration_minutes
-                        )
-                    )
-                    logging.info("🧵 analyze_complete_trade() completed!")
-                    
-                    new_loop.close()
-                    logging.info("🧵 Thread finished successfully")
-                    
-                except Exception as e:
-                    logging.error(f"❌ Trade analysis thread failed: {e}")
-                    import traceback
-                    logging.error(traceback.format_exc())
-            
-            # ALWAYS use thread pool with dedicated event loop
-            # This ensures the analysis completes even if the main loop closes
-            logging.info("🤖 Using thread pool with dedicated event loop...")
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                executor.submit(run_analysis_async)
-            logging.info(f"🤖 Trade analysis queued in thread for {position.symbol} ({outcome})")
-                
-        except Exception as e:
-            logging.error(f"❌ Failed to trigger trade analysis: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def save_trade_snapshot(
-        self,
-        position_id: str,
-        symbol: str,
-        signal: str,
-        confidence: float,
-        ensemble_votes: Dict[str, str],
-        entry_price: float,
-        entry_features: Dict[str, float]
-    ):
-        """
-        Salva snapshot trade al momento apertura (per analysis futura)
-        
-        Args:
-            position_id: ID posizione
-            symbol: Simbolo
-            signal: Segnale predetto (BUY/SELL)
-            confidence: ML confidence
-            ensemble_votes: Voti ensemble per timeframe
-            entry_price: Prezzo entry
-            entry_features: Features ML (RSI, MACD, ADX, etc)
-        """
-        if not TRADE_ANALYZER_AVAILABLE:
-            return
-        
-        # Import dynamically to avoid None issue
-        try:
-            from core.trade_analyzer import global_trade_analyzer
-            if not global_trade_analyzer or not global_trade_analyzer.enabled:
-                return
-        except (ImportError, AttributeError):
-            return
-        
-        try:
-            snapshot = TradeSnapshot(
-                symbol=symbol,
-                timestamp=datetime.now().isoformat(),
-                prediction_signal=signal,
-                ml_confidence=confidence,
-                ensemble_votes=ensemble_votes,
-                entry_price=entry_price,
-                entry_features=entry_features,
-                expected_target=0.10,  # +10% price target con 5x = +50% ROE
-                expected_risk=0.025    # -2.5% SL con 5x = -12.5% ROE
-            )
-            
-            global_trade_analyzer.save_trade_snapshot(position_id, snapshot)
-            logging.info(f"📸 Trade snapshot saved for {symbol}")
-            
-        except Exception as e:
-            logging.error(f"Failed to save trade snapshot: {e}")
     
     def _cleanup_old_closed_positions(self):
         """Remove oldest closed positions if limit exceeded"""

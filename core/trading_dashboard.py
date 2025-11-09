@@ -226,10 +226,6 @@ class TradingDashboard(QMainWindow):
             self.adaptive_memory_table = create_adaptive_memory_table()
             self.tabs.addTab(self.adaptive_memory_table, "ADAPTIVE MEMORY (0)")
         
-        # TAB 5: AI ANALYSIS - ChatGPT trade analysis
-        self.ai_analysis_table = create_ai_analysis_table()
-        self.tabs.addTab(self.ai_analysis_table, "🤖 AI ANALYSIS (0)")
-        
         layout.addWidget(self.tabs)
         group.setLayout(layout)
         return group
@@ -656,25 +652,6 @@ class TradingDashboard(QMainWindow):
             except Exception as e:
                 logging.debug(f"Error populating adaptive memory tab: {e}")
         
-        # Populate AI Analysis tab
-        try:
-            AIAnalysisTabPopulator.populate(self.ai_analysis_table, max_rows=50)
-            
-            # Update tab title with count from database
-            try:
-                db_path = Path("trade_analysis.db")
-                if db_path.exists():
-                    conn = sqlite3.connect(db_path)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM trade_analyses")
-                    count = cursor.fetchone()[0]
-                    conn.close()
-                    tab_index = 4 if config.ADAPTIVE_SIZING_ENABLED else 3
-                    self.tabs.setTabText(tab_index, f"🤖 AI ANALYSIS ({count})")
-            except:
-                pass
-        except Exception as e:
-            logging.debug(f"Error populating AI analysis tab: {e}")
     
     def _populate_position_table(self, table: QTableWidget, positions: list, tab_name: str):
         """Populate a position table with position data - REFACTORED"""

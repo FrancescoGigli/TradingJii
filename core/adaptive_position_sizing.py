@@ -26,7 +26,7 @@ try:
 except ImportError:
     FAILURE_ANALYZER_AVAILABLE = False
     global_failure_analyzer = None
-    logging.warning("⚠️ Failure Analyzer not available")
+    logging.debug("⚠️ Failure Analyzer not available")
 
 
 @dataclass

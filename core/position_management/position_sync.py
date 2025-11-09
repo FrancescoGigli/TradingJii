@@ -16,14 +16,6 @@ from termcolor import colored
 from .position_data import ThreadSafePosition
 from .position_core import PositionCore
 
-# Import Trade Analyzer for price tracking
-# NOTE: Import dynamically to avoid None issue with initialization order
-TRADE_ANALYZER_AVAILABLE = True
-try:
-    from core.trade_analyzer import TradeAnalyzer
-except ImportError:
-    TRADE_ANALYZER_AVAILABLE = False
-    logging.debug("⚠️ Trade Analyzer not available in sync")
 
 
 class PositionSync:
@@ -69,28 +61,6 @@ class PositionSync:
                     self.core._get_open_positions_unsafe()[position.position_id] = position
                     newly_opened.append(position)
                     
-                    # 🤖 NEW: Save trade snapshot for synced positions too!
-                    # This enables GPT analysis even for positions opened directly on Bybit
-                    if TRADE_ANALYZER_AVAILABLE:
-                        try:
-                            from core.trade_analyzer import global_trade_analyzer, TradeSnapshot
-                            if global_trade_analyzer and global_trade_analyzer.enabled:
-                                # Create snapshot with SYNCED origin
-                                snapshot = TradeSnapshot(
-                                    symbol=symbol,
-                                    timestamp=datetime.now().isoformat(),
-                                    prediction_signal="SYNCED",  # Mark as synced (unknown ML prediction)
-                                    ml_confidence=0.0,  # Unknown confidence
-                                    ensemble_votes={},  # No ensemble data
-                                    entry_price=data['entry_price'],
-                                    entry_features={},  # No ML features available
-                                    expected_target=0.10,  # Default target
-                                    expected_risk=0.025  # Default risk
-                                )
-                                global_trade_analyzer.save_trade_snapshot(position.position_id, snapshot)
-                                logging.info(f"📸 Trade snapshot saved for SYNCED position: {symbol.replace('/USDT:USDT', '')}")
-                        except Exception as e:
-                            logging.warning(f"⚠️ Failed to save trade snapshot for synced position: {e}")
                     
                     # Check if SL is missing
                     if data.get('real_stop_loss') is None:
@@ -386,21 +356,6 @@ class PositionSync:
                         position.real_stop_loss = real_sl
                         position.stop_loss = real_sl
                     
-                    # 🤖 NEW: Save price snapshot for AI analysis
-                    # This tracks how price moved during trade lifecycle
-                    if TRADE_ANALYZER_AVAILABLE:
-                        try:
-                            from core.trade_analyzer import global_trade_analyzer
-                            if global_trade_analyzer and global_trade_analyzer.enabled:
-                                global_trade_analyzer.add_price_snapshot(
-                                    position_id=position.position_id,
-                                    price=current_price,
-                                    volume=current_volume,
-                                    timestamp=datetime.now().isoformat()
-                                )
-                                logging.debug(f"📸 Price snapshot saved for {symbol.replace('/USDT:USDT', '')}: ${current_price:.6f}")
-                        except Exception as snapshot_err:
-                            logging.debug(f"⚠️ Failed to save price snapshot: {snapshot_err}")
                     
                     break
                     

@@ -50,13 +50,6 @@ from logging_config import *
 # Startup display system
 from core.startup_display import global_startup_collector
 
-# Trade Analyzer (AI-powered prediction vs reality)
-try:
-    from core.trade_analyzer import initialize_trade_analyzer
-    TRADE_ANALYZER_AVAILABLE = True
-except ImportError:
-    logging.warning("⚠️ Trade Analyzer not available")
-    TRADE_ANALYZER_AVAILABLE = False
 
 # Unified managers
 try:
@@ -290,19 +283,6 @@ async def main():
         # Balance sync removed for cleaner startup
         logging.debug("🔧 Balance sync disabled - using direct balance queries when needed")
 
-        # Initialize Trade Analyzer (AI-powered post-trade analysis)
-        if TRADE_ANALYZER_AVAILABLE:
-            try:
-                trade_analyzer = initialize_trade_analyzer(config)
-                if trade_analyzer and trade_analyzer.enabled:
-                    logging.info(colored(
-                        f"🤖 Trade Analyzer: ENABLED | Model: {trade_analyzer.model}",
-                        "green", attrs=['bold']
-                    ))
-                else:
-                    logging.info(colored("🤖 Trade Analyzer: DISABLED (check config)", "yellow"))
-            except Exception as e:
-                logging.error(f"❌ Trade Analyzer initialization failed: {e}")
         
         # Register modules initialization
         global_startup_collector.set_modules(

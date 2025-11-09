@@ -26,15 +26,6 @@ from core.risk_calculator import global_risk_calculator, MarketData
 from core.thread_safe_position_manager import global_thread_safe_position_manager, ThreadSafePosition as Position
 from core.price_precision_handler import global_price_precision_handler
 
-# Import Trade Analyzer for prediction vs reality tracking
-# NOTE: Import dynamically to avoid None issue with initialization order
-TRADE_ANALYZER_AVAILABLE = True
-try:
-    from core.trade_analyzer import TradeSnapshot
-except ImportError:
-    TRADE_ANALYZER_AVAILABLE = False
-    TradeSnapshot = None
-    logging.debug("⚠️ Trade Analyzer not available in orchestrator")
 
 # CRITICAL FIX: Import new unified managers
 try:
@@ -362,62 +353,8 @@ class TradingOrchestrator:
             except Exception as adaptive_error:
                 logging.debug(f"⚠️ Failed to register opening in adaptive sizing: {adaptive_error}")
             
-            # 🤖 NEW: SAVE TRADE SNAPSHOT for AI analysis (Prediction vs Reality)
-            if TRADE_ANALYZER_AVAILABLE:
-                logging.info(f"🤖 Attempting to save trade snapshot for {symbol}...")
-                try:
-                    from core.trade_analyzer import global_trade_analyzer
-                    if not global_trade_analyzer:
-                        logging.warning(f"⚠️ global_trade_analyzer is None - not initialized yet")
-                        raise ImportError("Trade analyzer not initialized")
-                    if not global_trade_analyzer.enabled:
-                        logging.warning(f"⚠️ global_trade_analyzer.enabled = False")
-                        raise ImportError("Trade analyzer disabled")
-                    # Extract ensemble votes from signal_data
-                    ensemble_votes = {}
-                    tf_predictions = signal_data.get('tf_predictions', {})
-                    for tf, pred_data in tf_predictions.items():
-                        if isinstance(pred_data, dict):
-                            pred = pred_data.get('prediction', -1)
-                            if pred == 1:
-                                ensemble_votes[tf] = 'BUY'
-                            elif pred == 0:
-                                ensemble_votes[tf] = 'SELL'
-                            else:
-                                ensemble_votes[tf] = 'NEUTRAL'
-                    
-                    # Get dataframes for features extraction
-                    dataframes = signal_data.get('dataframes', {})
-                    entry_features = {}
-                    
-                    if dataframes and '1h' in dataframes:
-                        df_1h = dataframes['1h']
-                        if len(df_1h) > 0:
-                            entry_features = {
-                                'rsi': float(df_1h['rsi_fast'].iloc[-1]) if 'rsi_fast' in df_1h.columns else 50.0,
-                                'macd': float(df_1h['macd'].iloc[-1]) if 'macd' in df_1h.columns else 0.0,
-                                'adx': float(df_1h['adx'].iloc[-1]) if 'adx' in df_1h.columns else adx_value,
-                                'atr': float(df_1h['atr'].iloc[-1]) if 'atr' in df_1h.columns else market_data.atr,
-                                'volume': float(df_1h['volume'].iloc[-1]) if 'volume' in df_1h.columns else 0.0,
-                                'volatility': market_data.volatility
-                            }
-                    
-                    # Save snapshot via position_manager
-                    self.position_manager.save_trade_snapshot(
-                        position_id=position_id,
-                        symbol=symbol,
-                        signal=side_name,
-                        confidence=confidence,
-                        ensemble_votes=ensemble_votes,
-                        entry_price=market_data.price,
-                        entry_features=entry_features
-                    )
-                    logging.debug(f"📸 Trade snapshot saved for AI analysis: {symbol}")
-                    
-                except Exception as snapshot_error:
-                    logging.debug(f"⚠️ Failed to save trade snapshot: {snapshot_error}")
             
-            # 💰 SAVE REAL IM: Store actual margin used (will be updated by sync)
+            #  SAVE REAL IM: Store actual margin used (will be updated by sync)
             try:
                 with self.position_manager._lock:
                     if position_id in self.position_manager._open_positions:

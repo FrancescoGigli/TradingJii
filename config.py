@@ -481,17 +481,9 @@ SL_AWARENESS_BORDERLINE_BUY = STOP_LOSS_PCT * 0.5   # 50% of SL (borderline thre
 SL_AWARENESS_BORDERLINE_SELL = STOP_LOSS_PCT * 0.5  # Symmetric borderline
 
 # ==============================================================================
-# 🎯 DYNAMIC CONFIDENCE THRESHOLDS (FIX #3: CRITICAL!)
+# 🎯 CONFIDENCE THRESHOLD (SIMPLIFIED)
 # ==============================================================================
-MIN_CONFIDENCE_BASE = 0.65           # FIX: Base threshold 65% (was 50%)
-MIN_CONFIDENCE_VOLATILE = 0.75       # In volatile markets: 75%
-MIN_CONFIDENCE_BEAR = 0.80           # In downtrend: 80%
-
-# Adaptive based on recent performance
-CONFIDENCE_ADAPTIVE_ENABLED = True
-CONFIDENCE_ADAPTIVE_WINDOW = 20      # Last 20 trades for performance check
-CONFIDENCE_ADAPTIVE_MIN_WR = 0.55    # Min 55% win rate required
-CONFIDENCE_ADAPTIVE_INCREASE = 0.10  # Increase threshold by 10% if underperforming
+MIN_CONFIDENCE = 0.65  # Minimum ML confidence required to open trade (65%)
 
 # ==============================================================================
 # 🎯 KELLY CRITERION SIZING (FIX #4: CRITICAL!)
@@ -531,25 +523,6 @@ SYMBOL_BLACKLIST = [
 SL_MAX_RETRIES = 3                  # Max attempts before blacklisting
 SL_RETRY_COOLDOWN = 300             # Seconds in blacklist (5 minutes)
 
-# ==============================================================================
-# 🤖 TRADE ANALYZER - PREDICTION VS REALITY (NEW & IMPROVED!)
-# ==============================================================================
-# AI-powered analysis of ALL trades (wins AND losses) comparing prediction vs reality
-LLM_ANALYSIS_ENABLED = True          # Enable LLM-based trade analysis
-LLM_MODEL = 'gpt-4o-mini'           # OpenAI model (gpt-4o-mini is cost-effective)
-
-# What to analyze
-LLM_ANALYZE_ALL_TRADES = False      # Analyze EVERY trade (comprehensive learning)
-LLM_ANALYZE_WINS = True             # Analyze winning trades (learn what works)
-LLM_ANALYZE_LOSSES = True           # Analyze losing trades (learn what fails)
-LLM_MIN_TRADE_DURATION = 5          # Min 5 minutes duration to analyze
-
-# Price path tracking
-TRACK_PRICE_SNAPSHOTS = True        # Record price every 15min for path analysis
-PRICE_SNAPSHOT_INTERVAL = 900       # Seconds between snapshots (15min)
-
-# Cost estimate: ~$0.0006 per trade with gpt-4o-mini
-# Expected: ~100 trades/month = $0.06/month | 500 trades/month = $0.30/month
 
 # ==============================================================================
 # 🚨 VOLUME SURGE DETECTOR (NEW!)
