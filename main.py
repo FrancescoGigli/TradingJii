@@ -79,8 +79,9 @@ from utils.display_utils import display_selected_symbols
 
 async def initialize_exchange():
     """Initialize and test exchange connection with robust timestamp sync"""
-    # CRITICAL FIX: Use config.DEMO_MODE (not the imported variable)
-    # ConfigManager modifies config.DEMO_MODE after import
+    # Use centralized time sync manager instead of duplicating logic
+    from core.time_sync_manager import global_time_sync_manager
+    
     if config.DEMO_MODE:
         logging.info(colored("🧪 DEMO MODE: Exchange not required", "yellow"))
         return None
@@ -88,7 +89,6 @@ async def initialize_exchange():
     logging.debug(colored("🚀 Initializing Bybit exchange connection...", "cyan"))
     
     # Configure aiohttp to use ThreadedResolver (no aiodns dependency)
-    # aiodns is incompatible with qasync QEventLoop on Windows
     import aiohttp
     from aiohttp.resolver import ThreadedResolver
     
@@ -100,64 +100,12 @@ async def initialize_exchange():
     exchange_config_with_session = {**exchange_config, 'session': session}
     async_exchange = ccxt_async.bybit(exchange_config_with_session)
 
-    # Import time sync configuration
-    from config import (
-        TIME_SYNC_MAX_RETRIES,
-        TIME_SYNC_RETRY_DELAY,
-        TIME_SYNC_NORMAL_RECV_WINDOW,
-        MANUAL_TIME_OFFSET
-    )
-
-    # Phase 1: Pre-authentication time synchronization
-    # This MUST happen before any authenticated API calls (like load_markets)
-    sync_success = False
-    final_time_diff = 0
-    
+    # Phase 1: Time synchronization using centralized manager
     logging.debug("⏰ Starting time sync...")
-    
-    for attempt in range(1, TIME_SYNC_MAX_RETRIES + 1):
-        try:
-            # Step 1: Fetch server time using public API (no authentication required)
-            server_time = await async_exchange.fetch_time()
-            local_time = async_exchange.milliseconds()
-            
-            # Step 2: Calculate time difference
-            time_diff = server_time - local_time
-            
-            # Step 3: Apply manual offset if configured
-            if MANUAL_TIME_OFFSET is not None:
-                time_diff += MANUAL_TIME_OFFSET
-            
-            # Step 4: Store the time difference in exchange options
-            async_exchange.options['timeDifference'] = time_diff
-            final_time_diff = time_diff
-            
-            # Step 5: Verify the sync by fetching time again
-            await asyncio.sleep(0.5)  # Small delay to account for network latency
-            verify_server_time = await async_exchange.fetch_time()
-            verify_local_time = async_exchange.milliseconds()
-            verify_adjusted_time = verify_local_time + time_diff
-            verify_diff = abs(verify_server_time - verify_adjusted_time)
-            
-            # Accept if difference is less than 2 seconds after adjustment
-            if verify_diff < 2000:
-                logging.info(colored(f"✅ Time sync OK (offset: {time_diff}ms)", "green"))
-                sync_success = True
-                break
-            else:
-                logging.debug(f"⚠️ Verification failed: adjusted diff {verify_diff}ms")
-                if attempt < TIME_SYNC_MAX_RETRIES:
-                    delay = TIME_SYNC_RETRY_DELAY * attempt  # Exponential backoff
-                    await asyncio.sleep(delay)
-                    
-        except Exception as e:
-            logging.error(f"❌ Sync attempt {attempt} failed: {e}")
-            if attempt < TIME_SYNC_MAX_RETRIES:
-                delay = TIME_SYNC_RETRY_DELAY * attempt  # Exponential backoff
-                await asyncio.sleep(delay)
+    sync_success = await global_time_sync_manager.initialize_exchange_time_sync(async_exchange)
     
     if not sync_success:
-        error_msg = f"Time synchronization failed after {TIME_SYNC_MAX_RETRIES} attempts"
+        error_msg = "Time synchronization failed"
         logging.error(colored(f"❌ {error_msg}", "red"))
         logging.error(colored("💡 Troubleshooting tips:", "yellow"))
         logging.error("   1. Check your Windows time sync: Settings > Time & Language > Date & Time")
@@ -166,10 +114,7 @@ async def initialize_exchange():
         logging.error("   4. If issue persists, set MANUAL_TIME_OFFSET in config.py")
         raise RuntimeError(error_msg)
 
-    # Phase 2: Reduce recv_window for tighter security in normal operations
-    async_exchange.options['recvWindow'] = TIME_SYNC_NORMAL_RECV_WINDOW
-
-    # Phase 3: Load markets (now safe with synchronized time)
+    # Phase 2: Load markets (now safe with synchronized time)
     try:
         await async_exchange.load_markets()
         logging.debug(colored("✅ Markets loaded", "green"))
@@ -177,7 +122,7 @@ async def initialize_exchange():
         logging.error(colored(f"❌ Failed to load markets: {e}", "red"))
         raise RuntimeError(f"Failed to load markets after time sync: {e}")
 
-    # Phase 4: Test authenticated API connection
+    # Phase 3: Test authenticated API connection
     try:
         balance = await async_exchange.fetch_balance()
         logging.debug(colored("✅ Bybit authenticated", "green"))
@@ -185,6 +130,9 @@ async def initialize_exchange():
         logging.error(colored(f"❌ Authentication failed: {e}", "red"))
         raise RuntimeError(f"Failed to authenticate with Bybit: {e}")
 
+    # Get time sync stats for logging
+    stats = global_time_sync_manager.get_stats()
+    final_time_diff = async_exchange.options.get('timeDifference', 0)
     logging.debug(f"Time offset: {final_time_diff}ms")
     
     # Register exchange connection data
