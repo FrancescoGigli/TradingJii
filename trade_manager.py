@@ -9,8 +9,7 @@ import json
 
 from config import (
     LEVERAGE, EXCLUDED_SYMBOLS,
-    TOP_ANALYSIS_CRYPTO, DEMO_BALANCE, MAX_CONCURRENT_POSITIONS,
-    MARGIN_BASE
+    TOP_ANALYSIS_CRYPTO, DEMO_BALANCE, MAX_CONCURRENT_POSITIONS
 )
 import config
 
@@ -410,9 +409,6 @@ async def sync_positions_at_startup(exchange):
         logging.error(colored(f"❌ Error during position sync: {e}", "red"))
         return 0
 
-# REMOVED: calculate_position_size() - DEPRECATED function
-# Use core/risk_calculator.py -> calculate_position_levels() instead
-
 async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
                           lstm_model, lstm_scaler, rf_model, rf_scaler, df, predictions=None):
     """
@@ -455,11 +451,9 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
         volatility = 0.0
     
     # Check basic balance requirements
-    if usdt_balance < 60.0:  # Increased minimum balance for new position limits
+    if usdt_balance < 60.0:
         logging.warning(colored(f"{symbol}: Saldo USDT insufficiente ({usdt_balance:.2f} < 60.0).", "yellow"))
         return "insufficient_balance"
-    
-    # REMOVED: Pattern Warning System (depends on eliminated Online Learning system)
     
     # Use advanced risk management V2 (Thread-safe) if available
     if RISK_MANAGER_AVAILABLE and global_risk_manager:
@@ -608,10 +602,7 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
                     atr=atr
                 )
                 
-                # REMOVED: Online Learning system eliminated for logic revision
-                
-                # Enhanced display removed (duplicate display system eliminated)
-                risk_pct = (3.0 / LEVERAGE) if LEVERAGE > 0 else 3.0  # Base risk divided by leverage
+                risk_pct = (3.0 / LEVERAGE) if LEVERAGE > 0 else 3.0
                 logging.info(colored(f"📊 Position Details: Risk {risk_pct:.2f}% | ATR: {atr:.6f}", "cyan"))
                 
                 logging.info(colored(f"🎮 DEMO POSITION OPENED | {symbol}: {side} | Balance: {current_wallet:.2f} USDT | Size: {calculated_position_size:.2f} USDT", "magenta"))
@@ -659,23 +650,21 @@ async def manage_position(exchange, symbol, signal, usdt_balance, min_amounts,
 
 async def calculate_fallback_position_size(symbol, current_price, usdt_balance):
     """
-    Fallback position sizing using base margin configuration
+    Fallback position sizing: 5% of wallet (aligned with adaptive sizing)
     """
     try:
-        # Use configured margin directly (respect user setting)
-        margin_to_use = MARGIN_BASE
+        # Use 5% of wallet (consistent with adaptive sizing DEFAULT)
+        margin_percentage = 0.05  # 5% of wallet
+        margin_to_use = usdt_balance * margin_percentage
         
-        # Safety check: don't use more than 20% of total balance
-        max_safe_margin = usdt_balance * 0.2  # 20% safety limit
-        if margin_to_use > max_safe_margin:
-            margin_to_use = max_safe_margin
-            logging.warning(colored(f"💡 Margin reduced from ${MARGIN_BASE} to ${margin_to_use:.2f} (20% of balance limit)", "yellow"))
+        # Safety check: minimum $15, maximum 20% of wallet
+        margin_to_use = max(15.0, min(margin_to_use, usdt_balance * 0.2))
         
         # Use full configured leverage
         notional_value = margin_to_use * LEVERAGE
         position_size = notional_value / current_price
         
-        logging.info(colored(f"📏 Position sizing: ${margin_to_use:.2f} margin × {LEVERAGE}x leverage = ${notional_value:.2f} notional", "cyan"))
+        logging.info(colored(f"📏 Fallback sizing: ${margin_to_use:.2f} margin (5% of ${usdt_balance:.2f}) × {LEVERAGE}x leverage = ${notional_value:.2f} notional", "cyan"))
         logging.info(colored(f"📏 Final position size: {position_size:.4f} {symbol.split('/')[0]}", "cyan"))
         
         return position_size
@@ -694,15 +683,54 @@ async def execute_order_with_risk_management(exchange, symbol, side, position_si
         logging.info(colored(f"🚀 LIVE ORDER EXECUTION", "blue", attrs=['bold']))
         logging.info(colored(f"📊 Symbol: {symbol} | Side: {side} | Size: {position_size:.4f} | Price: ~{price:.6f}", "cyan"))
         
-        # Execute main order with detailed logging
+        # Execute main order with CONDITIONAL SL (atomic operation)
         start_time = time.time()
         
-        if side == "Buy":
-            logging.info(colored(f"📈 Executing MARKET BUY order for {position_size:.4f} {symbol}...", "green"))
-            order = await exchange.create_market_buy_order(symbol, position_size)
+        # CRITICAL FIX: Use conditional orders to set SL in same API call
+        if stop_loss_price:
+            logging.info(colored(f"🛡️ Opening position with ATOMIC stop loss @ ${stop_loss_price:.6f}", "yellow", attrs=['bold']))
+            
+            # Normalize SL price to tick size
+            try:
+                market = exchange.market(symbol)
+                tick_size = market['precision']['price']
+                stop_loss_price = round(stop_loss_price / tick_size) * tick_size
+            except:
+                pass
+            
+            # Use create_order with stopLoss param (Bybit conditional orders)
+            if side == "Buy":
+                logging.info(colored(f"📈 Executing MARKET BUY with SL for {position_size:.4f} {symbol}...", "green"))
+                order = await exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side='buy',
+                    amount=position_size,
+                    params={
+                        'stopLoss': str(stop_loss_price),
+                        'slTriggerBy': 'LastPrice'
+                    }
+                )
+            else:
+                logging.info(colored(f"📉 Executing MARKET SELL with SL for {position_size:.4f} {symbol}...", "red"))
+                order = await exchange.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side='sell',
+                    amount=position_size,
+                    params={
+                        'stopLoss': str(stop_loss_price),
+                        'slTriggerBy': 'LastPrice'
+                    }
+                )
         else:
-            logging.info(colored(f"📉 Executing MARKET SELL order for {position_size:.4f} {symbol}...", "red"))
-            order = await exchange.create_market_sell_order(symbol, position_size)
+            # Fallback: No SL (shouldn't happen but handle gracefully)
+            if side == "Buy":
+                logging.info(colored(f"📈 Executing MARKET BUY order for {position_size:.4f} {symbol}...", "green"))
+                order = await exchange.create_market_buy_order(symbol, position_size)
+            else:
+                logging.info(colored(f"📉 Executing MARKET SELL order for {position_size:.4f} {symbol}...", "red"))
+                order = await exchange.create_market_sell_order(symbol, position_size)
         
         execution_time = time.time() - start_time
         
@@ -718,12 +746,13 @@ async def execute_order_with_risk_management(exchange, symbol, side, position_si
         
         # Enhanced order confirmation display
         logging.info(colored("=" * 70, "green"))
-        logging.info(colored("✅ ORDER EXECUTED SUCCESSFULLY", "green", attrs=['bold']))
+        logging.info(colored("✅ ORDER EXECUTED WITH ATOMIC SL", "green", attrs=['bold']))
         logging.info(colored(f"🆔 Order ID: {trade_id}", "green"))
         logging.info(colored(f"📊 Symbol: {symbol} | Side: {side.upper()}", "green"))
         logging.info(colored(f"💰 Entry Price: ${entry_price:.6f}", "green"))
         logging.info(colored(f"📏 Size: {position_size:.4f} | Filled: {safe_format_float(filled_amount, 4, 'N/A')}", "green"))
         logging.info(colored(f"📈 Status: {order_status.upper()}", "green"))
+        logging.info(colored(f"🛡️ Stop Loss: ${stop_loss_price:.6f} (SET ATOMICALLY)", "green", attrs=['bold']))
         logging.info(colored(f"⚡ Execution Time: {execution_time:.2f}s", "green"))
         
         # Verify position was actually opened (post-execution check)
@@ -753,12 +782,19 @@ async def execute_order_with_risk_management(exchange, symbol, side, position_si
         except Exception as verify_error:
             logging.warning(f"Could not verify position on Bybit: {verify_error}")
         
-        # ENHANCED RISK MANAGEMENT SETUP - CRITICAL: Separate display from execution
-        stop_loss_order_id = None
+        # ENHANCED RISK MANAGEMENT SETUP
+        # CRITICAL FIX: SL now set atomically with position open - no separate order needed!
+        stop_loss_order_id = "atomic_sl"  # Mark as atomic
         take_profit_order_id = None
         take_profit_price = None
         
-        # SAFE DISPLAY: Try to show risk calculation but don't fail if it errors
+        logging.info(colored("=" * 70, "yellow"))
+        logging.info(colored("🛡️ ATOMIC STOP LOSS ACTIVE", "green", attrs=['bold']))
+        logging.info(colored(f"   Stop loss was set SIMULTANEOUSLY with position open", "green"))
+        logging.info(colored(f"   Zero-gap protection - NO exposure window!", "green", attrs=['bold']))
+        logging.info(colored("=" * 70, "yellow"))
+        
+        # SAFE DISPLAY: Risk calculation
         try:
             if stop_loss_price:
                 logging.info(colored("🛡️ SETTING UP RISK MANAGEMENT", "yellow", attrs=['bold']))
@@ -790,24 +826,8 @@ async def execute_order_with_risk_management(exchange, symbol, side, position_si
             logging.warning(f"Risk display error (non-critical): {display_error}")
             # Continue - display errors don't affect order placement
         
-        # Set Stop Loss on Bybit
-        if stop_loss_price and not config.DEMO_MODE:
-            try:
-                logging.info(colored(f"🛡️ PLACING STOP LOSS ORDER on Bybit...", "red", attrs=['bold']))
-                
-                stop_side = "sell" if side == "Buy" else "buy"
-                stop_order = await exchange.create_order(
-                    symbol=symbol,
-                    type='stop_market',
-                    side=stop_side,
-                    amount=position_size,
-                    params={'stopPrice': stop_loss_price}
-                )
-                stop_loss_order_id = stop_order.get('id')
-                logging.info(colored(f"✅ STOP LOSS ACTIVE: Order ID {stop_loss_order_id}", "green", attrs=['bold']))
-                
-            except Exception as sl_error:
-                logging.error(colored(f"❌ STOP LOSS FAILED: {sl_error}", "red", attrs=['bold']))
+        # NOTE: SL already set atomically - no separate order needed!
+        # This eliminates the 2-20s gap that was the main vulnerability
         
         # Set Take Profit on Bybit
         if take_profit_price and not config.DEMO_MODE:

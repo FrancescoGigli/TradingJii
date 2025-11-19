@@ -18,23 +18,22 @@ from dataclasses import dataclass
 from termcolor import colored
 from config import (
     LEVERAGE,
-    # Dynamic Position Sizing
-    POSITION_SIZE_CONSERVATIVE,
-    POSITION_SIZE_MODERATE,
-    POSITION_SIZE_AGGRESSIVE,
-    CONFIDENCE_HIGH_THRESHOLD,
-    CONFIDENCE_LOW_THRESHOLD,
-    VOLATILITY_SIZING_LOW,
-    VOLATILITY_SIZING_HIGH,
-    ADX_STRONG_TREND,
-    # Margin Ranges
-    MARGIN_MIN,
-    MARGIN_MAX,
-    MARGIN_BASE,
     # Take Profit
     TP_RISK_REWARD_RATIO,
     TP_MAX_PROFIT_PCT,
     TP_MIN_PROFIT_PCT,
+    # 3-Tier Position Sizing
+    POSITION_SIZE_CONSERVATIVE,
+    POSITION_SIZE_MODERATE,
+    POSITION_SIZE_AGGRESSIVE,
+    BASE_MARGIN,
+    MIN_MARGIN,
+    MAX_MARGIN,
+    CONFIDENCE_HIGH_THRESHOLD,
+    CONFIDENCE_LOW_THRESHOLD,
+    VOLATILITY_LOW_TIER,
+    VOLATILITY_HIGH_TIER,
+    ADX_STRONG_THRESHOLD,
 )
 
 @dataclass
@@ -92,27 +91,23 @@ class RiskCalculator:
     """
     
     def __init__(self):
-        # Position Sizing from config
-        self.position_conservative = POSITION_SIZE_CONSERVATIVE
-        self.position_moderate = POSITION_SIZE_MODERATE
-        self.position_aggressive = POSITION_SIZE_AGGRESSIVE
-        
-        # Thresholds from config
-        self.confidence_high = CONFIDENCE_HIGH_THRESHOLD
-        self.confidence_low = CONFIDENCE_LOW_THRESHOLD
-        self.volatility_low = VOLATILITY_SIZING_LOW
-        self.volatility_high = VOLATILITY_SIZING_HIGH
-        self.adx_strong = ADX_STRONG_TREND
-        
-        # Margin ranges from config
-        self.min_margin = MARGIN_MIN
-        self.max_margin = MARGIN_MAX
-        self.base_margin = MARGIN_BASE
-        
         # Take Profit from config
         self.risk_reward_ratio = TP_RISK_REWARD_RATIO
         self.tp_max_profit = TP_MAX_PROFIT_PCT
         self.tp_min_profit = TP_MIN_PROFIT_PCT
+        
+        # Position sizing values from config (can be modified in config.py)
+        self.position_conservative = POSITION_SIZE_CONSERVATIVE
+        self.position_moderate = POSITION_SIZE_MODERATE
+        self.position_aggressive = POSITION_SIZE_AGGRESSIVE
+        self.confidence_high = CONFIDENCE_HIGH_THRESHOLD
+        self.confidence_low = CONFIDENCE_LOW_THRESHOLD
+        self.volatility_low = VOLATILITY_LOW_TIER
+        self.volatility_high = VOLATILITY_HIGH_TIER
+        self.adx_strong = ADX_STRONG_THRESHOLD
+        self.min_margin = MIN_MARGIN
+        self.max_margin = MAX_MARGIN
+        self.base_margin = BASE_MARGIN
         
     def calculate_dynamic_position_sizes(self, available_balance: float) -> Tuple[float, float, float]:
         """

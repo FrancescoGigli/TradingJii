@@ -354,6 +354,28 @@ class PositionCore:
         except Exception as e:
             logging.error(f"Session reset failed: {e}")
     
+    def reset_session_closed_positions(self):
+        """Reset only closed positions for fresh session tracking
+        
+        This keeps open positions (from Bybit sync) but clears closed
+        positions history so we track only trades closed in THIS session.
+        """
+        try:
+            with self._lock:
+                closed_count = len(self._closed_positions)
+                self._closed_positions.clear()
+                self._save_positions()
+                
+                if closed_count > 0:
+                    logging.info(f"🆕 Session closed positions reset: {closed_count} historical trades cleared")
+                else:
+                    logging.debug("🆕 Session closed positions reset: already empty")
+                    
+                return True
+        except Exception as e:
+            logging.error(f"Failed to reset session closed positions: {e}")
+            return False
+    
     # ========================================
     # INTERNAL HELPERS
     # ========================================

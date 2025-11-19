@@ -166,18 +166,21 @@ class RealTimePositionDisplay:
 
             sl_price = bybit_sl_map.get(row["symbol"])
             if sl_price and sl_price > 0:
-                # Calculate SL as PRICE percentage (not ROE)
+                # Calculate SL as PRICE percentage
                 if side == "long":
+                    # LONG: SL è sotto entry, quindi negativo
                     sl_price_pct = ((sl_price - row["entry_price"]) / row["entry_price"]) * 100.0
                 else:
-                    sl_price_pct = ((sl_price - row["entry_price"]) / row["entry_price"]) * 100.0
+                    # SHORT: SL è sopra entry, quindi negativo per noi
+                    # Se prezzo sale (SL > entry), perdiamo
+                    sl_price_pct = -((sl_price - row["entry_price"]) / row["entry_price"]) * 100.0
                 
-                # Calculate ROE impact (price% × leverage)
+                # Calculate ROE impact (price% × leverage) - questo è il vero rischio sul margine
                 sl_roe = sl_price_pct * row["leverage"]
                 delta_usd = (sl_roe / 100.0) * initial_margin
                 
-                # Display PRICE% with ROE in parentheses
-                sl_txt = f"{sl_price_pct:+.2f}% ({fmt_money(delta_usd)})"
+                # Display ROE% (impact on margin) with USD value
+                sl_txt = f"{sl_roe:+.2f}% ({fmt_money(delta_usd)})"
                 sl_col = "red" if delta_usd < 0 else "green"
             else:
                 sl_txt = "NO SL"
@@ -557,10 +560,28 @@ class RealTimePositionDisplay:
             enhanced_logger.display_table("📊 SESSION SUMMARY (Individual Trades)", "cyan", attrs=['bold'])
             enhanced_logger.display_table("┌" + "─" * 78 + "┐", "cyan")
             
-            # Total PnL line
+            # Total PnL line with appropriate coloring
+            # P&L: red if negative, green if positive
             pnl_color = pct_color(total_pnl_usd)
-            pnl_line = f"│ 💰 TOTAL SESSION P&L: {fmt_money(total_pnl_usd):>8} │ TRADES: {total_trades:>2} │ WIN RATE: {win_rate:>5.1f}% │"
-            enhanced_logger.display_table(pnl_line.ljust(79) + "│", pnl_color, attrs=['bold'])
+            
+            # WIN RATE: green if good (≥60%), yellow if ok (40-60%), red if bad (<40%)
+            if win_rate >= 60:
+                wr_color = "green"
+            elif win_rate >= 40:
+                wr_color = "yellow"
+            else:
+                wr_color = "red"
+            
+            # Build colored line with separate colors for P&L and WIN RATE
+            pnl_line = (
+                colored("│ 💰 TOTAL SESSION P&L: ", "white") +
+                colored(f"{fmt_money(total_pnl_usd):>8}", pnl_color, attrs=['bold']) +
+                colored(f" │ TRADES: {total_trades:>2} │ WIN RATE: ", "white") +
+                colored(f"{win_rate:>5.1f}%", wr_color, attrs=['bold']) +
+                colored(" │", "white")
+            )
+            # Use logging.info for proper handling through enhanced logger
+            logging.info(pnl_line)
             
             # Performance breakdown
             if total_trades > 0:

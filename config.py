@@ -41,9 +41,6 @@ DEMO_BALANCE = 1000.0  # Balance USDT fittizio per modalità demo (non usato in 
 # DETAILED: Full debug information (all operations, calculations, API calls)
 LOG_VERBOSITY = "NORMAL"  # Changed to NORMAL for detailed tables
 
-# Legacy QUIET_MODE (deprecated, use LOG_VERBOSITY instead)
-QUIET_MODE = True  # True = minimal logs (summary only), False = detailed logs
-
 # ----------------------------------------------------------------------
 # Credenziali Bybit
 # ----------------------------------------------------------------------
@@ -81,45 +78,59 @@ exchange_config = {
 }
 
 # Trading parameters
-LEVERAGE = 8  # REDUCED from 10x to 5x for better risk management
+LEVERAGE = 5  # SPIKE OPTIMIZED: Reduced to 5x for safer spike catching
 
 # ==============================================================================
 # 🎯 POSITION SIZING SYSTEM SELECTOR
 # ==============================================================================
 # Choose between FIXED (legacy) or ADAPTIVE (new) position sizing
 
-ADAPTIVE_SIZING_ENABLED = True  # True = Adaptive (learns from results), False = Fixed 3-tier
+ADAPTIVE_SIZING_ENABLED = False  # True = Adaptive (learns from results), False = Fixed 3-tier
 
 # ==============================================================================
-# 🎯 LEGACY PARAMETERS (Used as fallbacks by risk_calculator)
+# 🎯 POSITION SIZE LIMITS (Safety Validation Only)
 # ==============================================================================
-# These are kept for backward compatibility with risk_calculator.py
-# NOTE: These are NOT used in adaptive sizing (which is the primary system)
+# Used only for safety checks in portfolio validation
+POSITION_SIZE_MIN_ABSOLUTE = 20.0  # Minimum position size ($20 × 5 lev = $100 notional, Bybit minimum)
+POSITION_SIZE_MAX_ABSOLUTE = 50.0  # Maximum position size (safety cap)
 
-# Position sizes (fallback values for risk calculator)
-POSITION_SIZE_CONSERVATIVE = 15.0
-POSITION_SIZE_MODERATE = 20.0  
-POSITION_SIZE_AGGRESSIVE = 25.0
+# ==============================================================================
+# 🎯 DYNAMIC POSITION SIZING PARAMETERS (FIX #1)
+# ==============================================================================
+# Parameters for dynamic position sizing that scales with balance
+POSITION_SIZING_TARGET_POSITIONS = 8  # Target at least 8 aggressive positions possible
+POSITION_SIZING_RATIO_CONSERVATIVE = 0.44  # Conservative = 44% of aggressive
+POSITION_SIZING_RATIO_MODERATE = 0.89  # Moderate = 89% of aggressive
+POSITION_SIZING_RATIO_AGGRESSIVE = 1.0  # Aggressive = base unit
 
-# Thresholds (fallback values)
-CONFIDENCE_HIGH_THRESHOLD = 0.75
-CONFIDENCE_LOW_THRESHOLD = 0.65
-VOLATILITY_SIZING_LOW = 0.015
-VOLATILITY_SIZING_HIGH = 0.035
-ADX_STRONG_TREND = 25.0
+# ==============================================================================
+# 🎯 3-TIER POSITION SIZING (Fixed/Legacy System)
+# ==============================================================================
+# Used when ADAPTIVE_SIZING_ENABLED = False, or as fallback values
+# Sistema a 3 livelli basato su confidence ML, volatilità e trend strength (ADX)
 
-# Margin ranges (fallback values)
-MARGIN_MIN = 15.0
-MARGIN_MAX = 150.0
-MARGIN_BASE = 40.0
+# Position sizes per tier (in USD)
+POSITION_SIZE_CONSERVATIVE = 20.0    # Low confidence or high volatility
+POSITION_SIZE_MODERATE = 45.0        # Medium confidence and volatility
+POSITION_SIZE_AGGRESSIVE = 50.0      # High confidence, low volatility, strong trend
 
-# Position sizing ratios (fallback values)
-POSITION_SIZING_TARGET_POSITIONS = 10
-POSITION_SIZING_RATIO_CONSERVATIVE = 0.6
-POSITION_SIZING_RATIO_MODERATE = 0.8
-POSITION_SIZING_RATIO_AGGRESSIVE = 1.0
-POSITION_SIZE_MIN_ABSOLUTE = 15.0
-POSITION_SIZE_MAX_ABSOLUTE = 50.0
+# Base margin for fallback calculations
+BASE_MARGIN = 45.0                   # Default margin when dynamic calculation fails
+
+# Risk limits
+MIN_MARGIN = 20.0                    # Minimum margin per position ($20 × 5 lev = $100 notional, Bybit minimum)
+MAX_MARGIN = 50.0                    # Maximum margin per position
+
+# Confidence thresholds for tier selection
+CONFIDENCE_HIGH_THRESHOLD = 0.75     # ≥75% = high confidence
+CONFIDENCE_LOW_THRESHOLD = 0.65      # <65% = low confidence
+
+# Volatility thresholds (ATR %)
+VOLATILITY_LOW_TIER = 0.015          # <1.5% ATR = low volatility
+VOLATILITY_HIGH_TIER = 0.035         # >3.5% ATR = high volatility
+
+# Trend strength (ADX)
+ADX_STRONG_THRESHOLD = 25.0          # ≥25 ADX = strong trend
 
 # ==============================================================================
 # 🎯 ADAPTIVE POSITION SIZING (NEW SYSTEM)
@@ -202,9 +213,9 @@ EARLY_EXIT_PERSISTENT_TIME_MINUTES = 60  # Check within first hour
 EARLY_EXIT_PERSISTENT_DROP_ROE = -5      # Exit if stays -5% ROE persistently
 
 # ==============================================================================
-# 🎯 TAKE PROFIT SYSTEM
+# 🎯 TAKE PROFIT SYSTEM (DISABLED - Using trailing stop only)
 # ==============================================================================
-TP_ENABLED = True                    # Take profit enabled for proper R/R ratio
+TP_ENABLED = False  # SPIKE OPTIMIZED: Disabled, let trailing stop manage exits
 TP_ROE_TARGET = 0.60                 # +60% ROE target
 TP_RISK_REWARD_RATIO = 2.5           # TP must be 2.5x farther than SL (R/R ratio)
 TP_MIN_DISTANCE_FROM_SL = TP_RISK_REWARD_RATIO  # Alias for compatibility
@@ -213,32 +224,28 @@ TP_MAX_PROFIT_PCT = 0.15             # Maximum 15% profit target
 TP_MIN_PROFIT_PCT = 0.03             # Minimum 3% profit target
 
 # ==============================================================================
-# 🎪 TRAILING STOP CONFIGURATION (OPTIMIZED FOR BETTER R/R)
+# 🎪 TRAILING STOP: SPIKE OPTIMIZED (Early activation +15% ROE)
 # ==============================================================================
-# Dynamic trailing stop that follows price at fixed distance
+# Aggressive trailing stop for spike catching - NO TAKE PROFIT
 
 # Master switch
 TRAILING_ENABLED = True              # Enable trailing stop system
-TRAILING_SILENT_MODE = True          # Minimal logging (only important events)
+TRAILING_SILENT_MODE = False         # SPIKE OPTIMIZED: Verbose to see trailing action
 
-# Activation trigger (FIX: Only for big winners beyond TP)
-# Activate trailing AFTER TP is hit, to let extreme winners run
-TRAILING_TRIGGER_PCT = 0.015         # Activate at +1.5% price (+15% ROE with 10x leverage)
-TRAILING_TRIGGER_ROE = 0.40          # FIX: Better - activate at +40% ROE (beyond TP)
+# EARLY ACTIVATION for spike catching (+15% ROE = +3% price with 5x leverage)
+TRAILING_TRIGGER_PCT = 0.015         # Legacy (not used with ROE system)
+TRAILING_TRIGGER_ROE = 0.15          # SPIKE OPTIMIZED: Activate at +15% ROE (was +40%)
 
-# Protection strategy (ROE-BASED SYSTEM)
-# CRITICAL: Distances are in ROE% (Return On Equity), NOT price%!
-# IMPROVED: More breathing room for profit taking
+# BALANCED PROTECTION (4% ROE breathing room)
 TRAILING_DISTANCE_PCT = 0.10         # Legacy (not used)
-TRAILING_DISTANCE_ROE_OPTIMAL = 0.10 # IMPROVED: Protect all but last 10% ROE (was 8%)
-TRAILING_DISTANCE_ROE_UPDATE = 0.12  # IMPROVED: Update when 12% ROE away (was 10%)
+TRAILING_DISTANCE_ROE_OPTIMAL = 0.04 # SPIKE OPTIMIZED: Protect all but last 4% ROE (was 10%)
+TRAILING_DISTANCE_ROE_UPDATE = 0.06  # SPIKE OPTIMIZED: Update when 6% ROE away (was 12%)
 
 # Update settings (optimized for performance)
-TRAILING_UPDATE_INTERVAL = 30        # Check every 30 seconds (more responsive)
-TRAILING_MIN_CHANGE_PCT = 0.01       # Only update SL if change >1% (reduce API calls)
+TRAILING_UPDATE_INTERVAL = 60        # ⚡ OTTIMIZZATO: Check ogni 60s (era 30s) - riduce chiamate API
+TRAILING_MIN_CHANGE_PCT = 0.005      # SPIKE OPTIMIZED: Update if >0.5% change (was 1%)
 
 # Performance optimizations
-TRAILING_SILENT_MODE = True          # Minimal logging (only important events)
 TRAILING_USE_BATCH_FETCH = True      # Batch fetch prices for multiple positions
 TRAILING_USE_CACHE = True            # Leverage SmartAPIManager cache (70-90% hit rate)
 
@@ -252,13 +259,28 @@ TRAILING_MIN_PROFIT_TO_ACTIVATE = 0.005  # Minimum 0.5% profit before activation
 # Configurazione cache intelligente per riduzione API calls
 
 # Cache TTL (Time To Live) in secondi
-API_CACHE_POSITIONS_TTL = 30          # Positions cache: 30s TTL
-API_CACHE_TICKERS_TTL = 15            # Tickers cache: 15s TTL
-API_CACHE_BATCH_TTL = 20              # Batch operations cache: 20s TTL
+API_CACHE_POSITIONS_TTL = 60          # ⚡ Positions cache: 60s TTL (era 30s)
+API_CACHE_TICKERS_TTL = 30            # ⚡ Tickers cache: 30s TTL (era 15s)
+API_CACHE_BATCH_TTL = 45              # ⚡ Batch operations cache: 45s TTL (era 20s)
 
 # Rate Limiting Protection
 API_RATE_LIMIT_MAX_CALLS = 100        # Max 100 calls per minute (conservative)
 API_RATE_LIMIT_WINDOW = 60            # 60 seconds window
+
+# ==============================================================================
+# 🔄 POSITION SYNC OPTIMIZATION
+# ==============================================================================
+# Controlla la frequenza dei sync completi con Bybit per ridurre API calls
+
+# Position sync interval (in seconds)
+POSITION_SYNC_INTERVAL = 60           # ⚡ Sync completo ogni 60s (invece che ogni ciclo trailing)
+                                      # Questo riduce drasticamente le chiamate API mantenendo dati aggiornati
+                                      
+# Sync immediato dopo apertura/chiusura
+POSITION_SYNC_AFTER_TRADE = True      # Sync immediato dopo apertura/chiusura posizione
+
+# Sync ridondante dopo set SL
+POSITION_SYNC_AFTER_SL_SET = False    # ⚡ DISABILITATO: evita sync ridondante dopo set SL (già abbiamo i dati)
 
 # Real-time position display configuration
 REALTIME_DISPLAY_ENABLED = True
@@ -267,21 +289,35 @@ REALTIME_PRICE_CACHE_TTL = 2
 REALTIME_MAX_API_CALLS = 60
 REALTIME_COLOR_CODING = True
 
-ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]
-TIMEFRAME_DEFAULT: str | None = "15m"
+# ==============================================================================
+# 🖥️ PERFORMANCE OPTIMIZATION (FIX #6: Anti-Freeze)
+# ==============================================================================
+# Disable heavy components if PC is freezing
 
-# Uniform Time Window for Multi-Timeframe Ensemble
-LOOKBACK_HOURS = 6  
+DASHBOARD_ENABLED = False            # FIX #6: Disable PyQt6 dashboard (very heavy on CPU)
+TRAILING_BACKGROUND_ENABLED = True   # Keep trailing monitor (lightweight)
+BALANCE_SYNC_ENABLED = True          # Keep balance sync (lightweight)
+DASHBOARD_UPDATE_INTERVAL = 60      # If enabled: update every 60s instead of 30s
+
+# ==============================================================================
+# 🔥 SPIKE DETECTION: OPTIMIZED TIMEFRAMES & LOOKBACK
+# ==============================================================================
+ENABLED_TIMEFRAMES: list[str] = ["5m", "15m", "30m"]  # Spike optimized
+TIMEFRAME_DEFAULT: str | None = "5m"  # Default to fastest timeframe
+
+# DIFFERENTIATED LOOKBACK per timeframe (spike optimization)
+LOOKBACK_HOURS_5M = 2   # 5m: 2 hours = 24 candles (recent spike focus)
+LOOKBACK_HOURS_15M = 4  # 15m: 4 hours = 16 candles (balance)
+LOOKBACK_HOURS_30M = 6  # 30m: 6 hours = 12 candles (trend stability)
+LOOKBACK_HOURS = LOOKBACK_HOURS_5M  # Default for compatibility
 
 TIMEFRAME_TIMESTEPS = {
-    "1m": int(LOOKBACK_HOURS * 60 / 1),    
-    "3m": int(LOOKBACK_HOURS * 60 / 3),    
-    "5m": int(LOOKBACK_HOURS * 60 / 5),    
-    "15m": int(LOOKBACK_HOURS * 60 / 15),  
-    "30m": int(LOOKBACK_HOURS * 60 / 30),  
-    "1h": int(LOOKBACK_HOURS / 1),         
-    "4h": max(2, int(LOOKBACK_HOURS / 4)), 
-    "1d": max(1, int(LOOKBACK_HOURS / 24))
+    "5m": int(LOOKBACK_HOURS_5M * 60 / 5),    # 24 candles (2 hours)
+    "15m": int(LOOKBACK_HOURS_15M * 60 / 15), # 16 candles (4 hours)
+    "30m": int(LOOKBACK_HOURS_30M * 60 / 30), # 12 candles (6 hours)
+    # Legacy timeframes kept for compatibility
+    "1h": int(6 / 1),
+    "4h": max(2, int(6 / 4)),
 }
 
 def get_timesteps_for_timeframe(timeframe: str) -> int:
@@ -319,8 +355,8 @@ COLOR_THRESHOLD_GREEN = 0.65
 COLOR_THRESHOLD_RED = 0.35
 
 TRADE_CYCLE_INTERVAL = 900  # 15 minuti
-DATA_LIMIT_DAYS = 180
-WARMUP_PERIODS = 30    
+DATA_LIMIT_DAYS = 90  # SPIKE OPTIMIZED: 90 days (2x faster training)
+WARMUP_PERIODS = 30
 
 # ----------------------------------------------------------------------
 # Percorsi modelli
@@ -352,35 +388,12 @@ TOP_ANALYSIS_CRYPTO = TOP_SYMBOLS_COUNT
 MIN_VOLUME_THRESHOLD = 1_000_000  
 MIN_PRICE_THRESHOLD = 0.001      
 
-RSI_THRESHOLDS = {"sideways": {"oversold": 30, "overbought": 70}}
 TRAIN_IF_NOT_FOUND = True
 
 # ----------------------------------------------------------------------
-# Swing Points Labeling
+# Labeling Configuration (SL-Aware Only)
 # ----------------------------------------------------------------------
-SWING_ORDER = 2
-SWING_ATR_FACTOR = 0.3
-SWING_VOLUME_FACTOR = 1.0
-
-# ----------------------------------------------------------------------
-# Future Returns Labeling
-# ----------------------------------------------------------------------
-FUTURE_RETURN_STEPS = 3      
-
-TIMEFRAME_THRESHOLDS = {
-    "15m": {"buy": 0.008, "sell": -0.008},  
-    "30m": {"buy": 0.012, "sell": -0.012},  
-    "1h": {"buy": 0.015, "sell": -0.015},   
-    "4h": {"buy": 0.025, "sell": -0.025},   
-    "1d": {"buy": 0.04, "sell": -0.04}      
-}
-
-RETURN_BUY_THRESHOLD = TIMEFRAME_THRESHOLDS["1h"]["buy"]
-RETURN_SELL_THRESHOLD = TIMEFRAME_THRESHOLDS["1h"]["sell"]
-
-def get_thresholds_for_timeframe(timeframe: str) -> tuple[float, float]:
-    thresholds = TIMEFRAME_THRESHOLDS.get(timeframe, TIMEFRAME_THRESHOLDS["1h"])
-    return thresholds["buy"], thresholds["sell"]
+FUTURE_RETURN_STEPS = 3  # Number of candles forward for SL-aware labeling
 
 # ----------------------------------------------------------------------
 # Ensemble Voting
@@ -393,9 +406,7 @@ SIGNAL_CONFIDENCE_THRESHOLD = 0.75
 # ----------------------------------------------------------------------
 # Class Balancing
 # ----------------------------------------------------------------------
-USE_SMOTE = False
 USE_CLASS_WEIGHTS = True
-SMOTE_K_NEIGHBORS = 3
 
 # ----------------------------------------------------------------------
 # XGBoost
@@ -499,16 +510,26 @@ KELLY_DEFAULT_AVG_WIN = 0.56         # Default +56% ROE
 KELLY_DEFAULT_AVG_LOSS = 0.33        # Default -33% ROE
 
 # ==============================================================================
-# 💰 COST ACCOUNTING (FIX #5: CRITICAL!)
+# 💰 COST ACCOUNTING - CORRECTED BYBIT FEES
 # ==============================================================================
-BYBIT_TAKER_FEE = 0.00075           # 0.075% taker fee
-BYBIT_MAKER_FEE = 0.00055           # 0.055% maker fee
+# Bybit Perpetual Futures fees (non-VIP):
+# - Market orders (taker): 0.055% of notional
+# - Limit orders (maker): 0.02% of notional (if filled as maker)
+# Note: Bot primarily uses market orders (taker fees)
+
+BYBIT_TAKER_FEE = 0.00055           # CORRECTED: 0.055% taker fee (was 0.075%)
+BYBIT_MAKER_FEE = 0.0002            # CORRECTED: 0.02% maker fee (was 0.055%)
 SLIPPAGE_NORMAL = 0.003             # 0.3% normal conditions
 SLIPPAGE_VOLATILE = 0.010           # 1.0% high volatility
 SLIPPAGE_SL_PANIC = 0.008           # 0.8% on SL triggers
 
+# Total round trip costs (with leverage 5x):
+# Entry: 0.055% + 0.3% = 0.355%
+# Exit:  0.055% + 0.3% = 0.355%
+# Total: 0.71% × 5 = 3.55% of margin
+
 # Minimum profit after all costs
-MIN_PROFIT_AFTER_COSTS = 8.0        # Min +8% ROE profit target after costs
+MIN_PROFIT_AFTER_COSTS = 5.0        # ADJUSTED: Min +5% ROE profit (was 8%, adjusted with corrected fees)
 
 # ==============================================================================
 # 🚫 PROBLEMATIC SYMBOLS MANAGEMENT (FIX #4)

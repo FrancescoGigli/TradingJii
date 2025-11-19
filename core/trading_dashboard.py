@@ -494,13 +494,14 @@ class TradingDashboard(QMainWindow):
         win_rate = self.session_stats.get_win_rate()
         win_rate_emoji = self.session_stats.get_win_rate_emoji()
         
-        # ✅ CORRECT FIX: Total PnL = Current Balance - Start Balance
-        # This is the ONLY correct way to calculate total session PnL because:
-        # 1. Current balance already includes all realized P&L
-        # 2. It accounts for exchange fees automatically
-        # 3. No double counting or accumulation errors
-        pnl_usd = current_balance - self.session_stats.session_start_balance
-        pnl_pct = (pnl_usd / self.session_stats.session_start_balance * 100) if self.session_stats.session_start_balance > 0 else 0.0
+        # Get PnL and fee data from session statistics
+        gross_pnl_usd = self.session_stats.total_pnl_usd  # Gross PnL (before fees)
+        total_fees = self.session_stats.total_fees_paid_usd
+        net_pnl_usd = self.session_stats.total_net_pnl_usd  # Net PnL (after fees)
+        
+        # Calculate percentages
+        gross_pnl_pct = (gross_pnl_usd / self.session_stats.session_start_balance * 100) if self.session_stats.session_start_balance > 0 else 0.0
+        net_pnl_pct = (net_pnl_usd / self.session_stats.session_start_balance * 100) if self.session_stats.session_start_balance > 0 else 0.0
         
         balance_text = f"${current_balance:.2f}\nStart: ${self.session_stats.session_start_balance:.2f}"
         self.stat_labels["Balance"].setText(balance_text)
@@ -516,11 +517,29 @@ class TradingDashboard(QMainWindow):
         winrate_text = f"{win_rate:.1f}% {win_rate_emoji}\nAvg Win: +{self.session_stats.get_average_win_pct():.1f}%"
         self.stat_labels["Win Rate"].setText(winrate_text)
         
-        pnl_text = f"{'+' if pnl_usd >= 0 else ''}{pnl_usd:.2f} USD\n({'+' if pnl_pct >= 0 else ''}{pnl_pct:.2f}%)"
+        # 🆕 IMPROVED PnL Display with Fees Breakdown
+        # Show Gross, Fees, Net on separate lines
+        pnl_text = (
+            f"Gross: {'+' if gross_pnl_usd >= 0 else ''}{gross_pnl_usd:.2f} USD\n"
+            f"Fees: -{total_fees:.2f} USD\n"
+            f"Net: {'+' if net_pnl_usd >= 0 else ''}{net_pnl_usd:.2f} USD ({'+' if net_pnl_pct >= 0 else ''}{net_pnl_pct:.2f}%)"
+        )
         pnl_label = self.stat_labels["Total PnL"]
         pnl_label.setText(pnl_text)
         
-        if pnl_usd >= 0:
+        # Add tooltip explaining the breakdown
+        pnl_label.setToolTip(
+            f"💰 PnL Breakdown:\n\n"
+            f"Gross PnL: ${gross_pnl_usd:+.2f} ({gross_pnl_pct:+.2f}%)\n"
+            f"  └─ Before trading fees\n\n"
+            f"Trading Fees: -${total_fees:.2f}\n"
+            f"  └─ Bybit charges (0.055% per trade)\n\n"
+            f"Net PnL: ${net_pnl_usd:+.2f} ({net_pnl_pct:+.2f}%)\n"
+            f"  └─ Your actual profit (in wallet)"
+        )
+        
+        # Color based on NET PnL (what matters!)
+        if net_pnl_usd >= 0:
             pnl_label.setStyleSheet("color: #22C55E;")
         else:
             pnl_label.setStyleSheet("color: #EF4444;")
@@ -842,22 +861,40 @@ class TradingDashboard(QMainWindow):
             logging.error(f"Error in timer update: {e}")
     
     async def _async_timer_update(self):
-        """Async timer update - OPTIMIZED: Read from Position Manager only"""
+        """Async timer update - ALWAYS fetch fresh balance from Bybit"""
         try:
-            # OPTIMIZATION: Dashboard NO LONGER fetches balance directly from Bybit
-            # Balance is kept up-to-date by Balance Sync Loop in trading_engine
-            # Dashboard just reads the cached value from Position Manager
+            # 🆕 FIX: Dashboard fetches REAL balance directly from Bybit
+            # No caching, no delays - always fresh data!
             
-            balance_summary = self.position_manager.safe_get_session_summary()
-            current_balance = balance_summary.get('balance', 0)
+            if not config.DEMO_MODE and self.exchange:
+                # Fetch REAL balance directly from Bybit
+                from trade_manager import get_real_balance
+                current_balance = await get_real_balance(self.exchange)
+                
+                if not current_balance or current_balance <= 0:
+                    # Fallback to cached if fetch fails
+                    balance_summary = self.position_manager.safe_get_session_summary()
+                    current_balance = balance_summary.get('balance', 0)
+                    logging.warning(f"⚠️ Dashboard: Using cached balance ${current_balance:.2f} (fetch failed)")
+                else:
+                    logging.debug(f"💰 Dashboard: Fresh balance from Bybit: ${current_balance:.2f}")
+            else:
+                # Demo mode - use cached
+                balance_summary = self.position_manager.safe_get_session_summary()
+                current_balance = balance_summary.get('balance', 0)
             
-            # Update dashboard with cached balance (still REAL data from Bybit)
+            # Update dashboard with REAL balance
             await self.update_dashboard_async(current_balance)
-            
-            logging.debug(f"💰 Dashboard: Using cached balance ${current_balance:.2f} (synced by Balance Loop)")
             
         except Exception as e:
             logging.error(f"Error in async timer update: {e}")
+            # Fallback to cached balance on error
+            try:
+                balance_summary = self.position_manager.safe_get_session_summary()
+                current_balance = balance_summary.get('balance', 0)
+                await self.update_dashboard_async(current_balance)
+            except:
+                pass
     
     def start(self):
         """Start the dashboard (non-async, for synchronous usage)"""

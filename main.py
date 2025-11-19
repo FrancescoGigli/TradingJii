@@ -70,6 +70,9 @@ from trading import TradingEngine
 # Realtime display
 from core.realtime_display import initialize_global_realtime_display
 
+# Trade history logger with Bybit sync
+from core.trade_history_logger import global_trade_history_logger
+
 # Models
 from model_loader import load_xgboost_model_func
 from trainer import train_xgboost_model_wrapper, ensure_trained_models_dir
@@ -231,6 +234,18 @@ async def main():
         # Balance sync removed for cleaner startup
         logging.debug("🔧 Balance sync disabled - using direct balance queries when needed")
 
+        # 🆕 FRESH SESSION START - No historical data sync
+        # Reset closed positions tracker for this session only
+        logging.info(colored("🆕 FRESH SESSION START - Tracking only trades closed in THIS session", "green", attrs=["bold"]))
+        logging.info(colored("📊 Historical data sync DISABLED - Clean session tracking", "cyan"))
+        
+        # Reset trade history for fresh session (optional - keeps file but marks session start)
+        try:
+            from datetime import datetime
+            session_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            logging.info(colored(f"⏰ Session started: {session_start}", "white"))
+        except Exception:
+            pass
         
         # Register modules initialization
         global_startup_collector.set_modules(

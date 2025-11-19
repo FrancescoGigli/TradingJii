@@ -11,6 +11,10 @@ from termcolor import colored
 
 from .position_core import PositionCore
 
+# Export constants for external use
+MIN_POSITION_USD = 100.0  # Minimum notional value for a position
+MIN_IM_USD = 10.0  # Minimum initial margin
+
 
 class PositionSafety:
     """Handles position safety checks and auto-fixes"""
@@ -32,7 +36,7 @@ class PositionSafety:
         import asyncio
         
         TOLERANCE_PCT = 0.005  # ±0.5% tolerance
-        DEBOUNCE_SEC = 300  # 5 minuti invece di 30 secondi
+        DEBOUNCE_SEC = 900  # FIX #4: 15 minutes - longer than cycle to prevent loops
         fixed_count = 0
         
         # Track last fix time per symbol
@@ -101,11 +105,28 @@ class PositionSafety:
                             side = 'sell'
                             long_position = False
                     
-                    # Get current SL from position field (NOT from orders)
-                    current_sl = float(position.get('stopLoss', 0) or 0)
+                    # FIX #4: Get current SL from 'info' dict for accuracy (same as verify logic)
+                    position_info = position.get('info', {})
+                    sl_raw = position_info.get('stopLoss', '0')
+                    
+                    try:
+                        if isinstance(sl_raw, str):
+                            current_sl = float(sl_raw) if sl_raw else 0.0
+                        else:
+                            current_sl = float(sl_raw) if sl_raw else 0.0
+                    except (ValueError, TypeError):
+                        current_sl = 0.0
+                    
+                    logging.debug(f"[Auto-Fix] {symbol_short}: Current SL={current_sl:.6f} (from info dict)")
                     
                     if current_sl == 0:
-                        # NO STOP LOSS - Critical!
+                        # NO STOP LOSS - Critical! (But check if it was just set)
+                        # Skip if very recently fixed (within last 2 minutes)
+                        last_fix = self._last_fix_time.get(symbol, 0)
+                        if time.time() - last_fix < 120:  # 2 minutes grace period
+                            logging.debug(f"[Auto-Fix] {symbol_short}: SL=0 but fixed {int(time.time() - last_fix)}s ago, skipping")
+                            continue
+                        
                         logging.warning(colored(
                             f"⚠️ {symbol_short}: NO STOP LOSS! Setting SL with VERIFICATION...",
                             "red", attrs=['bold']
@@ -276,8 +297,6 @@ class PositionSafety:
         Returns:
             int: Number of positions closed
         """
-        MIN_POSITION_USD = 100.0
-        MIN_IM_USD = 10.0
         closed_count = 0
         
         try:

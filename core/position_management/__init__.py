@@ -126,6 +126,10 @@ class ThreadSafePositionManager:
         """Reset session - delegated to core"""
         return self.core.reset_session()
     
+    def reset_session_closed_positions(self):
+        """Reset only closed positions for fresh session - delegated to core"""
+        return self.core.reset_session_closed_positions()
+    
     # ========================================
     # BYBIT SYNC (Sync operations)
     # ========================================

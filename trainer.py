@@ -23,8 +23,6 @@ from sklearn.metrics import classification_report, confusion_matrix
 import config
 from config import N_FEATURES_FINAL
 from data_utils import prepare_data
-from scipy.signal import argrelextrema
-from imblearn.over_sampling import SMOTE
 from termcolor import colored
 
 _LOG = logging.getLogger(__name__)
@@ -47,91 +45,7 @@ def ensure_trained_models_dir() -> str:
 
 
 # ----------------------------------------------------------------------
-# LABELING METHOD: Future Returns Only (Dual labeling removed)
-# ----------------------------------------------------------------------
-# CRITICAL FIX: Removed swing points labeling to eliminate confusion
-# Using only future returns approach for consistency
-
-# ----------------------------------------------------------------------
-# Future Returns Labeling (No Lookahead Bias)
-# ----------------------------------------------------------------------
-def label_with_future_returns(df, lookforward_steps=3, buy_threshold=0.02, sell_threshold=-0.02):
-    """
-    🏆 INDUSTRY STANDARD: Percentile-Based Labeling
-    
-    Etichetta BUY/SELL/NEUTRAL basandosi su percentili dei returns futuri.
-    Questo metodo GARANTISCE class balance e viene usato da hedge funds professionali.
-    
-    Args:
-        df (pd.DataFrame): DataFrame con dati OHLC
-        lookforward_steps (int): Steps nel futuro per calcolare return
-        buy_threshold (float): IGNORED - usa percentili automatici
-        sell_threshold (float): IGNORED - usa percentili automatici
-        
-    Returns:
-        np.ndarray: Array di labels [0=SELL, 1=BUY, 2=NEUTRAL]
-    """
-    labels = np.full(len(df), 2)  # Default = NEUTRAL
-    
-    try:
-        # Calcola tutti i returns futuri
-        future_returns = []
-        valid_indices = []
-        
-        for i in range(len(df) - lookforward_steps):
-            current_price = df.iloc[i]['close']
-            future_price = df.iloc[i + lookforward_steps]['close']
-            
-            # Calcola return percentuale
-            future_return = (future_price - current_price) / current_price
-            
-            # Store return e indice per percentile calculation
-            future_returns.append(future_return)
-            valid_indices.append(i)
-        
-        if not future_returns:
-            _LOG.warning("No valid future returns calculated")
-            return labels
-        
-        # 🏆 INDUSTRY STANDARD: Percentile-based thresholds
-        future_returns = np.array(future_returns)
-        
-        # QUICK WIN FIX: More selective percentiles to reduce overtrading
-        buy_threshold_pct = np.percentile(future_returns, 85)   # Top 15% → BUY (more selective)
-        sell_threshold_pct = np.percentile(future_returns, 15)  # Bottom 15% → SELL (more selective)
-        # Middle 70% → NEUTRAL (increased from 40%)
-        
-        # Assegna labels basato su percentili adattivi
-        for idx, return_val in enumerate(future_returns):
-            original_idx = valid_indices[idx]
-            
-            if return_val >= buy_threshold_pct:
-                labels[original_idx] = 1  # BUY
-            elif return_val <= sell_threshold_pct:
-                labels[original_idx] = 0  # SELL
-            # else: rimane NEUTRAL (2)
-        
-        # Log statistiche percentile-based
-        buy_count = np.sum(labels == 1)
-        sell_count = np.sum(labels == 0)
-        neutral_count = np.sum(labels == 2)
-        total = len(labels)
-        
-        _LOG.info(f"🏆 SELECTIVE Percentile Labeling Applied (QUICK WIN):")
-        _LOG.info(f"   📈 BUY threshold (85th percentile): {buy_threshold_pct:.4f} ({buy_threshold_pct*100:.2f}%)")
-        _LOG.info(f"   📉 SELL threshold (15th percentile): {sell_threshold_pct:.4f} ({sell_threshold_pct*100:.2f}%)")
-        _LOG.info(f"   🎯 SELECTIVE Class distribution: BUY={buy_count}({buy_count/total*100:.1f}%), SELL={sell_count}({sell_count/total*100:.1f}%), NEUTRAL={neutral_count}({neutral_count/total*100:.1f}%)")
-        _LOG.info(f"   🔥 Reduced trade frequency by ~50% for higher quality signals")
-        
-    except Exception as e:
-        _LOG.error(f"Errore nel calcolo percentile labeling: {e}")
-        # Fallback: tutto NEUTRAL
-        labels = np.full(len(df), 2)
-    
-    return labels
-
-# ----------------------------------------------------------------------
-# SL-AWARE LABELING (PRODUCTION READY)
+# SL-AWARE LABELING (Active System)
 # ----------------------------------------------------------------------
 def label_with_sl_awareness_v2(df, lookforward_steps=3, sl_percentage=0.05,
                                 percentile_buy=80, percentile_sell=80):
@@ -320,9 +234,8 @@ def _train_xgb_sync_improved(X, y):
         cls_name = {0: 'SELL', 1: 'BUY', 2: 'NEUTRAL'}[cls]
         _LOG.info(f"   {cls_name}: {count} ({count/len(y)*100:.1f}%)")
 
-    # ======= Cross-Validation Robusta con SMOTE per Fold =======
+    # ======= Cross-Validation =======
     _LOG.info(f"🎯 Inizio cross-validation con {config.CV_N_SPLITS} splits...")
-    _LOG.info("🔧 CRITICAL FIX: SMOTE applicato per ogni fold per evitare class imbalance temporale")
     
     tscv = TimeSeriesSplit(n_splits=config.CV_N_SPLITS)
     cv_scores = []
@@ -342,24 +255,7 @@ def _train_xgb_sync_improved(X, y):
         _LOG.info(f"   Fold {fold_idx + 1} Training classes: {dict(zip(unique_tr, counts_tr))}")
         _LOG.info(f"   Fold {fold_idx + 1} Validation classes: {dict(zip(unique_val, counts_val))}")
         
-        # ======= SMOTE per Fold (CRITICAL FIX) =======
-        if config.USE_SMOTE and len(np.unique(y_tr)) > 1:
-            try:
-                smote = SMOTE(
-                    k_neighbors=min(config.SMOTE_K_NEIGHBORS, min(counts_tr) - 1), 
-                    random_state=42 + fold_idx,  # Different seed per fold
-                    sampling_strategy='auto'
-                )
-                X_tr, y_tr = smote.fit_resample(X_tr, y_tr)
-                
-                _LOG.info(f"   ✅ SMOTE applicato al Fold {fold_idx + 1}")
-                unique_smote, counts_smote = np.unique(y_tr, return_counts=True)
-                _LOG.info(f"   📈 Post-SMOTE training classes: {dict(zip(unique_smote, counts_smote))}")
-                
-            except Exception as e:
-                _LOG.warning(f"   ⚠️ SMOTE fallito per Fold {fold_idx + 1}: {e}")
-
-        # Calcola class weights se abilitato  
+        # Calcola class weights per bilanciamento
         sample_weight = None
         if config.USE_CLASS_WEIGHTS:
             try:
@@ -416,39 +312,20 @@ def _train_xgb_sync_improved(X, y):
     _LOG.info(f"   📊 CV Accuracy: {cv_mean:.4f} ± {cv_std:.4f}")
     _LOG.info(f"   🥇 Best Fold Score: {best_score:.4f}")
 
-    # ======= Final Training con SMOTE (CRITICAL FIX) =======
+    # ======= Final Training =======
     # Usa l'ultimo split per evaluation finale
     final_tr_idx, final_val_idx = list(tscv.split(X_scaled))[-1]
     X_final_tr, X_final_val = X_scaled[final_tr_idx], X_scaled[final_val_idx]
     y_final_tr, y_final_val = y[final_tr_idx], y[final_val_idx]
     
-    _LOG.info("🔧 CRITICAL FIX: Applicando SMOTE anche ai dati finali di training")
-    
-    # Log distribution prima del SMOTE finale
+    # Log class distribution
     unique_final_tr, counts_final_tr = np.unique(y_final_tr, return_counts=True)
     unique_final_val, counts_final_val = np.unique(y_final_val, return_counts=True)
     
-    _LOG.info(f"📊 Final Training classes pre-SMOTE: {dict(zip(unique_final_tr, counts_final_tr))}")
+    _LOG.info(f"📊 Final Training classes: {dict(zip(unique_final_tr, counts_final_tr))}")
     _LOG.info(f"📊 Final Validation classes: {dict(zip(unique_final_val, counts_final_val))}")
-    
-    # ======= SMOTE per Final Training (GAME CHANGER!) =======
-    if config.USE_SMOTE and len(np.unique(y_final_tr)) > 1:
-        try:
-            smote_final = SMOTE(
-                k_neighbors=min(config.SMOTE_K_NEIGHBORS, min(counts_final_tr) - 1),
-                random_state=999,  # Fixed seed for reproducibility
-                sampling_strategy='auto'
-            )
-            X_final_tr, y_final_tr = smote_final.fit_resample(X_final_tr, y_final_tr)
-            
-            unique_final_smote, counts_final_smote = np.unique(y_final_tr, return_counts=True)
-            _LOG.info(f"✅ SMOTE applicato ai dati finali!")
-            _LOG.info(f"📈 Final Training classes post-SMOTE: {dict(zip(unique_final_smote, counts_final_smote))}")
-            
-        except Exception as e:
-            _LOG.warning(f"⚠️ SMOTE finale fallito: {e}")
 
-    # Re-train il modello sui dati finali bilanciati
+    # Re-train final model with class weights
     final_sample_weight = None
     if config.USE_CLASS_WEIGHTS:
         try:
@@ -581,27 +458,15 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
                 
             successful_symbols += 1
             
-            # ======= UNIFIED LABELING: SL-Aware OR Standard =======
-            if config.SL_AWARENESS_ENABLED:
-                # NEW: Stop Loss Aware labeling
-                labels, sl_features = label_with_sl_awareness_v2(
-                    df_with_indicators,
-                    lookforward_steps=config.FUTURE_RETURN_STEPS,
-                    sl_percentage=config.SL_AWARENESS_PERCENTAGE,
-                    percentile_buy=config.SL_AWARENESS_PERCENTILE_BUY,
-                    percentile_sell=config.SL_AWARENESS_PERCENTILE_SELL
-                )
-                _LOG.debug(f"🎯 Using SL-Aware labeling for {timeframe} (SL={config.SL_AWARENESS_PERCENTAGE*100:.1f}%)")
-            else:
-                # LEGACY: Standard future returns labeling
-                buy_threshold, sell_threshold = config.get_thresholds_for_timeframe(timeframe)
-                labels = label_with_future_returns(
-                    df_with_indicators,
-                    lookforward_steps=config.FUTURE_RETURN_STEPS,
-                    buy_threshold=buy_threshold,
-                    sell_threshold=sell_threshold
-                )
-                _LOG.debug(f"Using standard thresholds for {timeframe}: BUY={buy_threshold:.1%}, SELL={sell_threshold:.1%}")
+            # ======= SL-Aware Labeling =======
+            labels, sl_features = label_with_sl_awareness_v2(
+                df_with_indicators,
+                lookforward_steps=config.FUTURE_RETURN_STEPS,
+                sl_percentage=config.SL_AWARENESS_PERCENTAGE,
+                percentile_buy=config.SL_AWARENESS_PERCENTILE_BUY,
+                percentile_sell=config.SL_AWARENESS_PERCENTILE_SELL
+            )
+            _LOG.debug(f"🎯 Using SL-Aware labeling for {timeframe} (SL={config.SL_AWARENESS_PERCENTAGE*100:.1f}%)")
             
             # Calculate label distribution for display
             buy_count = np.sum(labels == 1)

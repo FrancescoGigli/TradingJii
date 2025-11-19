@@ -48,8 +48,12 @@ class IntegratedTrailingMonitor:
         # Configuration
         self.UPDATE_INTERVAL = 30  # 30 seconds
         self.AUTOFIX_INTERVAL = 300  # 5 minutes
+        self.DISPLAY_INTERVAL = 180  # 3 minutes (display positions table)
         
-        logging.info("🎪 IntegratedTrailingMonitor initialized (30s interval)")
+        # Display tracking
+        self.last_display_time = 0
+        
+        logging.info("🎪 IntegratedTrailingMonitor initialized (30s interval, 3min display)")
     
     async def run_monitor_loop(self, exchange):
         """
@@ -85,7 +89,12 @@ class IntegratedTrailingMonitor:
                     
                     self.last_autofix_time = current_time
                 
-                # 4. Reset error counter on success
+                # 4. DISPLAY POSITIONS TABLE (every 3 minutes)
+                if current_time - self.last_display_time >= self.DISPLAY_INTERVAL:
+                    await self._display_positions_snapshot(exchange)
+                    self.last_display_time = current_time
+                
+                # 5. Reset error counter on success
                 self.consecutive_errors = 0
                 
                 # 5. Wait for next cycle
@@ -135,12 +144,46 @@ class IntegratedTrailingMonitor:
             logging.error(f"Error in auto-fix: {e}")
             return 0
     
+    async def _display_positions_snapshot(self, exchange):
+        """
+        Display positions table snapshot every 3 minutes
+        
+        Provides periodic visibility of open/closed positions
+        without waiting for the 15-minute trading cycle
+        """
+        try:
+            # Use realtime display to show snapshot
+            from core.realtime_display import global_realtime_display
+            
+            if global_realtime_display:
+                # Update and show snapshot
+                await global_realtime_display.update_snapshot(exchange)
+                
+                # Log separator for visibility
+                logging.info("=" * 100)
+                logging.info("📊 PERIODIC POSITIONS SNAPSHOT (3-min update)")
+                logging.info("=" * 100)
+                
+                global_realtime_display.show_snapshot()
+                
+                logging.info("=" * 100)
+            else:
+                logging.debug("⚠️ Realtime display not available for snapshot")
+                
+        except Exception as e:
+            logging.error(f"Error displaying positions snapshot: {e}")
+    
     async def _check_and_update_closed_positions(self, exchange):
         """
         Check for newly closed positions and update statistics
         
         This method syncs with Bybit to detect positions that closed
         since last check, then updates session statistics.
+        
+        🆕 FIX: Immediately refresh balance after trade closes to ensure
+        dashboard displays accurate PnL without waiting for balance sync loop
+        
+        🔄 NEW: Also syncs closed trades from Bybit every 30s to trade history logger
         """
         if not self.session_stats:
             return  # No stats tracking
@@ -152,9 +195,30 @@ class IntegratedTrailingMonitor:
             # Update statistics for each closed position
             for closed_position in newly_closed:
                 self.session_stats.update_from_closed_position(closed_position)
-                
+            
+            # 🆕 FIX: Immediately refresh balance after trade closes
             if newly_closed:
                 logging.debug(f"📊 Updated stats for {len(newly_closed)} newly closed positions")
+                
+                # Fetch fresh balance from Bybit to update dashboard immediately
+                try:
+                    from trade_manager import get_real_balance
+                    real_balance = await get_real_balance(exchange)
+                    
+                    if real_balance and real_balance > 0:
+                        # Update position manager with fresh balance
+                        self.position_manager.update_real_balance(real_balance)
+                        logging.info(
+                            f"💰 Balance refreshed: ${real_balance:.2f} "
+                            f"(after {len(newly_closed)} trade(s) closed)"
+                        )
+                except Exception as balance_error:
+                    logging.warning(f"⚠️ Failed to refresh balance after trade close: {balance_error}")
+                
+                # 🔄 HISTORICAL SYNC DISABLED - Session tracking only
+                # The position_manager already tracks closed positions from sync_with_bybit
+                # We DON'T want to sync historical trades as we track ONLY current session
+                logging.debug(f"📊 Session tracking: {len(newly_closed)} trades closed in this session")
                 
         except Exception as e:
             logging.error(f"Error checking closed positions: {e}")

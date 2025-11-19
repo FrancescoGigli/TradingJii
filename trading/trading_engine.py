@@ -175,11 +175,16 @@ class TradingEngine:
         Initialize fresh session with position sync
         
         FIX #3: Balance Centralization - Single source of truth
+        🆕 SESSION TRACKING: Reset only closed positions to track THIS session only
         """
         logging.info(colored("🧹 FRESH SESSION STARTUP", "cyan", attrs=['bold']))
 
         if self.clean_modules_available:
+            # Reset session (clears all positions)
             self.position_manager.reset_session()
+            
+            # 🆕 Reset ONLY closed positions - will be populated by trades closed in THIS session
+            self.position_manager.reset_session_closed_positions()
 
         # FIX #3: Centralized balance initialization
         real_balance = None
@@ -488,6 +493,27 @@ class TradingEngine:
                     notional_value = target_margin * config.LEVERAGE
                     position_size = notional_value / current_price
                     
+                    # 🚨 CONTROLLO PRE-APERTURA: Verifica notional minimo
+                    # Se il notional sarebbe < MIN_POSITION_USD, salta questa moneta
+                    from core.position_management.position_safety import MIN_POSITION_USD
+                    
+                    # Calcola il notional che si creerebbe realmente
+                    # (ipotizzando che Bybit potrebbe arrotondare al minimo)
+                    expected_notional = position_size * current_price
+                    
+                    if expected_notional < MIN_POSITION_USD:
+                        display_execution_card(
+                            i, len(signals_to_execute), symbol, signal, None, "SKIPPED",
+                            f"Notional troppo basso: ${expected_notional:.2f} < ${MIN_POSITION_USD:.0f} minimo\n" +
+                            f"    Prezzo: ${current_price:.2f} troppo alto per IM ${target_margin:.0f}"
+                        )
+                        logging.info(colored(
+                            f"⏭️ {symbol_short}: Prezzo troppo alto (${current_price:.2f}) per IM ${target_margin:.0f} → "
+                            f"notional ${expected_notional:.2f} < ${MIN_POSITION_USD:.0f} minimo → SKIP",
+                            "yellow"
+                        ))
+                        continue  # Vai alla moneta successiva
+                    
                     # Crea PositionLevels con margin precalcolato (SL/TP non usati)
                     from core.risk_calculator import PositionLevels
                     levels = PositionLevels(
@@ -725,12 +751,13 @@ class TradingEngine:
 
     async def run_continuous_trading(self, exchange, xgb_models, xgb_scalers):
         """
-        Run continuous trading with integrated systems (trailing monitor + dashboard)
+        Run continuous trading with OPTIMIZED task management (FIX #6: Anti-Freeze)
         
-        Parallel tasks:
+        PERFORMANCE MODE (default):
         - Trading cycle (every 15 min)
-        - Trailing monitor (every 30s)
-        - Dashboard display (every 30s)
+        - Trailing monitor (optional, every 30s) 
+        - Balance sync (optional, every 60s)
+        - Dashboard DISABLED (too heavy)
         """
         
         # Initialize session balance for statistics
@@ -744,40 +771,62 @@ class TradingEngine:
                 self.session_stats.initialize_balance(config.DEMO_BALANCE)
                 logging.info(f"📊 Session stats initialized with ${config.DEMO_BALANCE:.2f} (DEMO)")
         
-        # Check if integrated systems are available
-        if INTEGRATED_SYSTEMS_AVAILABLE and self.dashboard and self.session_stats:
-            logging.info(colored("🚀 Starting with INTEGRATED SYSTEMS (Trading + Trailing + Dashboard + Balance Sync)", "green", attrs=['bold']))
-            
-            # Create parallel tasks
-            trading_task = asyncio.create_task(self._trading_loop(exchange, xgb_models, xgb_scalers))
+        # FIX #6: Selective task activation based on config
+        tasks = []
+        active_components = ["Trading Loop"]
+        
+        # Always include trading loop
+        trading_task = asyncio.create_task(self._trading_loop(exchange, xgb_models, xgb_scalers))
+        tasks.append(trading_task)
+        
+        # Optional: Trailing monitor (lightweight)
+        if config.TRAILING_BACKGROUND_ENABLED and INTEGRATED_SYSTEMS_AVAILABLE and self.session_stats:
             trailing_task = asyncio.create_task(
                 run_integrated_trailing_monitor(exchange, self.position_manager, self.session_stats)
             )
-            dashboard_task = asyncio.create_task(
-                self.dashboard.run_live_dashboard(exchange, update_interval=30)
-            )
-            balance_sync_task = asyncio.create_task(self._balance_sync_loop(exchange))
-            
-            try:
-                # Run all tasks in parallel
-                await asyncio.gather(trading_task, trailing_task, dashboard_task, balance_sync_task)
-            except KeyboardInterrupt:
-                logging.info("⛔ Trading stopped by user")
-                # Cancel all tasks gracefully
-                trading_task.cancel()
-                trailing_task.cancel()
-                dashboard_task.cancel()
-                balance_sync_task.cancel()
-                try:
-                    await asyncio.gather(trading_task, trailing_task, dashboard_task, balance_sync_task, return_exceptions=True)
-                except:
-                    pass
-            except Exception as e:
-                logging.error(f"❌ Error in integrated trading system: {e}", exc_info=True)
+            tasks.append(trailing_task)
+            active_components.append("Trailing Monitor")
         else:
-            # Fallback: Basic mode without dashboard
-            logging.warning("⚠️ Running in BASIC MODE (no integrated systems)")
-            await self._trading_loop(exchange, xgb_models, xgb_scalers)
+            logging.info("📊 Trailing monitor: DISABLED (managed in-cycle)")
+        
+        # Optional: Dashboard (HEAVY - disabled by default)
+        if config.DASHBOARD_ENABLED and INTEGRATED_SYSTEMS_AVAILABLE and self.dashboard:
+            dashboard_task = asyncio.create_task(
+                self.dashboard.run_live_dashboard(exchange, update_interval=config.DASHBOARD_UPDATE_INTERVAL)
+            )
+            tasks.append(dashboard_task)
+            active_components.append(f"Dashboard ({config.DASHBOARD_UPDATE_INTERVAL}s)")
+            logging.warning(colored("⚠️ PyQt6 Dashboard ENABLED - This may cause high CPU usage!", "yellow"))
+        else:
+            logging.info("🖥️ PyQt6 Dashboard: DISABLED (performance mode)")
+        
+        # Optional: Balance sync (lightweight)
+        if config.BALANCE_SYNC_ENABLED and not config.DEMO_MODE:
+            balance_sync_task = asyncio.create_task(self._balance_sync_loop(exchange))
+            tasks.append(balance_sync_task)
+            active_components.append("Balance Sync (60s)")
+        else:
+            logging.info("💰 Background balance sync: DISABLED (synced in-cycle)")
+        
+        logging.info(colored(
+            f"🚀 PERFORMANCE MODE: {' + '.join(active_components)}",
+            "green", attrs=['bold']
+        ))
+        
+        try:
+            # Run selected tasks in parallel
+            await asyncio.gather(*tasks)
+        except KeyboardInterrupt:
+            logging.info("⛔ Trading stopped by user")
+            # Cancel all tasks gracefully
+            for task in tasks:
+                task.cancel()
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except:
+                pass
+        except Exception as e:
+            logging.error(f"❌ Error in trading system: {e}", exc_info=True)
     
     async def _balance_sync_loop(self, exchange):
         """

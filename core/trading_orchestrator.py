@@ -37,6 +37,14 @@ except ImportError as e:
     UNIFIED_MANAGERS_AVAILABLE = False
     logging.warning(f"⚠️ Unified managers not available: {e}")
 
+# Import trade history logger
+try:
+    from core.trade_history_logger import log_trade_opened_from_position
+    TRADE_HISTORY_LOGGER_AVAILABLE = True
+except ImportError:
+    TRADE_HISTORY_LOGGER_AVAILABLE = False
+    logging.warning("⚠️ Trade History Logger not available in TradingOrchestrator")
+
 # COORDINATORS: Removed unused position_opening_coordinator (part of code simplification)
 
 
@@ -366,6 +374,17 @@ class TradingOrchestrator:
             logging.info(colored(
                 f"✅ {symbol}: Position opened with fixed SL protection", "green"
             ))
+            
+            # 📝 LOG TRADE OPENED to history
+            if TRADE_HISTORY_LOGGER_AVAILABLE:
+                try:
+                    # Get position object to log
+                    with self.position_manager._lock:
+                        if position_id in self.position_manager._open_positions:
+                            position_obj = self.position_manager._open_positions[position_id]
+                            log_trade_opened_from_position(position_obj)
+                except Exception as log_err:
+                    logging.warning(f"⚠️ Failed to log trade opened: {log_err}")
 
             return TradingResult(True, position_id, "", {
                 'main': market_result.order_id,
