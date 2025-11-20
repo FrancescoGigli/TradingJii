@@ -17,10 +17,7 @@ import numpy as np
 import warnings
 import asyncio
 import logging
-import sys
 from termcolor import colored
-from PyQt6.QtWidgets import QApplication
-from qasync import QEventLoop
 
 # Suppress runtime warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="ta")
@@ -284,17 +281,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Create QApplication for PyQt6 dashboard
-    app = QApplication(sys.argv)
-    
-    # Create qasync event loop
-    loop = QEventLoop(app)
-    asyncio.set_event_loop(loop)
-    
+    # Run bot with standard asyncio (no PyQt6/qasync needed)
     try:
-        # Run main with qasync integration
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("👋 Interrupted by user")
-    finally:
-        loop.close()

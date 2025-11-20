@@ -53,10 +53,9 @@ except ImportError:
 # Import new integrated systems
 try:
     from core.session_statistics import global_session_statistics
-    from core.trading_dashboard import TradingDashboard
     from core.integrated_trailing_monitor import run_integrated_trailing_monitor
     INTEGRATED_SYSTEMS_AVAILABLE = True
-    logging.debug("📊 Integrated systems (stats, dashboard, trailing) loaded")
+    logging.debug("📊 Integrated systems (stats, trailing) loaded")
 except ImportError as e:
     INTEGRATED_SYSTEMS_AVAILABLE = False
     logging.warning(f"⚠️ Integrated systems not available: {e}")
@@ -85,14 +84,12 @@ class TradingEngine:
         # Initialize adaptive position sizing if enabled
         self._init_adaptive_sizing()
         
-        # Initialize integrated systems (stats + dashboard + trailing)
+        # Initialize integrated systems (stats + trailing, NO dashboard)
         if INTEGRATED_SYSTEMS_AVAILABLE and self.clean_modules_available:
             self.session_stats = global_session_statistics
-            self.dashboard = TradingDashboard(self.position_manager, self.session_stats)
-            logging.debug("📊 Integrated systems initialized (stats, dashboard, trailing)")
+            logging.debug("📊 Integrated systems initialized (stats, trailing)")
         else:
             self.session_stats = None
-            self.dashboard = None
             logging.warning("⚠️ Integrated systems not available - using basic mode")
 
     def _init_database_system(self):
@@ -789,16 +786,8 @@ class TradingEngine:
         else:
             logging.info("📊 Trailing monitor: DISABLED (managed in-cycle)")
         
-        # Optional: Dashboard (HEAVY - disabled by default)
-        if config.DASHBOARD_ENABLED and INTEGRATED_SYSTEMS_AVAILABLE and self.dashboard:
-            dashboard_task = asyncio.create_task(
-                self.dashboard.run_live_dashboard(exchange, update_interval=config.DASHBOARD_UPDATE_INTERVAL)
-            )
-            tasks.append(dashboard_task)
-            active_components.append(f"Dashboard ({config.DASHBOARD_UPDATE_INTERVAL}s)")
-            logging.warning(colored("⚠️ PyQt6 Dashboard ENABLED - This may cause high CPU usage!", "yellow"))
-        else:
-            logging.info("🖥️ PyQt6 Dashboard: DISABLED (performance mode)")
+        # Dashboard removed - Terminal output only
+        logging.info("🖥️ Output: Terminal only (no dashboard)")
         
         # Optional: Balance sync (lightweight)
         if config.BALANCE_SYNC_ENABLED and not config.DEMO_MODE:
