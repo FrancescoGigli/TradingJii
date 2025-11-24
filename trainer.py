@@ -540,7 +540,6 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
     # ======= AUTOMATIC VISUALIZATION SAVE =======
     # Save comprehensive training metrics as images
     try:
-        from core.visualization import save_training_metrics
         
         # Prepare feature names for visualization
         feature_names = []

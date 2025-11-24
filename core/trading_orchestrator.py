@@ -346,23 +346,7 @@ class TradingOrchestrator:
                 # Note: SL già applicato su Bybit, non serve passarlo al tracker
             )
             
-            # 🎯 ADAPTIVE SIZING: Register opening in memory
-            try:
-                from config import ADAPTIVE_SIZING_ENABLED
-                if ADAPTIVE_SIZING_ENABLED:
-                    from core.adaptive_position_sizing import global_adaptive_sizing
-                    if global_adaptive_sizing:
-                        global_adaptive_sizing.register_opening(
-                            symbol=symbol,
-                            margin_used=levels.margin,
-                            wallet_equity=balance
-                        )
-                        logging.debug(f"🎯 Adaptive sizing: Registered opening for {symbol}")
-            except Exception as adaptive_error:
-                logging.debug(f"⚠️ Failed to register opening in adaptive sizing: {adaptive_error}")
-            
-            
-            #  SAVE REAL IM: Store actual margin used (will be updated by sync)
+            # SAVE REAL IM: Store actual margin used (will be updated by sync)
             try:
                 with self.position_manager._lock:
                     if position_id in self.position_manager._open_positions:

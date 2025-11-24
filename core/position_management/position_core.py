@@ -255,7 +255,7 @@ class PositionCore:
     
     def close_position(self, position_id: str, exit_price: float, 
                       close_reason: str = "MANUAL") -> bool:
-        """Close position"""
+        """Close position - NO LOCAL PNL CALCULATION for PENDING positions"""
         try:
             with self._lock:
                 if position_id not in self._open_positions:
@@ -263,14 +263,26 @@ class PositionCore:
                 
                 position = self._open_positions[position_id]
                 
-                # Calculate final PnL
-                if position.side == 'buy':
-                    pnl_pct = ((exit_price - position.entry_price) / position.entry_price) * 100 * position.leverage
-                else:
-                    pnl_pct = ((position.entry_price - exit_price) / position.entry_price) * 100 * position.leverage
+                # ⚠️ CRITICAL: Only calculate PnL if we have VERIFIED data from Bybit
+                # If close_reason contains "PENDING", leave PnL at 0 until Bybit verifies it
+                is_pending = "PENDING" in close_reason
                 
-                initial_margin = position.position_size / position.leverage
-                pnl_usd = (pnl_pct / 100) * initial_margin
+                if is_pending:
+                    # DON'T calculate PnL - wait for Bybit verification
+                    pnl_pct = 0.0
+                    pnl_usd = 0.0
+                    # Use entry_price as temporary exit_price
+                    exit_price = position.entry_price
+                    logging.warning(f"⚠️ Position {position.symbol} closed as PENDING - PnL will be updated after Bybit verification")
+                else:
+                    # Calculate final PnL only for VERIFIED closes
+                    if position.side == 'buy':
+                        pnl_pct = ((exit_price - position.entry_price) / position.entry_price) * 100 * position.leverage
+                    else:
+                        pnl_pct = ((position.entry_price - exit_price) / position.entry_price) * 100 * position.leverage
+                    
+                    initial_margin = position.position_size / position.leverage
+                    pnl_usd = (pnl_pct / 100) * initial_margin
                 
                 # Update position
                 position.status = f"CLOSED_{close_reason}"
@@ -292,16 +304,16 @@ class PositionCore:
                 # MEMORY CLEANUP: Keep only last N closed positions
                 self._cleanup_old_closed_positions()
                 
-                # Update balance
-                self._session_balance += pnl_usd
+                # Update balance ONLY if not pending (don't update with wrong PnL)
+                if not is_pending:
+                    self._session_balance += pnl_usd
                 
                 self._save_positions()
                 
-                # Notify adaptive sizing
-                self._notify_adaptive_sizing(position.symbol, pnl_pct)
-                
-                
-                logging.info(f"✅ Position closed: {position.symbol} PnL: {pnl_pct:+.2f}%")
+                if is_pending:
+                    logging.info(f"⚠️ Position closed as PENDING: {position.symbol} - awaiting Bybit verification")
+                else:
+                    logging.info(f"✅ Position closed: {position.symbol} PnL: {pnl_pct:+.2f}%")
                 return True
                 
         except Exception as e:
@@ -409,22 +421,6 @@ class PositionCore:
             )
         except Exception as e:
             logging.error(f"Save positions failed: {e}")
-    
-    def _notify_adaptive_sizing(self, symbol: str, pnl_pct: float):
-        """Notify adaptive sizing system"""
-        try:
-            from config import ADAPTIVE_SIZING_ENABLED
-            if ADAPTIVE_SIZING_ENABLED:
-                from core.adaptive_position_sizing import global_adaptive_sizing
-                if global_adaptive_sizing:
-                    global_adaptive_sizing.update_after_trade(
-                        symbol=symbol,
-                        pnl_pct=pnl_pct,
-                        wallet_equity=self._session_balance
-                    )
-        except Exception as e:
-            logging.debug(f"Adaptive sizing notification failed: {e}")
-    
     
     def _cleanup_old_closed_positions(self):
         """Remove oldest closed positions if limit exceeded"""

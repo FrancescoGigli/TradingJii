@@ -25,20 +25,9 @@ class SignalProcessor:
     """
     
     def __init__(self):
-        self.rl_agent_available = False
         self.position_manager_available = False
         
-        # Try to import RL agent
-        try:
-            from core.rl_agent import global_rl_agent, build_market_context
-            self.global_rl_agent = global_rl_agent
-            self.build_market_context = build_market_context
-            self.rl_agent_available = True
-        except ImportError:
-            logging.warning("⚠️ RL Agent not available")
-            self.rl_agent_available = False
-        
-        # STEP 1 FIX: Import ThreadSafePositionManager instead of SmartPositionManager
+        # Import ThreadSafePositionManager
         try:
             from core.thread_safe_position_manager import global_thread_safe_position_manager
             self.position_manager = global_thread_safe_position_manager
@@ -101,7 +90,7 @@ class SignalProcessor:
                     'dataframes': all_symbol_data[symbol]  # Use pre-fetched data
                 }
                 
-                # FIX #3: Dynamic confidence filter (before RL)
+                # FIX #3: Dynamic confidence filter
                 if ensemble_value < confidence_threshold:
                     logging.debug(
                         f"⏭️ {symbol_short}: Confidence {ensemble_value:.1%} < "
@@ -109,18 +98,9 @@ class SignalProcessor:
                     )
                     continue
                 
-                # Apply RL filter
-                if self.rl_agent_available:
-                    rl_approved = await self._apply_rl_filter(signal_data, all_symbol_data[symbol])
-                    if rl_approved:
-                        all_signals.append(signal_data)
-                        logging.info(f"✅ Added to execution queue: {symbol_short} {signal_data['signal_name']} (XGB:{ensemble_value:.1%}, RL approved)")
-                    else:
-                        logging.info(f"❌ RL Rejected execution: {symbol_short} {signal_data['signal_name']}")
-                else:
-                    # No RL available, accept all XGBoost signals
-                    all_signals.append(signal_data)
-                    logging.info(f"➕ Added (no RL): {symbol_short} {signal_data['signal_name']} (XGB:{ensemble_value:.1%})")
+                # Accept signal (RL removed - using XGBoost only)
+                all_signals.append(signal_data)
+                logging.info(f"✅ Added to execution queue: {symbol_short} {signal_data['signal_name']} (XGB:{ensemble_value:.1%})")
                 
             except Exception as e:
                 logging.error(f"Error processing signal for {symbol}: {e}")
@@ -135,48 +115,6 @@ class SignalProcessor:
         
         return all_signals
 
-    async def _apply_rl_filter(self, signal_data, dataframes):
-        """
-        Apply RL filtering to a signal
-        
-        Args:
-            signal_data: Signal data to filter
-            dataframes: Market dataframes for the symbol
-            
-        Returns:
-            bool: True if signal is approved by RL agent
-        """
-        try:
-            # Build market context for RL decision
-            market_context = self.build_market_context(signal_data['symbol'], dataframes)
-            portfolio_state = self.position_manager.get_session_summary() if self.position_manager_available else {}
-            
-            # Get RL decision
-            should_execute, rl_confidence, rl_details = self.global_rl_agent.should_execute_signal(
-                signal_data, market_context, portfolio_state
-            )
-            
-            # Store RL details in signal data for analysis
-            signal_data['rl_approved'] = should_execute
-            signal_data['rl_confidence'] = rl_confidence
-            signal_data['rl_details'] = rl_details
-            
-            symbol_short = signal_data['symbol'].replace('/USDT:USDT', '')
-            logging.debug(f"🤖 RL Decision for {symbol_short}: should_execute={should_execute}, confidence={rl_confidence:.1%}")
-            
-            return should_execute
-            
-        except Exception as rl_error:
-            logging.warning(f"RL filter error for {signal_data['symbol']}: {rl_error}")
-            # Fallback: accept signal without RL filtering
-            signal_data['rl_approved'] = True
-            signal_data['rl_confidence'] = 0.6
-            signal_data['rl_details'] = {
-                'primary_reason': f'RL Error: {str(rl_error)[:50]}...',
-                'factors': {},
-                'final_verdict': 'ERROR_FALLBACK'
-            }
-            return True
 
     async def display_complete_analysis(self, prediction_results, all_symbol_data):
         """
@@ -205,67 +143,16 @@ class SignalProcessor:
                     'price': 0
                 }
                 
-                # Handle NEUTRAL signals (skip RL analysis)
+                # Handle NEUTRAL signals
                 if final_signal is None or final_signal == 2 or ensemble_value is None:
-                    signal_data['rl_approved'] = False
-                    signal_data['rl_confidence'] = 0.0
-                    signal_data['rl_details'] = {
-                        'primary_reason': 'NEUTRAL signal - no RL analysis performed',
-                        'factors': {},
-                        'final_verdict': 'SKIPPED_NEUTRAL'
-                    }
                     signal_data['signal_name'] = 'NEUTRAL'
                 
-                # Get RL decision for BUY/SELL signals only
-                elif self.rl_agent_available and final_signal in [0, 1]:
-                    try:
-                        market_context = self.build_market_context(symbol, all_symbol_data[symbol])
-                        portfolio_state = self.position_manager.get_session_summary() if self.position_manager_available else {}
-                        
-                        # Get RL decision with detailed analysis
-                        should_execute, rl_confidence, rl_details = self.global_rl_agent.should_execute_signal(
-                            signal_data, market_context, portfolio_state
-                        )
-                        
-                        signal_data['rl_approved'] = should_execute
-                        signal_data['rl_confidence'] = rl_confidence
-                        signal_data['rl_details'] = rl_details
-                        
-                    except Exception as rl_error:
-                        logging.warning(f"RL analysis error for {symbol}: {rl_error}")
-                        # Fallback: no RL data
-                        signal_data['rl_approved'] = False
-                        signal_data['rl_confidence'] = 0.0
-                        signal_data['rl_details'] = {
-                            'primary_reason': f'RL Error: {str(rl_error)[:50]}...',
-                            'factors': {},
-                            'final_verdict': 'ERROR_FALLBACK'
-                        }
-                else:
-                    # RL not available but signal is BUY/SELL
-                    signal_data['rl_approved'] = True  # Default approve when RL unavailable
-                    signal_data['rl_confidence'] = 0.6
-                    signal_data['rl_details'] = {
-                        'primary_reason': 'RL system not available',
-                        'factors': {},
-                        'final_verdict': 'RL_UNAVAILABLE'
-                    }
-                
                 # Show decision analysis for this symbol
-                if DECISION_EXPLAINER_AVAILABLE and signal_data['signal_name'] in ['BUY', 'SELL']:
-                    # Use the enhanced decision explainer for detailed analysis
-                    market_context = self.build_market_context(symbol, all_symbol_data[symbol]) if self.rl_agent_available else {}
-                    portfolio_state = self.position_manager.get_session_summary() if self.position_manager_available else {}
-                    
-                    global_decision_explainer.explain_complete_decision(
-                        signal_data, market_context, portfolio_state, detailed=True
-                    )
-                else:
-                    # Fallback to original display method
+                if signal_data['signal_name'] in ['BUY', 'SELL']:
                     display_symbol_decision_analysis(
                         symbol, 
                         signal_data,
-                        rl_available=self.rl_agent_available,
+                        rl_available=False,
                         risk_manager_available=True
                     )
                 
@@ -292,10 +179,6 @@ class SignalProcessor:
         except Exception as e:
             logging.warning(f"Could not get price for {symbol}: {e}")
             return 0
-
-    def is_rl_available(self):
-        """Check if RL agent is available"""
-        return self.rl_agent_available
 
     def is_position_manager_available(self):
         """Check if position manager is available"""

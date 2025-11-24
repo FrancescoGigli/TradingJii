@@ -176,26 +176,6 @@ class SessionStatistics:
                 f"Reason: {trade_record.close_reason}"
             )
             
-            # Update Adaptive Sizing if enabled
-            if config.ADAPTIVE_SIZING_ENABLED:
-                try:
-                    from core.adaptive_position_sizing import global_adaptive_sizing
-                    
-                    if global_adaptive_sizing is not None:
-                        # Get current wallet equity (approximate from session balance)
-                        wallet_equity = self.session_start_balance + self.total_pnl_usd
-                        
-                        # Update adaptive sizing with trade result
-                        global_adaptive_sizing.update_after_trade(
-                            symbol=position.symbol,
-                            pnl_pct=pnl_pct,
-                            wallet_equity=wallet_equity
-                        )
-                        
-                        logging.debug(f"✅ Adaptive sizing updated for {position.symbol}")
-                except Exception as e:
-                    logging.error(f"❌ Error updating adaptive sizing: {e}")
-            
             return trade_record
             
         except Exception as e:

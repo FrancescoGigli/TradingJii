@@ -19,6 +19,7 @@ richiamato da TradingEngine al termine di un ciclo.
 import os
 import platform
 import logging
+import asyncio
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from termcolor import colored
@@ -88,18 +89,27 @@ class RealTimePositionDisplay:
         Recupera da Bybit:
         - posizioni aperte
         - rileva eventuali chiusure e aggiorna self._session_closed
-        - VERIFICA PnL reale per posizioni chiuse
+        - VERIFICA PnL reale per posizioni chiuse (immediatamente dopo chiusura + secondo tentativo)
         """
         try:
             raw_positions = await exchange.fetch_positions(None, {"limit": 100, "type": "swap"})
             open_list, bybit_side, bybit_sl = self._normalize_open_positions(raw_positions)
 
+            # Detect closures (may mark some as PENDING if Bybit fetch fails)
             await self._detect_and_record_closures(exchange, open_list)
-            await self._enrich_open_with_pnl(exchange, open_list)
             
-            # Verify PnL for closed positions
+            # IMMEDIATELY verify closed positions (including PENDING ones)
             if self.position_manager:
+                logging.debug("🔍 Immediate verification attempt for closed positions")
                 await self._verify_closed_positions_pnl(exchange)
+                
+                # Give Bybit 5 seconds to settle, then retry verification for any remaining PENDING
+                await asyncio.sleep(5)
+                logging.debug("🔍 Second verification attempt after 5s delay")
+                await self._verify_closed_positions_pnl(exchange)
+            
+            # Enrich open positions with PnL
+            await self._enrich_open_with_pnl(exchange, open_list)
 
             # aggiorna stato corrente
             self._cur_open_map = {row["symbol"]: row for row in open_list}
@@ -110,7 +120,7 @@ class RealTimePositionDisplay:
             logging.error(f"⚡ Error updating snapshot: {e}")
             
     async def _verify_closed_positions_pnl(self, exchange):
-        """Verify and update PnL for closed positions using Bybit data"""
+        """Verify and update PnL for closed positions using Bybit data with improved matching"""
         try:
             closed_positions = self.position_manager.safe_get_closed_positions()
             
@@ -119,23 +129,35 @@ class RealTimePositionDisplay:
                 if pos.position_id in self._verified_closed_ids:
                     continue
                     
-                # Skip if position is too old or missing ID
+                # Skip if position is missing critical data
                 if not pos.position_id or not pos.symbol:
                     continue
+                
+                # Also verify PENDING positions that failed initial fetch
+                is_pending = False
+                if hasattr(pos, 'close_reason'):
+                    is_pending = 'PENDING' in str(pos.close_reason)
                 
                 # Fetch closed PnL from Bybit
                 try:
                     if hasattr(exchange, 'privateGetV5PositionClosedPnl'):
+                        symbol_clean = pos.symbol.replace('/USDT:USDT', '').replace('/', '')
+                        logging.debug(f"🔍 Verifying PnL for {symbol_clean} (ID: {pos.position_id[-8:]})")
+                        
                         closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
                             'category': 'linear',
-                            'symbol': pos.symbol.replace('/USDT:USDT', '').replace('/', ''),
-                            'limit': 5  # Check last 5 closed trades
+                            'symbol': symbol_clean,
+                            'limit': 10  # Increased to 10 for better matching chances
                         })
                         
                         if closed_pnl_data and 'result' in closed_pnl_data:
                             result_list = closed_pnl_data['result'].get('list', [])
                             
-                            # Find matching trade based on close time or just take most recent if close in time
+                            if not result_list:
+                                logging.debug(f"⚠️ No closed positions found in Bybit for {symbol_clean}")
+                                continue
+                            
+                            # Find matching trade with improved logic
                             matched_data = None
                             pos_close_time_ms = 0
                             
@@ -146,17 +168,42 @@ class RealTimePositionDisplay:
                                 except:
                                     pass
                             
-                            for item in result_list:
-                                # Simple match: symbol matches and createdTime is close to our close_time
-                                item_time = int(item.get('createdTime', 0))
-                                # Allow 2 minute tolerance
-                                if abs(item_time - pos_close_time_ms) < 120000:  
-                                    matched_data = item
-                                    break
+                            # IMPROVED MATCHING LOGIC
+                            best_match = None
+                            best_time_diff = float('inf')
                             
-                            # If no time match but only one recent trade, assume it's that one
-                            if not matched_data and len(result_list) == 1:
+                            for item in result_list:
+                                item_time = int(item.get('createdTime', 0))
+                                
+                                # Calculate time difference
+                                time_diff = abs(item_time - pos_close_time_ms) if pos_close_time_ms > 0 else float('inf')
+                                
+                                # 🔄 INCREASED TOLERANCE: 5 minutes (300000 ms) instead of 2 minutes
+                                if time_diff < 300000 and time_diff < best_time_diff:
+                                    best_match = item
+                                    best_time_diff = time_diff
+                            
+                            # If found match within 5min, use it
+                            if best_match:
+                                matched_data = best_match
+                                logging.debug(f"✅ Time-based match found (diff: {best_time_diff/1000:.1f}s)")
+                            
+                            # FALLBACK 1: If no time match, try to match by side and quantity
+                            if not matched_data and hasattr(pos, 'side'):
+                                for item in result_list:
+                                    item_side = item.get('side', '').upper()
+                                    pos_side = pos.side.upper()
+                                    # Match if sides are compatible (BUY/LONG or SELL/SHORT)
+                                    if (item_side in ['BUY', 'LONG'] and pos_side in ['BUY', 'LONG']) or \
+                                       (item_side in ['SELL', 'SHORT'] and pos_side in ['SELL', 'SHORT']):
+                                        matched_data = item
+                                        logging.debug(f"✅ Side-based match found ({pos_side})")
+                                        break
+                            
+                            # FALLBACK 2: If still no match, take most recent
+                            if not matched_data and result_list:
                                 matched_data = result_list[0]
+                                logging.debug(f"⚠️ Using most recent position as fallback")
                                 
                             if matched_data:
                                 real_pnl = float(matched_data.get('closedPnl', 0.0))
@@ -166,17 +213,27 @@ class RealTimePositionDisplay:
                                 current_pnl = pos.unrealized_pnl_usd
                                 diff = abs(real_pnl - current_pnl)
                                 
-                                # If difference > $0.10, update
-                                if diff > 0.10:
+                                # Update if:
+                                # 1. Difference > $0.10, OR
+                                # 2. Position was PENDING verification
+                                if diff > 0.10 or is_pending:
                                     updates = {
                                         'unrealized_pnl_usd': real_pnl,
                                         'pnl_usd': real_pnl,  # Alias
                                         'exit_price': exit_price,
                                         'current_price': exit_price,
-                                        'close_reason': f"{pos.close_reason or 'MANUAL'} (VERIFIED)"
                                     }
                                     
+                                    # Update close reason to mark as verified
+                                    if is_pending:
+                                        updates['close_reason'] = 'BYBIT_VERIFIED'
+                                    else:
+                                        current_reason = getattr(pos, 'close_reason', 'MANUAL')
+                                        if 'VERIFIED' not in str(current_reason):
+                                            updates['close_reason'] = f"{current_reason} (VERIFIED)"
+                                    
                                     # Recalculate % based on real PnL and Margin
+                                    new_pnl_pct = 0.0
                                     if pos.position_size > 0:
                                         im = pos.position_size / pos.leverage
                                         new_pnl_pct = (real_pnl / im) * 100
@@ -185,9 +242,30 @@ class RealTimePositionDisplay:
                                         
                                     # Atomic update
                                     self.position_manager.atomic_update_position(pos.position_id, updates)
-                                    logging.info(colored(f"✅ Synced Real PnL for {pos.symbol}: ${current_pnl:.2f} -> ${real_pnl:.2f}", "green"))
+                                    
+                                    # ⚠️ CRITICAL: Update balance if this was a PENDING position
+                                    # When position was closed as PENDING, balance wasn't updated
+                                    # Now that we have real PnL, we need to update the balance
+                                    if is_pending and self.position_manager:
+                                        try:
+                                            session_summary = self.position_manager.get_session_summary()
+                                            current_balance = session_summary.get('balance', 0.0)
+                                            new_balance = current_balance + real_pnl
+                                            self.position_manager.update_balance(new_balance)
+                                            logging.info(colored(f"💰 Balance updated: ${current_balance:.2f} + ${real_pnl:.2f} = ${new_balance:.2f}", "cyan"))
+                                        except Exception as e:
+                                            logging.error(f"Failed to update balance after PENDING verification: {e}")
+                                    
+                                    if is_pending:
+                                        logging.info(colored(f"✅ VERIFIED Pending position {pos.symbol}: ${real_pnl:.2f} ({new_pnl_pct:.2f}%)", "green", attrs=['bold']))
+                                    else:
+                                        logging.info(colored(f"✅ Synced Real PnL for {pos.symbol}: ${current_pnl:.2f} -> ${real_pnl:.2f}", "green"))
+                                else:
+                                    logging.debug(f"✓ {pos.symbol} PnL already accurate (diff: ${diff:.2f})")
                                 
                                 self._verified_closed_ids.add(pos.position_id)
+                            else:
+                                logging.warning(f"⚠️ Could not find matching Bybit data for {pos.symbol}")
                                 
                 except Exception as e:
                     logging.debug(f"Failed to verify PnL for {pos.symbol}: {e}")
@@ -327,11 +405,11 @@ class RealTimePositionDisplay:
             enhanced_logger.display_table("— nessuna posizione chiusa nella sessione corrente —", "yellow")
             return
 
-        # Closed positions table structure with ID, timestamps, and more details
-        # Width increased for REASON column (+22 chars)
-        enhanced_logger.display_table("┌─────┬────────┬──────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────┬──────────┬──────────────────────┐", "cyan")
-        enhanced_logger.display_table("│  #  │ SYMBOL │    ID    │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │ OPENED   │  CLOSED  │        REASON        │", "white", attrs=["bold"])
-        enhanced_logger.display_table("├─────┼────────┼──────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────┼──────────┼──────────────────────┤", "cyan")
+        # Closed positions table structure with ID, timestamps, duration, and more details
+        # Width increased to include DURATION column
+        enhanced_logger.display_table("┌─────┬────────┬──────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────┬──────────┬──────────┬──────────────────────┐", "cyan")
+        enhanced_logger.display_table("│  #  │ SYMBOL │    ID    │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │ OPENED   │  CLOSED  │ DURATION │        REASON        │", "white", attrs=["bold"])
+        enhanced_logger.display_table("├─────┼────────┼──────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────┼──────────┼──────────┼──────────────────────┤", "cyan")
 
         for i, pos in enumerate(closed_positions, 1):
             # Handle both dict and object formats
@@ -382,8 +460,10 @@ class RealTimePositionDisplay:
                         opened_str = entry_dt.strftime("%H:%M:%S")
                     except:
                         opened_str = "N/A"
+                        entry_dt = None
                 else:
                     opened_str = "N/A"
+                    entry_dt = None
                 
                 if close_time:
                     try:
@@ -391,8 +471,26 @@ class RealTimePositionDisplay:
                         closed_str = close_dt.strftime("%H:%M:%S")
                     except:
                         closed_str = "N/A"
+                        close_dt = None
                 else:
                     closed_str = "N/A"
+                    close_dt = None
+                
+                # Calculate duration
+                duration_str = "N/A"
+                if entry_dt and close_dt:
+                    try:
+                        time_diff = close_dt - entry_dt
+                        total_seconds = int(time_diff.total_seconds())
+                        hours = total_seconds // 3600
+                        minutes = (total_seconds % 3600) // 60
+                        
+                        if hours > 0:
+                            duration_str = f"{hours}h{minutes:02d}m"
+                        else:
+                            duration_str = f"{minutes}m"
+                    except:
+                        duration_str = "N/A"
                 
             else:
                 # Dict format (fallback)
@@ -429,13 +527,14 @@ class RealTimePositionDisplay:
                 colored(f"{fmt_money(pnl_usd):>11}", pct_color(pnl_usd)) + colored("│", "white") +
                 colored(f"{opened_str:^10}", "white") + colored("│", "white") +
                 colored(f"{closed_str:^10}", "white") + colored("│", "white") +
+                colored(f"{duration_str:^10}", "magenta") + colored("│", "white") +
                 colored(f"{reason:^22}", reason_col) + colored("│", "white")
             )
             # Use enhanced logging
             logging.info(line)
 
         # Closed positions table bottom
-        enhanced_logger.display_table("└─────┴────────┴──────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────┴──────────┴──────────────────────┘", "cyan")
+        enhanced_logger.display_table("└─────┴────────┴──────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────┴──────────┴──────────┴──────────────────────┘", "cyan")
         
         # 📊 SESSION SUMMARY for closed positions
         self._render_session_summary_individual(closed_positions)
@@ -512,105 +611,115 @@ class RealTimePositionDisplay:
             initial_margin = position_usd / leverage if leverage else 0
             sl_price = snap.get("sl_price")  # Get SL if was set
 
-            # Default values (fallback)
+            # Default values for pending verification
             exit_price = entry
             pnl_pct = 0.0
             pnl_usd = 0.0
-            close_reason = "UNKNOWN"
+            close_reason = "PENDING_BYBIT_VERIFICATION"
             
-            # Attempt to fetch REAL closed PnL from Bybit
+            # 🔄 RETRY LOGIC: Attempt to fetch REAL closed PnL from Bybit with retries
             # This ensures accuracy matching Bybit's history
             data_found = False
-            try:
-                # Only works for Bybit V5 (which we are using)
-                if hasattr(exchange, 'privateGetV5PositionClosedPnl') and initial_margin > 0:
-                    closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
-                        'category': 'linear',
-                        'symbol': sym.replace('/', '').replace(':', ''),
-                        'limit': 1
-                    })
-                    
-                    if closed_pnl_data and 'result' in closed_pnl_data:
-                        result_list = closed_pnl_data['result'].get('list', [])
-                        if result_list:
-                            closed_pos = result_list[0]
-                            
-                            # Get real values
-                            pnl_usd_real = float(closed_pos.get('closedPnl', 0.0))
-                            exit_price_real = float(closed_pos.get('avgExitPrice', entry))
-                            
-                            # Update calculation
-                            pnl_usd = pnl_usd_real
-                            pnl_pct = (pnl_usd / initial_margin * 100.0) if initial_margin > 0 else 0.0
-                            exit_price = exit_price_real
-                            data_found = True
-                            logging.info(f"✅ Display: Fetched REAL PnL for {sym}: ${pnl_usd:.2f} ({pnl_pct:.2f}%)")
-            except Exception as e:
-                logging.debug(f"Could not fetch real PnL for display {sym}: {e}")
+            max_retries = 3
+            retry_delay = 2  # seconds
             
-            # Fallback if real data not found
-            if not data_found and initial_margin > 0:
+            for attempt in range(max_retries):
                 try:
-                    ticker = await exchange.fetch_ticker(sym)
-                    exit_price = safe_float(ticker.get("last"), entry)
-                    if side == "long":
-                        price_chg_pct = ((exit_price - entry) / entry) * 100.0
-                    else:
-                        price_chg_pct = ((entry - exit_price) / entry) * 100.0
-                    pnl_pct = price_chg_pct * leverage
-                    pnl_usd = (pnl_pct / 100.0) * initial_margin
+                    if hasattr(exchange, 'privateGetV5PositionClosedPnl') and initial_margin > 0:
+                        logging.debug(f"🔄 Attempt {attempt + 1}/{max_retries} to fetch Bybit PnL for {sym}")
+                        
+                        closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
+                            'category': 'linear',
+                            'symbol': sym.replace('/', '').replace(':', ''),
+                            'limit': 5  # Get last 5 to improve matching chances
+                        })
+                        
+                        if closed_pnl_data and 'result' in closed_pnl_data:
+                            result_list = closed_pnl_data['result'].get('list', [])
+                            if result_list:
+                                # Take the most recent closed position
+                                closed_pos = result_list[0]
+                                
+                                # Get real values from Bybit
+                                pnl_usd_real = float(closed_pos.get('closedPnl', 0.0))
+                                exit_price_real = float(closed_pos.get('avgExitPrice', entry))
+                                
+                                # Update calculation with REAL Bybit data
+                                pnl_usd = pnl_usd_real
+                                pnl_pct = (pnl_usd / initial_margin * 100.0) if initial_margin > 0 else 0.0
+                                exit_price = exit_price_real
+                                data_found = True
+                                close_reason = "BYBIT_VERIFIED"
+                                
+                                logging.info(f"✅ SUCCESS: Fetched REAL PnL for {sym} (attempt {attempt + 1}): ${pnl_usd:.2f} ({pnl_pct:.2f}%)")
+                                break  # Success, exit retry loop
+                                
                 except Exception as e:
-                    logging.debug(f"Ticker fallback failed for {sym}: {e}")
+                    logging.warning(f"⚠️ Attempt {attempt + 1}/{max_retries} failed for {sym}: {e}")
+                    if attempt < max_retries - 1:
+                        logging.debug(f"⏳ Waiting {retry_delay}s before retry...")
+                        await asyncio.sleep(retry_delay)
+                    continue
+            
+            # ⚠️ NO FALLBACK: If all retries failed, position stays PENDING
+            if not data_found:
+                logging.error(f"❌ FAILED to fetch Bybit PnL for {sym} after {max_retries} attempts")
+                logging.error(f"⚠️ Position {sym} marked as PENDING_BYBIT_VERIFICATION - will retry on next cycle")
+                # Keep default values: exit_price=entry, pnl=0, close_reason="PENDING_BYBIT_VERIFICATION"
             
             # 🔍 INFER CLOSE REASON from exit price, SL, and trailing status
-            # First, check if position had trailing stop active
-            had_trailing = False
-            if self.position_manager:
-                try:
-                    open_positions = self.position_manager.safe_get_all_active_positions()
-                    for pos in open_positions:
-                        if pos.symbol == sym:
-                            # Check if trailing was enabled
-                            if pos.trailing_data and pos.trailing_data.enabled:
-                                had_trailing = True
-                                logging.debug(f"🔍 {sym}: Had trailing stop active")
-                            break
-                except Exception as e:
-                    logging.debug(f"Could not check trailing status for {sym}: {e}")
-            
-            # Determine close reason based on available data
-            if sl_price and exit_price > 0:
-                price_diff_pct = abs((exit_price - sl_price) / sl_price) * 100.0
+            # Only infer if data was successfully fetched from Bybit
+            if data_found:
+                # First, check if position had trailing stop active
+                had_trailing = False
+                if self.position_manager:
+                    try:
+                        open_positions = self.position_manager.safe_get_all_active_positions()
+                        for pos in open_positions:
+                            if pos.symbol == sym:
+                                # Check if trailing was enabled
+                                if pos.trailing_data and pos.trailing_data.enabled:
+                                    had_trailing = True
+                                    logging.debug(f"🔍 {sym}: Had trailing stop active")
+                                break
+                    except Exception as e:
+                        logging.debug(f"Could not check trailing status for {sym}: {e}")
                 
-                # If exit price is within 0.5% of SL, assume SL was hit
-                if price_diff_pct < 0.5:
-                    close_reason = "STOP_LOSS_HIT"
-                    logging.debug(f"🔍 {sym}: Detected STOP_LOSS (exit ${exit_price:.6f} ≈ SL ${sl_price:.6f})")
-                # If profitable close with trailing active → TRAILING_STOP
-                elif pnl_usd > 1.0 and had_trailing:  # Profitable with trailing
-                    close_reason = "TRAILING_STOP_HIT"
-                    logging.debug(f"🔍 {sym}: Detected TRAILING_STOP (profit ${pnl_usd:.2f} with trailing active)")
-                # If profitable close without trailing → MANUAL or TP
-                elif pnl_usd > 1.0:  # Profitable without trailing
-                    close_reason = "MANUAL_CLOSE"  # Or could be TP if we had TP set
-                    logging.debug(f"🔍 {sym}: Detected MANUAL_CLOSE (profitable exit)")
-                # Negative but not at SL
+                # Determine close reason based on available data
+                # CRITICAL: Check PnL FIRST - if profitable, cannot be STOP_LOSS
+                if pnl_usd > 1.0:
+                    # PROFITABLE CLOSE - must be trailing, manual, or take profit
+                    if had_trailing:
+                        close_reason = "TRAILING_STOP_HIT"
+                        logging.debug(f"🔍 {sym}: Detected TRAILING_STOP (profit ${pnl_usd:.2f})")
+                    else:
+                        close_reason = "MANUAL_CLOSE"  # Or TAKE_PROFIT if we had TP
+                        logging.debug(f"🔍 {sym}: Detected MANUAL_CLOSE (profit ${pnl_usd:.2f})")
+                
                 elif pnl_usd < -1.0:
-                    close_reason = "EARLY_EXIT_LOSS"
-                    logging.debug(f"🔍 {sym}: Detected EARLY_EXIT_LOSS (cut loss manually)")
+                    # LOSS - check if it's stop loss or early exit
+                    if sl_price and exit_price > 0:
+                        price_diff_pct = abs((exit_price - sl_price) / sl_price) * 100.0
+                        
+                        # If exit price is within 0.5% of SL, assume SL was hit
+                        if price_diff_pct < 0.5:
+                            close_reason = "STOP_LOSS_HIT"
+                            logging.debug(f"🔍 {sym}: Detected STOP_LOSS (loss ${pnl_usd:.2f}, exit ${exit_price:.6f} ≈ SL ${sl_price:.6f})")
+                        else:
+                            close_reason = "EARLY_EXIT_LOSS"
+                            logging.debug(f"🔍 {sym}: Detected EARLY_EXIT_LOSS (loss ${pnl_usd:.2f}, manual cut)")
+                    else:
+                        # No SL price data, but significant loss - likely SL
+                        if pnl_usd < -5.0:
+                            close_reason = "STOP_LOSS_HIT"
+                            logging.debug(f"🔍 {sym}: Detected STOP_LOSS (significant loss ${pnl_usd:.2f})")
+                        else:
+                            close_reason = "EARLY_EXIT_LOSS"
+                            logging.debug(f"🔍 {sym}: Detected EARLY_EXIT_LOSS (minor loss ${pnl_usd:.2f})")
                 else:
+                    # BREAKEVEN
                     close_reason = "BREAKEVEN"
-                    logging.debug(f"🔍 {sym}: Detected BREAKEVEN close")
-            else:
-                # No SL data, infer from PnL and trailing status
-                if pnl_usd < -5.0:  # Significant loss
-                    close_reason = "STOP_LOSS_HIT"  # Likely SL even if we don't have SL price
-                elif pnl_usd > 5.0 and had_trailing:  # Significant profit with trailing
-                    close_reason = "TRAILING_STOP_HIT"
-                elif pnl_usd > 5.0:  # Significant profit without trailing
-                    close_reason = "MANUAL_CLOSE"
-                else:
-                    close_reason = "MANUAL_CLOSE"
+                    logging.debug(f"🔍 {sym}: Detected BREAKEVEN close (${pnl_usd:.2f})")
             
             # If position is in position_manager, update it and move to closed
             if self.position_manager:
