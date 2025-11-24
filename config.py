@@ -88,31 +88,34 @@ LEVERAGE = 5  # SPIKE OPTIMIZED: Reduced to 5x for safer spike catching
 ADAPTIVE_SIZING_ENABLED = False  # True = Adaptive (learns from results), False = Fixed 3-tier
 
 # ==============================================================================
+# 🎯 FIXED SIZE MODE (USER REQUESTED)
+# ==============================================================================
+FIXED_POSITION_SIZE_ENABLED = True   # Force fixed size for all trades
+FIXED_POSITION_SIZE_AMOUNT = 30.0    # Always open at $30 Margin
+
+# ==============================================================================
 # 🎯 POSITION SIZE LIMITS (Safety Validation Only)
 # ==============================================================================
 # Used only for safety checks in portfolio validation
-POSITION_SIZE_MIN_ABSOLUTE = 20.0  # Minimum position size ($20 × 5 lev = $100 notional, Bybit minimum)
-POSITION_SIZE_MAX_ABSOLUTE = 50.0  # Maximum position size (safety cap)
+POSITION_SIZE_MIN_ABSOLUTE = 30.0  # Minimum position size (Safety Check)
+POSITION_SIZE_MAX_ABSOLUTE = 30.0  # Maximum position size (Safety Check)
 
 # ==============================================================================
 # 🎯 DYNAMIC POSITION SIZING PARAMETERS (FIX #1)
 # ==============================================================================
 # Parameters for dynamic position sizing that scales with balance
-POSITION_SIZING_TARGET_POSITIONS = 8  # Target at least 8 aggressive positions possible
-POSITION_SIZING_RATIO_CONSERVATIVE = 0.44  # Conservative = 44% of aggressive
-POSITION_SIZING_RATIO_MODERATE = 0.89  # Moderate = 89% of aggressive
-POSITION_SIZING_RATIO_AGGRESSIVE = 1.0  # Aggressive = base unit
+POSITION_SIZING_TARGET_POSITIONS = 10  # Target at least 10 aggressive positions possible
 
 # ==============================================================================
-# 🎯 3-TIER POSITION SIZING (Fixed/Legacy System)
+# 🎯 3-TIER POSITION SIZING (Fallback)
 # ==============================================================================
 # Used when ADAPTIVE_SIZING_ENABLED = False, or as fallback values
 # Sistema a 3 livelli basato su confidence ML, volatilità e trend strength (ADX)
 
 # Position sizes per tier (in USD)
-POSITION_SIZE_CONSERVATIVE = 20.0    # Low confidence or high volatility
-POSITION_SIZE_MODERATE = 45.0        # Medium confidence and volatility
-POSITION_SIZE_AGGRESSIVE = 50.0      # High confidence, low volatility, strong trend
+POSITION_SIZE_CONSERVATIVE = 30.0    # Fixed $30
+POSITION_SIZE_MODERATE = 30.0        # Fixed $30
+POSITION_SIZE_AGGRESSIVE = 30.0      # Fixed $30
 
 # Base margin for fallback calculations
 BASE_MARGIN = 45.0                   # Default margin when dynamic calculation fails
@@ -146,7 +149,7 @@ ADAPTIVE_FRESH_START = True          # ⚠️ True = Reset stats e riparti da ca
                                      # Se False: mantiene win/loss rate e continua l'apprendimento
 
 # Wallet structure
-ADAPTIVE_WALLET_BLOCKS = 5           # Divide wallet in N blocks (5 blocks = wallet/5 per position)
+ADAPTIVE_WALLET_BLOCKS = 10          # Divide wallet in N blocks (10 blocks = wallet/10 per position)
 ADAPTIVE_FIRST_CYCLE_FACTOR = 0.5    # First cycle uses 50% of block (prudent start)
 
 # Penalty system
@@ -236,10 +239,10 @@ TRAILING_SILENT_MODE = False         # SPIKE OPTIMIZED: Verbose to see trailing 
 TRAILING_TRIGGER_PCT = 0.015         # Legacy (not used with ROE system)
 TRAILING_TRIGGER_ROE = 0.15          # SPIKE OPTIMIZED: Activate at +15% ROE (was +40%)
 
-# BALANCED PROTECTION (4% ROE breathing room)
+# BALANCED PROTECTION (8% ROE breathing room to let it run)
 TRAILING_DISTANCE_PCT = 0.10         # Legacy (not used)
-TRAILING_DISTANCE_ROE_OPTIMAL = 0.04 # SPIKE OPTIMIZED: Protect all but last 4% ROE (was 10%)
-TRAILING_DISTANCE_ROE_UPDATE = 0.06  # SPIKE OPTIMIZED: Update when 6% ROE away (was 12%)
+TRAILING_DISTANCE_ROE_OPTIMAL = 0.08 # OPTIMIZED: Protect all but last 8% ROE (was 4%)
+TRAILING_DISTANCE_ROE_UPDATE = 0.12  # OPTIMIZED: Update when 12% ROE away (was 6%)
 
 # Update settings (optimized for performance)
 TRAILING_UPDATE_INTERVAL = 60        # ⚡ OTTIMIZZATO: Check ogni 60s (era 30s) - riduce chiamate API
@@ -458,7 +461,7 @@ TIMEFRAME_WEIGHTS = {
 
 # ADAPTIVE SIZING: Max positions = wallet blocks (5)
 # With adaptive sizing enabled, this limit must match ADAPTIVE_WALLET_BLOCKS
-MAX_CONCURRENT_POSITIONS = 5  # Aligned with ADAPTIVE_WALLET_BLOCKS for adaptive sizing
+MAX_CONCURRENT_POSITIONS = 10  # Increased to 10 positions for better diversification
 
 # DEPRECATED: Position sizing weights (replaced by dynamic risk-weighted system)
 # See: RiskCalculator.calculate_portfolio_based_margins()

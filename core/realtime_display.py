@@ -77,6 +77,7 @@ class RealTimePositionDisplay:
         # Stato corrente
         self._cur_open_map: Dict[str, Dict] = {}
         self._session_closed: List[Dict] = []
+        self._verified_closed_ids = set()  # Track positions with verified PnL from Bybit
 
         logging.info("⚡ REAL-TIME DISPLAY: Initialized in static snapshot mode")
 
@@ -87,6 +88,7 @@ class RealTimePositionDisplay:
         Recupera da Bybit:
         - posizioni aperte
         - rileva eventuali chiusure e aggiorna self._session_closed
+        - VERIFICA PnL reale per posizioni chiuse
         """
         try:
             raw_positions = await exchange.fetch_positions(None, {"limit": 100, "type": "swap"})
@@ -94,6 +96,10 @@ class RealTimePositionDisplay:
 
             await self._detect_and_record_closures(exchange, open_list)
             await self._enrich_open_with_pnl(exchange, open_list)
+            
+            # Verify PnL for closed positions
+            if self.position_manager:
+                await self._verify_closed_positions_pnl(exchange)
 
             # aggiorna stato corrente
             self._cur_open_map = {row["symbol"]: row for row in open_list}
@@ -102,6 +108,92 @@ class RealTimePositionDisplay:
 
         except Exception as e:
             logging.error(f"⚡ Error updating snapshot: {e}")
+            
+    async def _verify_closed_positions_pnl(self, exchange):
+        """Verify and update PnL for closed positions using Bybit data"""
+        try:
+            closed_positions = self.position_manager.safe_get_closed_positions()
+            
+            for pos in closed_positions:
+                # Skip if already verified
+                if pos.position_id in self._verified_closed_ids:
+                    continue
+                    
+                # Skip if position is too old or missing ID
+                if not pos.position_id or not pos.symbol:
+                    continue
+                
+                # Fetch closed PnL from Bybit
+                try:
+                    if hasattr(exchange, 'privateGetV5PositionClosedPnl'):
+                        closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
+                            'category': 'linear',
+                            'symbol': pos.symbol.replace('/USDT:USDT', '').replace('/', ''),
+                            'limit': 5  # Check last 5 closed trades
+                        })
+                        
+                        if closed_pnl_data and 'result' in closed_pnl_data:
+                            result_list = closed_pnl_data['result'].get('list', [])
+                            
+                            # Find matching trade based on close time or just take most recent if close in time
+                            matched_data = None
+                            pos_close_time_ms = 0
+                            
+                            if pos.close_time:
+                                try:
+                                    dt = datetime.fromisoformat(pos.close_time)
+                                    pos_close_time_ms = int(dt.timestamp() * 1000)
+                                except:
+                                    pass
+                            
+                            for item in result_list:
+                                # Simple match: symbol matches and createdTime is close to our close_time
+                                item_time = int(item.get('createdTime', 0))
+                                # Allow 2 minute tolerance
+                                if abs(item_time - pos_close_time_ms) < 120000:  
+                                    matched_data = item
+                                    break
+                            
+                            # If no time match but only one recent trade, assume it's that one
+                            if not matched_data and len(result_list) == 1:
+                                matched_data = result_list[0]
+                                
+                            if matched_data:
+                                real_pnl = float(matched_data.get('closedPnl', 0.0))
+                                exit_price = float(matched_data.get('avgExitPrice', 0.0))
+                                
+                                # Check if correction needed
+                                current_pnl = pos.unrealized_pnl_usd
+                                diff = abs(real_pnl - current_pnl)
+                                
+                                # If difference > $0.10, update
+                                if diff > 0.10:
+                                    updates = {
+                                        'unrealized_pnl_usd': real_pnl,
+                                        'pnl_usd': real_pnl,  # Alias
+                                        'exit_price': exit_price,
+                                        'current_price': exit_price,
+                                        'close_reason': f"{pos.close_reason or 'MANUAL'} (VERIFIED)"
+                                    }
+                                    
+                                    # Recalculate % based on real PnL and Margin
+                                    if pos.position_size > 0:
+                                        im = pos.position_size / pos.leverage
+                                        new_pnl_pct = (real_pnl / im) * 100
+                                        updates['unrealized_pnl_pct'] = new_pnl_pct
+                                        updates['pnl_pct'] = new_pnl_pct
+                                        
+                                    # Atomic update
+                                    self.position_manager.atomic_update_position(pos.position_id, updates)
+                                    logging.info(colored(f"✅ Synced Real PnL for {pos.symbol}: ${current_pnl:.2f} -> ${real_pnl:.2f}", "green"))
+                                
+                                self._verified_closed_ids.add(pos.position_id)
+                                
+                except Exception as e:
+                    logging.debug(f"Failed to verify PnL for {pos.symbol}: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Error in verify_closed_positions_pnl: {e}")
 
     # ── Visualizzazione ──────────────────────────────────────────────────────
 
@@ -153,14 +245,20 @@ class RealTimePositionDisplay:
             pnl_usd = row.get("pnl_usd", 0.0)
 
             total_pnl_usd += pnl_usd
-            # CRITICAL FIX: Calculate REAL initial margin from Bybit data
-            # Don't enforce artificial minimums - show the real situation
-            calculated_margin = (row["position_usd"] / row["leverage"]) if row["leverage"] else 0.0
-            initial_margin = calculated_margin
+            
+            # CRITICAL FIX: Use REAL initial margin from Bybit if available
+            real_im = row.get("real_initial_margin")
+            if real_im and real_im > 0:
+                initial_margin = real_im
+                logging.debug(f"✅ {sym}: Using REAL IM from Bybit: ${initial_margin:.2f}")
+            else:
+                # Fallback: calculate from position size
+                initial_margin = (row["position_usd"] / row["leverage"]) if row["leverage"] else 0.0
+                logging.debug(f"⚠️ {sym}: Real IM not available, calculated: ${initial_margin:.2f}")
             
             # WARNING for positions with dangerously low IM
-            if calculated_margin < 20.0 and calculated_margin > 0.0:
-                logging.warning(f"⚠️ DANGEROUS: {sym} has only ${calculated_margin:.2f} IM - HIGH RISK!")
+            if initial_margin < 20.0 and initial_margin > 0.0:
+                logging.warning(f"⚠️ DANGEROUS: {sym} has only ${initial_margin:.2f} IM - HIGH RISK!")
                 
             total_im += initial_margin
 
@@ -230,9 +328,10 @@ class RealTimePositionDisplay:
             return
 
         # Closed positions table structure with ID, timestamps, and more details
-        enhanced_logger.display_table("┌─────┬────────┬──────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────┬──────────┐", "cyan")
-        enhanced_logger.display_table("│  #  │ SYMBOL │    ID    │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │ OPENED   │  CLOSED  │", "white", attrs=["bold"])
-        enhanced_logger.display_table("├─────┼────────┼──────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────┼──────────┤", "cyan")
+        # Width increased for REASON column (+22 chars)
+        enhanced_logger.display_table("┌─────┬────────┬──────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────┬──────────┬──────────────────────┐", "cyan")
+        enhanced_logger.display_table("│  #  │ SYMBOL │    ID    │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │ OPENED   │  CLOSED  │        REASON        │", "white", attrs=["bold"])
+        enhanced_logger.display_table("├─────┼────────┼──────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────┼──────────┼──────────────────────┤", "cyan")
 
         for i, pos in enumerate(closed_positions, 1):
             # Handle both dict and object formats
@@ -245,6 +344,20 @@ class RealTimePositionDisplay:
                 exit_price = pos.current_price
                 pnl_pct = pos.unrealized_pnl_pct
                 pnl_usd = pos.unrealized_pnl_usd
+                reason = getattr(pos, 'close_reason', None)
+                
+                # Fallback: extract from status if reason missing (for old positions)
+                if not reason or reason == "N/A":
+                    status = getattr(pos, 'status', '')
+                    if status and status.startswith("CLOSED_"):
+                        reason = status.replace("CLOSED_", "")
+                
+                # Final check
+                if not reason:
+                    reason = "N/A"
+                
+                # Clean up reason
+                reason = str(reason).replace("EARLY_EXIT_", "EARLY_")[:20]
                 
                 # Extract position ID
                 pos_id = getattr(pos, 'position_id', '')
@@ -290,9 +403,19 @@ class RealTimePositionDisplay:
                 exit_price = pos["exit_price"]
                 pnl_pct = float(pos.get("pnl_pct") or 0.0)
                 pnl_usd = float(pos.get("pnl_usd") or 0.0)
+                reason = str(pos.get("close_reason") or "N/A")[:20]
                 id_display = "N/A"
                 opened_str = "N/A"
                 closed_str = "N/A"
+
+            # Determine reason color
+            reason_col = "white"
+            if "STOP" in reason or "LOSS" in reason or "LIQ" in reason:
+                reason_col = "red"
+            elif "EARLY" in reason:
+                reason_col = "yellow"
+            elif "TAKE" in reason or "TRAIL" in reason or "WIN" in reason:
+                reason_col = "green"
 
             line = (
                 colored(f"│{i:^5}│", "white") +
@@ -305,13 +428,14 @@ class RealTimePositionDisplay:
                 colored(f"{pnl_pct:+.1f}%".center(10), pct_color(pnl_pct)) + colored("│", "white") +
                 colored(f"{fmt_money(pnl_usd):>11}", pct_color(pnl_usd)) + colored("│", "white") +
                 colored(f"{opened_str:^10}", "white") + colored("│", "white") +
-                colored(f"{closed_str:^10}", "white") + colored("│", "white")
+                colored(f"{closed_str:^10}", "white") + colored("│", "white") +
+                colored(f"{reason:^22}", reason_col) + colored("│", "white")
             )
             # Use enhanced logging
             logging.info(line)
 
         # Closed positions table bottom
-        enhanced_logger.display_table("└─────┴────────┴──────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────┴──────────┘", "cyan")
+        enhanced_logger.display_table("└─────┴────────┴──────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────┴──────────┴──────────────────────┘", "cyan")
         
         # 📊 SESSION SUMMARY for closed positions
         self._render_session_summary_individual(closed_positions)
@@ -345,6 +469,14 @@ class RealTimePositionDisplay:
 
             bybit_side_map[symbol] = side
             position_usd = contracts * entry_price
+            
+            # Get REAL Initial Margin from Bybit
+            real_im_val = p.get('initialMargin') or p.get('margin')
+            real_initial_margin = safe_float(real_im_val) if real_im_val else None
+
+            # Extracts PnL if available (None if missing to distinguish from 0.0)
+            raw_pnl = p.get("unrealizedPnl")
+            u_pnl = safe_float(raw_pnl) if raw_pnl is not None else None
 
             open_rows.append({
                 "symbol": symbol,
@@ -354,7 +486,8 @@ class RealTimePositionDisplay:
                 "leverage": leverage,
                 "position_usd": position_usd,
                 "sl_price": bybit_sl_map.get(symbol),
-                "unrealized_pnl_usd": safe_float(p.get("unrealizedPnl", 0.0))
+                "unrealized_pnl_usd": u_pnl,
+                "real_initial_margin": real_initial_margin  # ADD: Real IM from Bybit
             })
 
         return open_rows, bybit_side_map, bybit_sl_map
@@ -376,21 +509,130 @@ class RealTimePositionDisplay:
             entry = snap["entry_price"]
             leverage = snap["leverage"]
             position_usd = snap["position_usd"]
+            initial_margin = position_usd / leverage if leverage else 0
+            sl_price = snap.get("sl_price")  # Get SL if was set
 
-            # Exit price (fallback su entry se non trovato)
+            # Default values (fallback)
             exit_price = entry
             pnl_pct = 0.0
             pnl_usd = 0.0
-            initial_margin = position_usd / leverage if leverage else 0
-            if initial_margin > 0:
-                ticker = await exchange.fetch_ticker(sym)
-                exit_price = safe_float(ticker.get("last"), entry)
-                if side == "long":
-                    price_chg_pct = ((exit_price - entry) / entry) * 100.0
+            close_reason = "UNKNOWN"
+            
+            # Attempt to fetch REAL closed PnL from Bybit
+            # This ensures accuracy matching Bybit's history
+            data_found = False
+            try:
+                # Only works for Bybit V5 (which we are using)
+                if hasattr(exchange, 'privateGetV5PositionClosedPnl') and initial_margin > 0:
+                    closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
+                        'category': 'linear',
+                        'symbol': sym.replace('/', '').replace(':', ''),
+                        'limit': 1
+                    })
+                    
+                    if closed_pnl_data and 'result' in closed_pnl_data:
+                        result_list = closed_pnl_data['result'].get('list', [])
+                        if result_list:
+                            closed_pos = result_list[0]
+                            
+                            # Get real values
+                            pnl_usd_real = float(closed_pos.get('closedPnl', 0.0))
+                            exit_price_real = float(closed_pos.get('avgExitPrice', entry))
+                            
+                            # Update calculation
+                            pnl_usd = pnl_usd_real
+                            pnl_pct = (pnl_usd / initial_margin * 100.0) if initial_margin > 0 else 0.0
+                            exit_price = exit_price_real
+                            data_found = True
+                            logging.info(f"✅ Display: Fetched REAL PnL for {sym}: ${pnl_usd:.2f} ({pnl_pct:.2f}%)")
+            except Exception as e:
+                logging.debug(f"Could not fetch real PnL for display {sym}: {e}")
+            
+            # Fallback if real data not found
+            if not data_found and initial_margin > 0:
+                try:
+                    ticker = await exchange.fetch_ticker(sym)
+                    exit_price = safe_float(ticker.get("last"), entry)
+                    if side == "long":
+                        price_chg_pct = ((exit_price - entry) / entry) * 100.0
+                    else:
+                        price_chg_pct = ((entry - exit_price) / entry) * 100.0
+                    pnl_pct = price_chg_pct * leverage
+                    pnl_usd = (pnl_pct / 100.0) * initial_margin
+                except Exception as e:
+                    logging.debug(f"Ticker fallback failed for {sym}: {e}")
+            
+            # 🔍 INFER CLOSE REASON from exit price, SL, and trailing status
+            # First, check if position had trailing stop active
+            had_trailing = False
+            if self.position_manager:
+                try:
+                    open_positions = self.position_manager.safe_get_all_active_positions()
+                    for pos in open_positions:
+                        if pos.symbol == sym:
+                            # Check if trailing was enabled
+                            if pos.trailing_data and pos.trailing_data.enabled:
+                                had_trailing = True
+                                logging.debug(f"🔍 {sym}: Had trailing stop active")
+                            break
+                except Exception as e:
+                    logging.debug(f"Could not check trailing status for {sym}: {e}")
+            
+            # Determine close reason based on available data
+            if sl_price and exit_price > 0:
+                price_diff_pct = abs((exit_price - sl_price) / sl_price) * 100.0
+                
+                # If exit price is within 0.5% of SL, assume SL was hit
+                if price_diff_pct < 0.5:
+                    close_reason = "STOP_LOSS_HIT"
+                    logging.debug(f"🔍 {sym}: Detected STOP_LOSS (exit ${exit_price:.6f} ≈ SL ${sl_price:.6f})")
+                # If profitable close with trailing active → TRAILING_STOP
+                elif pnl_usd > 1.0 and had_trailing:  # Profitable with trailing
+                    close_reason = "TRAILING_STOP_HIT"
+                    logging.debug(f"🔍 {sym}: Detected TRAILING_STOP (profit ${pnl_usd:.2f} with trailing active)")
+                # If profitable close without trailing → MANUAL or TP
+                elif pnl_usd > 1.0:  # Profitable without trailing
+                    close_reason = "MANUAL_CLOSE"  # Or could be TP if we had TP set
+                    logging.debug(f"🔍 {sym}: Detected MANUAL_CLOSE (profitable exit)")
+                # Negative but not at SL
+                elif pnl_usd < -1.0:
+                    close_reason = "EARLY_EXIT_LOSS"
+                    logging.debug(f"🔍 {sym}: Detected EARLY_EXIT_LOSS (cut loss manually)")
                 else:
-                    price_chg_pct = ((entry - exit_price) / entry) * 100.0
-                pnl_pct = price_chg_pct * leverage
-                pnl_usd = (pnl_pct / 100.0) * initial_margin
+                    close_reason = "BREAKEVEN"
+                    logging.debug(f"🔍 {sym}: Detected BREAKEVEN close")
+            else:
+                # No SL data, infer from PnL and trailing status
+                if pnl_usd < -5.0:  # Significant loss
+                    close_reason = "STOP_LOSS_HIT"  # Likely SL even if we don't have SL price
+                elif pnl_usd > 5.0 and had_trailing:  # Significant profit with trailing
+                    close_reason = "TRAILING_STOP_HIT"
+                elif pnl_usd > 5.0:  # Significant profit without trailing
+                    close_reason = "MANUAL_CLOSE"
+                else:
+                    close_reason = "MANUAL_CLOSE"
+            
+            # If position is in position_manager, update it and move to closed
+            if self.position_manager:
+                try:
+                    # Check if position exists in manager
+                    open_positions = self.position_manager.safe_get_all_active_positions()
+                    matching_pos = None
+                    for pos in open_positions:
+                        if pos.symbol == sym:
+                            matching_pos = pos
+                            break
+                    
+                    if matching_pos:
+                        # Close position in manager with inferred reason
+                        self.position_manager.close_position(
+                            matching_pos.position_id,
+                            exit_price,
+                            close_reason
+                        )
+                        logging.info(f"✅ {sym}: Moved to closed positions with reason: {close_reason}")
+                except Exception as e:
+                    logging.debug(f"Could not update position manager for {sym}: {e}")
 
             self._session_closed.append({
                 "symbol": sym,
@@ -402,6 +644,7 @@ class RealTimePositionDisplay:
                 "leverage": leverage,
                 "pnl_pct": pnl_pct,
                 "pnl_usd": pnl_usd,
+                "close_reason": close_reason,
             })
 
     async def _enrich_open_with_pnl(self, exchange, open_list: List[Dict]):
@@ -417,10 +660,23 @@ class RealTimePositionDisplay:
         for row in open_list:
             initial_margin = (row["position_usd"] / row["leverage"]) if row["leverage"] else 0.0
 
-            if row.get("unrealized_pnl_usd"):
+            # Use Bybit PnL if available (even if 0.0), otherwise calculate
+            if row.get("unrealized_pnl_usd") is not None:
                 pnl_usd = row["unrealized_pnl_usd"]
                 pnl_pct = (pnl_usd / initial_margin * 100.0) if initial_margin else 0.0
+                
+                # Estimate current price from PnL for display consistency
+                # PnL = (Price - Entry) * Contracts -> Price = (PnL / Contracts) + Entry
+                if row.get("contracts"):
+                    if row["side"] == "long":
+                        row["current_price"] = (pnl_usd / row["contracts"]) + row["entry_price"]
+                    else:
+                        row["current_price"] = row["entry_price"] - (pnl_usd / row["contracts"])
+                else:
+                     # Fallback to ticker if contracts 0/missing or can't calc
+                     row["current_price"] = tickers.get(row["symbol"], row["entry_price"])
             else:
+                # Fallback calculation using Last Price
                 last = tickers.get(row["symbol"], row["entry_price"])
                 if row["side"] == "long":
                     price_chg_pct = ((last - row["entry_price"]) / row["entry_price"]) * 100.0
@@ -535,7 +791,20 @@ class RealTimePositionDisplay:
                     return pos.symbol.replace('/USDT:USDT', '')
                 return pos.get('symbol', 'UNKNOWN').replace('/USDT:USDT', '')
             
-            total_pnl_usd = sum(get_pnl(pos) for pos in closed_positions)
+            def get_size(pos):
+                if hasattr(pos, 'position_size'):
+                    return pos.position_size
+                return pos.get('position_size', 0.0)
+            
+            # Calculate PnL (Gross)
+            total_gross_pnl_usd = sum(get_pnl(pos) for pos in closed_positions)
+            
+            # Calculate Est. Fees (Taker 0.055% * 2 for entry/exit)
+            total_fees_usd = sum(get_size(pos) * 0.0011 for pos in closed_positions)
+            
+            # Calculate Net PnL (Gross - Fees)
+            total_net_pnl_usd = total_gross_pnl_usd - total_fees_usd
+            
             winning_trades = sum(1 for pos in closed_positions if get_pnl(pos) > 0)
             losing_trades = total_trades - winning_trades
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
@@ -547,7 +816,7 @@ class RealTimePositionDisplay:
                 
                 best_pnl = get_pnl(best_trade)
                 worst_pnl = get_pnl(worst_trade)
-                avg_pnl = total_pnl_usd / total_trades if total_trades > 0 else 0.0
+                avg_pnl = total_gross_pnl_usd / total_trades if total_trades > 0 else 0.0
                 
                 best_symbol = get_symbol(best_trade)[:8]
                 worst_symbol = get_symbol(worst_trade)[:8]
@@ -562,7 +831,7 @@ class RealTimePositionDisplay:
             
             # Total PnL line with appropriate coloring
             # P&L: red if negative, green if positive
-            pnl_color = pct_color(total_pnl_usd)
+            pnl_color = pct_color(total_net_pnl_usd)
             
             # WIN RATE: green if good (≥60%), yellow if ok (40-60%), red if bad (<40%)
             if win_rate >= 60:
@@ -572,16 +841,67 @@ class RealTimePositionDisplay:
             else:
                 wr_color = "red"
             
+            # 🆕 Wallet Balance Info
+            start_bal = 0.0
+            curr_bal = 0.0
+            net_chg = 0.0
+            net_chg_pct = 0.0
+            
+            if self.position_manager and hasattr(self.position_manager, 'get_session_summary'):
+                summary = self.position_manager.get_session_summary()
+                start_bal = summary.get('start_balance', 0.0)
+                curr_bal = summary.get('balance', 0.0)
+                net_chg = curr_bal - start_bal
+                if start_bal > 0:
+                    net_chg_pct = (net_chg / start_bal) * 100
+            
             # Build colored line with separate colors for P&L and WIN RATE
+            # CHANGED: Show NET PnL to match wallet balance better
             pnl_line = (
-                colored("│ 💰 TOTAL SESSION P&L: ", "white") +
-                colored(f"{fmt_money(total_pnl_usd):>8}", pnl_color, attrs=['bold']) +
+                colored("│ 💰 TOTAL SESSION P&L (Net): ", "white") +
+                colored(f"{fmt_money(total_net_pnl_usd):>8}", pnl_color, attrs=['bold']) +
                 colored(f" │ TRADES: {total_trades:>2} │ WIN RATE: ", "white") +
                 colored(f"{win_rate:>5.1f}%", wr_color, attrs=['bold']) +
                 colored(" │", "white")
             )
-            # Use logging.info for proper handling through enhanced logger
+            # Use logging.info for proper handling through enhanced logging
             logging.info(pnl_line)
+            
+            # Add Est. Fees line
+            fees_line = (
+                colored(f"│ 📉 Est. Fees: -${total_fees_usd:.2f} (approx) ", "yellow") +
+                colored(" " * (76 - len(f"📉 Est. Fees: -${total_fees_usd:.2f} (approx) ")) + "│", "white")
+            )
+            logging.info(fees_line)
+            
+            # 🆕 Add Balance Line (Always show if manager available)
+            if self.position_manager:
+                bal_col = "green" if net_chg >= 0 else "red"
+                
+                # Handle zero start balance gracefully
+                if start_bal > 0:
+                    pct_txt = f"{net_chg_pct:+.1f}%"
+                else:
+                    pct_txt = "N/A"
+                    
+                bal_str = f" SESSION BALANCE:   ${start_bal:.0f} ➜ ${curr_bal:.0f} ({fmt_money(net_chg)} / {pct_txt})"
+                
+                bal_line = (
+                    colored("│ 🏦 SESSION BALANCE:   ", "white") +
+                    colored(f"${start_bal:.0f}", "cyan") +
+                    colored(" ➜ ", "white") +
+                    colored(f"${curr_bal:.0f}", "cyan") +
+                    colored(f" ({fmt_money(net_chg)} / {pct_txt})", bal_col)
+                )
+                
+                # Add padding to match width
+                padding_len = 78 - len(bal_str)
+                if padding_len > 0:
+                    bal_line += colored(" " * padding_len + "│", "white")
+                else:
+                    bal_line += colored("│", "white")
+                    
+                logging.info(bal_line)
             
             # Performance breakdown
             if total_trades > 0:

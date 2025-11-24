@@ -375,10 +375,9 @@ class PositionSync:
             if not position.close_time or position.close_time == "":
                 position.close_time = datetime.now().isoformat()
         
-        # Use close_position to trigger analysis and proper cleanup
-        # Extract exit price and close reason
+        # 🔍 INFER CLOSE REASON intelligently
         exit_price = position.current_price
-        close_reason = "SYNC_CLOSED"
+        close_reason = self._infer_close_reason(position, exit_price)
         
         # Call close_position which will trigger trade analysis
         self.core.close_position(
@@ -386,6 +385,64 @@ class PositionSync:
             exit_price=exit_price,
             close_reason=close_reason
         )
+        
+        logging.info(f"✅ {symbol_short}: Closed with reason: {close_reason}")
+    
+    def _infer_close_reason(self, position: ThreadSafePosition, exit_price: float) -> str:
+        """
+        Intelligently infer why the position was closed based on:
+        - Exit price vs Stop Loss
+        - PnL amount and direction
+        - Trailing stop status
+        """
+        try:
+            pnl_usd = position.unrealized_pnl_usd or 0.0
+            sl_price = position.real_stop_loss or position.stop_loss
+            had_trailing = (
+                hasattr(position, 'trailing_data') and 
+                position.trailing_data and 
+                position.trailing_data.enabled
+            )
+            
+            symbol_short = position.symbol.replace('/USDT:USDT', '')
+            
+            # Check if exit price is close to SL (within 0.5%)
+            if sl_price and exit_price > 0:
+                price_diff_pct = abs((exit_price - sl_price) / sl_price) * 100.0
+                
+                if price_diff_pct < 0.5:
+                    # Exit price matches SL - Stop Loss hit
+                    logging.debug(f"🔍 {symbol_short}: Detected STOP_LOSS (exit ${exit_price:.6f} ≈ SL ${sl_price:.6f})")
+                    return "STOP_LOSS_HIT"
+            
+            # Analyze based on PnL
+            if pnl_usd > 1.0:  # Profitable
+                if had_trailing:
+                    logging.debug(f"🔍 {symbol_short}: Detected TRAILING_STOP (profit ${pnl_usd:.2f} with trailing)")
+                    return "TRAILING_STOP_HIT"
+                else:
+                    logging.debug(f"🔍 {symbol_short}: Detected MANUAL_CLOSE (profit ${pnl_usd:.2f})")
+                    return "MANUAL_CLOSE"
+                    
+            elif pnl_usd < -1.0:  # Loss
+                # If significant loss but not at SL price - early exit
+                if sl_price and exit_price > 0:
+                    price_diff_pct = abs((exit_price - sl_price) / sl_price) * 100.0
+                    if price_diff_pct >= 0.5:  # Not at SL
+                        logging.debug(f"🔍 {symbol_short}: Detected EARLY_EXIT_LOSS (loss but not at SL)")
+                        return "EARLY_EXIT_LOSS"
+                
+                # Significant loss, likely SL
+                logging.debug(f"🔍 {symbol_short}: Detected STOP_LOSS (significant loss ${pnl_usd:.2f})")
+                return "STOP_LOSS_HIT"
+                
+            else:  # Breakeven
+                logging.debug(f"🔍 {symbol_short}: Detected BREAKEVEN close")
+                return "BREAKEVEN"
+                
+        except Exception as e:
+            logging.debug(f"Error inferring close reason: {e}")
+            return "SYNC_CLOSED"  # Fallback
     
     async def _update_existing_position(self, exchange, symbol: str, data: Optional[Dict]):
         """Update existing position with current price and track for AI analysis"""

@@ -189,6 +189,7 @@ class PositionCore:
                 
                 return {
                     'balance': self._session_balance,
+                    'start_balance': self._session_start_balance,  # NEW
                     'active_positions': len(active_positions),
                     'closed_positions': len(self._closed_positions),
                     'total_pnl_usd': total_pnl_usd,
@@ -273,6 +274,7 @@ class PositionCore:
                 
                 # Update position
                 position.status = f"CLOSED_{close_reason}"
+                position.close_reason = close_reason  # Set dedicated field
                 position.close_time = datetime.now().isoformat()
                 position.unrealized_pnl_pct = pnl_pct
                 position.unrealized_pnl_usd = pnl_usd

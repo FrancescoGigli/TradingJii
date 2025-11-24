@@ -59,6 +59,7 @@ class ThreadSafePosition:
     status: str = "OPEN"
     origin: str = "SESSION"  # "SYNCED" (from Bybit at startup) or "SESSION" (opened in this session)
     open_reason: str = "Unknown"  # Motivo di apertura (es. "ML: High confidence SHORT")
+    close_reason: Optional[str] = None  # Motivo chiusura (es. "TRAILING_STOP", "STOP_LOSS")
     close_snapshot: Optional[str] = None  # Snapshot dati al momento della chiusura (JSON string)
     
     # Technical indicators (for dashboard display)
