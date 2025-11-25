@@ -39,6 +39,8 @@ class TimeSyncManager:
         """
         Initialize exchange time synchronization (for startup)
         
+        CRITICAL FIX: Override exchange.milliseconds() method to apply offset automatically
+        
         This method performs the initial time sync with retry logic,
         using configuration from config.py for consistency.
         
@@ -57,12 +59,13 @@ class TimeSyncManager:
         manual_offset = getattr(config, 'MANUAL_TIME_OFFSET', 0)
         
         sync_success = False
+        final_offset = 0
         
         for attempt in range(1, max_retries + 1):
             try:
                 # Fetch server time using public API
                 server_time = await exchange.fetch_time()
-                local_time = exchange.milliseconds()
+                local_time = int(time.time() * 1000)  # Use raw local time for calculation
                 
                 # Calculate time difference
                 time_diff = server_time - local_time
@@ -71,13 +74,13 @@ class TimeSyncManager:
                 if manual_offset is not None:
                     time_diff += manual_offset
                 
-                # Store the time difference in exchange options
-                exchange.options['timeDifference'] = time_diff
+                # Store the time difference
+                final_offset = time_diff
                 
                 # Verify the sync by fetching time again
                 await asyncio.sleep(0.5)  # Small delay for network latency
                 verify_server_time = await exchange.fetch_time()
-                verify_local_time = exchange.milliseconds()
+                verify_local_time = int(time.time() * 1000)
                 verify_adjusted_time = verify_local_time + time_diff
                 verify_diff = abs(verify_server_time - verify_adjusted_time)
                 
@@ -104,8 +107,19 @@ class TimeSyncManager:
                     await asyncio.sleep(delay)
         
         if sync_success:
+            # 🔧 CRITICAL FIX: Override milliseconds() method to apply offset automatically
+            def fixed_milliseconds():
+                return int(time.time() * 1000 + final_offset)
+            
+            exchange.milliseconds = fixed_milliseconds
+            
+            # Store offset in options for reference
+            exchange.options['timeDifference'] = final_offset
+            
             # Set recv_window for normal operations
             exchange.options['recvWindow'] = recv_window_normal
+            
+            logging.debug(colored(f"🔧 Overridden exchange.milliseconds() with offset: {final_offset}ms", "cyan"))
         
         return sync_success
         
@@ -133,6 +147,8 @@ class TimeSyncManager:
         """
         Forza re-sincronizzazione con Bybit server
         
+        CRITICAL FIX: Also override milliseconds() method during re-sync
+        
         Args:
             exchange: ccxt exchange instance
             
@@ -155,6 +171,12 @@ class TimeSyncManager:
                 local_time = int(time.time() * 1000)
                 time_diff = server_time - local_time
                 
+                # 🔧 CRITICAL FIX: Override milliseconds() method to apply offset automatically
+                def fixed_milliseconds():
+                    return int(time.time() * 1000 + time_diff)
+                
+                exchange.milliseconds = fixed_milliseconds
+                
                 # Update exchange config with new time difference
                 exchange.options['timeDifference'] = time_diff
                 
@@ -166,6 +188,7 @@ class TimeSyncManager:
                     f"Success rate: {self._sync_success_rate:.1f}%",
                     "green", attrs=['bold']
                 ))
+                logging.debug(colored(f"🔧 Re-overridden exchange.milliseconds() with offset: {time_diff}ms", "cyan"))
                 
                 return True
             else:

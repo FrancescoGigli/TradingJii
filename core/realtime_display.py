@@ -275,11 +275,15 @@ class RealTimePositionDisplay:
 
     # ── Visualizzazione ──────────────────────────────────────────────────────
 
-    def show_snapshot(self):
+    def show_snapshot(self, exchange=None, show_bybit_history=False):
         """
         Mostra snapshot delle posizioni:
         - tabella LIVE POSITIONS
-        - tabella CLOSED POSITIONS (sessione)
+        - tabella CLOSED POSITIONS (sessione o Bybit history)
+        
+        Args:
+            exchange: CCXT exchange instance (required if show_bybit_history=True)
+            show_bybit_history: If True, fetches and displays real Bybit closed positions
         
         🚀 ENHANCED: Uses triple output logging system
         """
@@ -289,7 +293,26 @@ class RealTimePositionDisplay:
         
         self._render_live()
         enhanced_logger.display_table("")  # Empty line
-        self._render_closed()
+        
+        # Show either cached or real Bybit data
+        if show_bybit_history and exchange:
+            # Run async method to fetch Bybit data
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If already in async context, create task
+                    asyncio.create_task(self._render_closed_from_bybit(exchange))
+                else:
+                    # If not in async context, run in new loop
+                    asyncio.run(self._render_closed_from_bybit(exchange))
+            except Exception as e:
+                logging.error(f"Failed to fetch Bybit history: {e}")
+                # Fallback to cached data
+                self._render_closed()
+        else:
+            # Show cached/local data
+            self._render_closed()
         
         log_separator("=", 100, "cyan")
         enhanced_logger.display_table("")
@@ -383,6 +406,171 @@ class RealTimePositionDisplay:
         # 📊 Enhanced summary con wallet info
         self._render_wallet_summary(len(open_list), total_pnl_usd, total_im)
 
+    async def _fetch_bybit_closed_positions(self, exchange, limit: int = 20):
+        """
+        Fetch REAL closed positions directly from Bybit
+        
+        Args:
+            exchange: CCXT exchange instance
+            limit: Number of positions to fetch (default 20)
+            
+        Returns:
+            List of closed positions from Bybit
+        """
+        try:
+            from datetime import timedelta
+            
+            # Calculate time range (last 24 hours)
+            now = datetime.now()
+            end_time = int(now.timestamp() * 1000)
+            start_time = int((now - timedelta(hours=24)).timestamp() * 1000)
+            
+            # Call Bybit API
+            response = await exchange.privateGetV5PositionClosedPnl({
+                'category': 'linear',
+                'startTime': start_time,
+                'endTime': end_time,
+                'limit': limit
+            })
+            
+            # Check response
+            if int(response.get('retCode', -1)) != 0:
+                logging.warning(f"Bybit API error: {response.get('retMsg', 'Unknown')}")
+                return []
+            
+            # Extract trades
+            trades = response.get('result', {}).get('list', [])
+            logging.info(f"✅ Fetched {len(trades)} closed positions from Bybit")
+            
+            return trades
+            
+        except Exception as e:
+            logging.error(f"Failed to fetch Bybit closed positions: {e}")
+            return []
+    
+    async def _render_closed_from_bybit(self, exchange):
+        """Render closed positions fetched directly from Bybit"""
+        enhanced_logger.display_table("🔒 CLOSED POSITIONS (BYBIT, Real-Time Data)", "magenta", attrs=["bold"])
+        
+        # Fetch real data from Bybit
+        bybit_trades = await self._fetch_bybit_closed_positions(exchange, limit=20)
+        
+        if not bybit_trades:
+            enhanced_logger.display_table("— no closed positions from Bybit —", "yellow")
+            return
+        
+        # Same table structure as _render_closed
+        enhanced_logger.display_table("┌─────┬────────┬──────────┬──────┬──────┬─────────────┬─────────────┬──────────┬───────────┬──────────┬──────────┬──────────┬──────────────────────┐", "cyan")
+        enhanced_logger.display_table("│  #  │ SYMBOL │    ID    │ SIDE │ LEV  │   ENTRY     │    EXIT     │  PNL %   │   PNL $   │ OPENED   │  CLOSED  │ DURATION │        REASON        │", "white", attrs=["bold"])
+        enhanced_logger.display_table("├─────┼────────┼──────────┼──────┼──────┼─────────────┼─────────────┼──────────┼───────────┼──────────┼──────────┼──────────┼──────────────────────┤", "cyan")
+        
+        total_pnl = 0.0
+        
+        for i, trade in enumerate(bybit_trades, 1):
+            try:
+                # Extract data from Bybit
+                sym = trade.get('symbol', 'UNKNOWN').replace('USDT', '')[:8]
+                side = trade.get('side', '').upper()
+                
+                if side == 'BUY':
+                    side_display = 'buy'
+                elif side == 'SELL':
+                    side_display = 'sell'
+                else:
+                    side_display = 'unknown'
+                
+                lev = int(float(trade.get('leverage', 0) or 0))
+                entry_price = float(trade.get('avgEntryPrice', 0) or 0)
+                exit_price = float(trade.get('avgExitPrice', 0) or 0)
+                closed_pnl = float(trade.get('closedPnl', 0) or 0)
+                qty = float(trade.get('qty', 0) or 0)
+                
+                total_pnl += closed_pnl
+                
+                # Calculate %
+                notional = qty * entry_price
+                margin = notional / lev if lev > 0 else notional
+                pnl_pct = (closed_pnl / margin * 100) if margin > 0 else 0
+                
+                # Extract timestamps
+                created_time = trade.get('createdTime')
+                updated_time = trade.get('updatedTime')
+                
+                opened_str = "N/A"
+                closed_str = "N/A"
+                duration_str = "N/A"
+                id_display = "N/A"
+                
+                if created_time:
+                    try:
+                        ts = int(created_time) / 1000
+                        open_dt = datetime.fromtimestamp(ts)
+                        opened_str = open_dt.strftime("%H:%M:%S")
+                        id_display = open_dt.strftime("%H%M")
+                    except:
+                        pass
+                
+                if updated_time:
+                    try:
+                        ts = int(updated_time) / 1000
+                        close_dt = datetime.fromtimestamp(ts)
+                        closed_str = close_dt.strftime("%H:%M:%S")
+                        
+                        # Calculate duration
+                        if created_time:
+                            time_diff = close_dt - open_dt
+                            total_seconds = int(time_diff.total_seconds())
+                            hours = total_seconds // 3600
+                            minutes = (total_seconds % 3600) // 60
+                            
+                            if hours > 0:
+                                duration_str = f"{hours}h{minutes:02d}m"
+                            else:
+                                duration_str = f"{minutes}m"
+                    except:
+                        pass
+                
+                # Infer reason from PnL
+                if closed_pnl > 0.5:
+                    reason = "PROFIT"
+                    reason_col = "green"
+                elif closed_pnl < -0.5:
+                    reason = "LOSS"
+                    reason_col = "red"
+                else:
+                    reason = "BREAKEVEN"
+                    reason_col = "white"
+                
+                line = (
+                    colored(f"│{i:^5}│", "white") +
+                    colored(f"{sym:^8}", "cyan") + colored("│", "white") +
+                    colored(f"{id_display:^10}", "yellow") + colored("│", "white") +
+                    colored(f"{('LONG' if side == 'BUY' else 'SHORT'):^6}", "green" if side == 'BUY' else "red") + colored("│", "white") +
+                    colored(f"{lev:^6}", "yellow") + colored("│", "white") +
+                    colored(f"${entry_price:.6f}".center(13), "white") + colored("│", "white") +
+                    colored(f"${exit_price:.6f}".center(13), "cyan") + colored("│", "white") +
+                    colored(f"{pnl_pct:+.1f}%".center(10), pct_color(pnl_pct)) + colored("│", "white") +
+                    colored(f"{fmt_money(closed_pnl):>11}", pct_color(closed_pnl)) + colored("│", "white") +
+                    colored(f"{opened_str:^10}", "white") + colored("│", "white") +
+                    colored(f"{closed_str:^10}", "white") + colored("│", "white") +
+                    colored(f"{duration_str:^10}", "magenta") + colored("│", "white") +
+                    colored(f"{reason:^22}", reason_col) + colored("│", "white")
+                )
+                logging.info(line)
+                
+            except Exception as e:
+                logging.error(f"Error rendering Bybit trade: {e}")
+                continue
+        
+        # Table bottom
+        enhanced_logger.display_table("└─────┴────────┴──────────┴──────┴──────┴─────────────┴─────────────┴──────────┴───────────┴──────────┴──────────┴──────────┴──────────────────────┘", "cyan")
+        
+        # Summary
+        enhanced_logger.display_table("")
+        pnl_color = pct_color(total_pnl)
+        summary_line = f"📊 BYBIT TOTAL: {len(bybit_trades)} trades | Total P&L: {fmt_money(total_pnl)}"
+        enhanced_logger.display_table(summary_line, pnl_color, attrs=['bold'])
+    
     def _render_closed(self):
         enhanced_logger.display_table("🔒 CLOSED POSITIONS (SESSION, Individual Trades)", "magenta", attrs=["bold"])
         
