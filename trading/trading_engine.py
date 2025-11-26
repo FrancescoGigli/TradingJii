@@ -402,6 +402,15 @@ class TradingEngine:
                 symbol = signal["symbol"]
                 symbol_short = symbol.replace('/USDT:USDT', '')
 
+                # 🛡️ BLACKLIST CHECK: Skip problematic symbols (XAUT, PAXG, etc.)
+                if symbol in config.SYMBOL_BLACKLIST:
+                    display_execution_card(
+                        i, len(signals_to_execute), symbol, signal, None, "SKIPPED",
+                        "Symbol in BLACKLIST (known issues)"
+                    )
+                    logging.warning(colored(f"⛔ {symbol_short}: In BLACKLIST - SKIP", "red"))
+                    continue
+
                 # Check if position already exists
                 if self.position_manager.has_position_for_symbol(symbol):
                     skipped_existing += 1
@@ -422,67 +431,52 @@ class TradingEngine:
 
                 market_data = self.MarketData(price=current_price, atr=atr, volatility=volatility)
                 
-                # 🆕 NUOVO: Usa margin precalcolato da portfolio sizing (se disponibile)
-                if portfolio_margins and i-1 < len(portfolio_margins):
-                    # Usa il margin precalcolato dal sistema a pesi
-                    target_margin = portfolio_margins[i-1]
-                    logging.debug(f"💰 Using portfolio-based margin for {symbol_short}: ${target_margin:.2f}")
-                    
-                    # Calcola position size manualmente con margin precalcolato
-                    notional_value = target_margin * config.LEVERAGE
-                    position_size = notional_value / current_price
-                    
-                    # 🚨 CONTROLLO PRE-APERTURA: Verifica notional minimo
-                    # Se il notional sarebbe < MIN_POSITION_USD, salta questa moneta
-                    from core.position_management.position_safety import MIN_POSITION_USD
-                    
-                    # Calcola il notional che si creerebbe realmente
-                    # (ipotizzando che Bybit potrebbe arrotondare al minimo)
-                    expected_notional = position_size * current_price
-                    
-                    if expected_notional < MIN_POSITION_USD:
-                        display_execution_card(
-                            i, len(signals_to_execute), symbol, signal, None, "SKIPPED",
-                            f"Notional troppo basso: ${expected_notional:.2f} < ${MIN_POSITION_USD:.0f} minimo\n" +
-                            f"    Prezzo: ${current_price:.2f} troppo alto per IM ${target_margin:.0f}"
-                        )
-                        logging.info(colored(
-                            f"⏭️ {symbol_short}: Prezzo troppo alto (${current_price:.2f}) per IM ${target_margin:.0f} → "
-                            f"notional ${expected_notional:.2f} < ${MIN_POSITION_USD:.0f} minimo → SKIP",
-                            "yellow"
-                        ))
-                        continue  # Vai alla moneta successiva
-                    
-                    # Crea PositionLevels con margin precalcolato (SL/TP non usati)
-                    from core.risk_calculator import PositionLevels
-                    levels = PositionLevels(
-                        margin=target_margin,
-                        position_size=position_size,
-                        stop_loss=0,  # Non usato
-                        take_profit=0,  # Non usato
-                        risk_pct=0,
-                        reward_pct=0,
-                        risk_reward_ratio=0
+                # 🎯 PORTFOLIO SIZING ONLY - No fallback
+                if not portfolio_margins or i-1 >= len(portfolio_margins):
+                    failed_trades += 1
+                    display_execution_card(
+                        i, len(signals_to_execute), symbol, signal, None, "FAILED",
+                        "Portfolio margins not available"
                     )
-                else:
-                    # Fallback: usa vecchio sistema se portfolio_margins non disponibile
-                    levels = self.global_risk_calculator.calculate_position_levels(
-                        market_data, signal["signal_name"].lower(), signal["confidence"], available_balance
+                    logging.error(f"❌ {symbol_short}: Portfolio sizing unavailable - SKIP")
+                    continue
+                
+                # Use precalculated margin from portfolio sizing
+                target_margin = portfolio_margins[i-1]
+                logging.debug(f"💰 Portfolio margin for {symbol_short}: ${target_margin:.2f}")
+                
+                # Calculate position size with precalculated margin
+                notional_value = target_margin * config.LEVERAGE
+                position_size = notional_value / current_price
+                
+                # 🛡️ PRE-FLIGHT: Check minimum notional
+                from core.position_management.position_safety import MIN_POSITION_USD
+                expected_notional = position_size * current_price
+                
+                if expected_notional < MIN_POSITION_USD:
+                    display_execution_card(
+                        i, len(signals_to_execute), symbol, signal, None, "SKIPPED",
+                        f"Notional too low: ${expected_notional:.2f} < ${MIN_POSITION_USD:.0f}\n" +
+                        f"    Price ${current_price:.2f} too high for IM ${target_margin:.0f}"
                     )
-                    
-                    # Check if position would be too small
-                    if levels is None:
-                        display_execution_card(
-                            i, len(signals_to_execute), symbol, signal, None, "SKIPPED",
-                            f"IM would be too low (high-price asset: ${current_price:.2f})"
-                        )
-                        logging.info(colored(
-                            f"⏭️ {symbol_short}: High price (${current_price:.2f}) → estimated IM < $20 → SKIP",
-                            "yellow"
-                        ))
-                        continue
-                    
-                    logging.debug(f"⚠️ Using fallback margin calculation for {symbol_short}")
+                    logging.info(colored(
+                        f"⏭️ {symbol_short}: Price (${current_price:.2f}) → "
+                        f"notional ${expected_notional:.2f} < ${MIN_POSITION_USD:.0f} → SKIP",
+                        "yellow"
+                    ))
+                    continue
+                
+                # Create PositionLevels with portfolio margin
+                from core.risk_calculator import PositionLevels
+                levels = PositionLevels(
+                    margin=target_margin,
+                    position_size=position_size,
+                    stop_loss=0,  # Calculated later
+                    take_profit=0,  # Not used
+                    risk_pct=0,
+                    reward_pct=0,
+                    risk_reward_ratio=0
+                )
                 
                 # Portfolio margin check with beautiful card display
                 if levels.margin > available_balance:

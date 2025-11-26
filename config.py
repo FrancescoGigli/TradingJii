@@ -78,7 +78,7 @@ exchange_config = {
 }
 
 # Trading parameters
-LEVERAGE = 5  # SPIKE OPTIMIZED: Reduced to 5x for safer spike catching
+LEVERAGE = 8  # ⚡ OPZIONE B: Increased to 8x for better profit potential (balanced risk/reward)
 
 # ==============================================================================
 # 🎯 POSITION SIZING SYSTEM SELECTOR
@@ -91,14 +91,14 @@ ADAPTIVE_SIZING_ENABLED = False  # True = Adaptive (learns from results), False 
 # 🎯 FIXED SIZE MODE (USER REQUESTED)
 # ==============================================================================
 FIXED_POSITION_SIZE_ENABLED = True   # Force fixed size for all trades
-FIXED_POSITION_SIZE_AMOUNT = 30.0    # Always open at $30 Margin
+FIXED_POSITION_SIZE_AMOUNT = 40.0    # ⚡ INCREASED: Always open at $40 Margin (from $30)
 
 # ==============================================================================
 # 🎯 POSITION SIZE LIMITS (Safety Validation Only)
 # ==============================================================================
 # Used only for safety checks in portfolio validation
-POSITION_SIZE_MIN_ABSOLUTE = 30.0  # Minimum position size (Safety Check)
-POSITION_SIZE_MAX_ABSOLUTE = 30.0  # Maximum position size (Safety Check)
+POSITION_SIZE_MIN_ABSOLUTE = 40.0  # Minimum position size (Safety Check)
+POSITION_SIZE_MAX_ABSOLUTE = 40.0  # Maximum position size (Safety Check)
 
 # ==============================================================================
 # 🎯 DYNAMIC POSITION SIZING PARAMETERS (FIX #1)
@@ -113,9 +113,9 @@ POSITION_SIZING_TARGET_POSITIONS = 10  # Target at least 10 aggressive positions
 # Sistema a 3 livelli basato su confidence ML, volatilità e trend strength (ADX)
 
 # Position sizes per tier (in USD)
-POSITION_SIZE_CONSERVATIVE = 30.0    # Fixed $30
-POSITION_SIZE_MODERATE = 30.0        # Fixed $30
-POSITION_SIZE_AGGRESSIVE = 30.0      # Fixed $30
+POSITION_SIZE_CONSERVATIVE = 40.0    # Fixed $40
+POSITION_SIZE_MODERATE = 40.0        # Fixed $40
+POSITION_SIZE_AGGRESSIVE = 40.0      # Fixed $40
 
 # Base margin for fallback calculations
 BASE_MARGIN = 45.0                   # Default margin when dynamic calculation fails
@@ -177,15 +177,15 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # ==============================================================================
 # MASTER STOP LOSS PARAMETER (used by both training and runtime)
 # This ensures ML learns with the same SL that will be used in live trading
-STOP_LOSS_PCT = 0.05                 # 5% stop loss = -40% ROE with 8x leverage
+STOP_LOSS_PCT = 0.06                 # ⚡ OPZIONE B: 6% stop loss = -48% ROE with 8x leverage (balanced protection)
 
 # ==============================================================================
-# Stop Loss: ALWAYS FIXED at 5%
+# Stop Loss: ALWAYS FIXED at 6%
 # ==============================================================================
 # Simple and predictable stop loss system:
-# - LONG positions: SL = entry_price × 0.95 (-5% from entry)
-# - SHORT positions: SL = entry_price × 1.05 (+5% from entry)
-# - With 8x leverage: -5% price = -40% ROE
+# - LONG positions: SL = entry_price × 0.94 (-6% from entry)
+# - SHORT positions: SL = entry_price × 1.06 (+6% from entry)
+# - With 8x leverage: -6% price = -48% ROE
 # 
 # Protection layers (in order):
 # 1. Early Exit: Exits before SL if rapid crash detected (-10%/-15% ROE)
@@ -208,7 +208,7 @@ EARLY_EXIT_FAST_DROP_ROE = -15       # Exit if drops to -15% ROE quickly
 # Immediate reversal detection (first 5 minutes)
 EARLY_EXIT_IMMEDIATE_ENABLED = True
 EARLY_EXIT_IMMEDIATE_TIME_MINUTES = 5  # Check within first 5 minutes
-EARLY_EXIT_IMMEDIATE_DROP_ROE = -10    # Exit if drops to -10% ROE immediately
+EARLY_EXIT_IMMEDIATE_DROP_ROE = -12    # ⚡ OPZIONE B: Exit if drops to -12% ROE (more patient)
 
 # Persistent weakness detection (first 60 minutes)
 EARLY_EXIT_PERSISTENT_ENABLED = True
@@ -235,9 +235,9 @@ TP_MIN_PROFIT_PCT = 0.03             # Minimum 3% profit target
 TRAILING_ENABLED = True              # Enable trailing stop system
 TRAILING_SILENT_MODE = False         # SPIKE OPTIMIZED: Verbose to see trailing action
 
-# EARLY ACTIVATION for spike catching (+15% ROE = +3% price with 5x leverage)
+# EARLY ACTIVATION for spike catching (+12% ROE = +1.5% price with 8x leverage)
 TRAILING_TRIGGER_PCT = 0.015         # Legacy (not used with ROE system)
-TRAILING_TRIGGER_ROE = 0.15          # SPIKE OPTIMIZED: Activate at +15% ROE (was +40%)
+TRAILING_TRIGGER_ROE = 0.12          # ⚡ OPZIONE B: Activate at +12% ROE (more aggressive profit capture)
 
 # BALANCED PROTECTION (8% ROE breathing room to let it run)
 TRAILING_DISTANCE_PCT = 0.10         # Legacy (not used)
