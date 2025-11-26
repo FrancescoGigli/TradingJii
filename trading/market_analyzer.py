@@ -364,7 +364,7 @@ class MarketAnalyzer:
         """Display progress bars for each thread with in-place updates"""
         from core.enhanced_logging_system import enhanced_logger
         
-        # Rate limit (every 2 seconds or significant change)
+        # Rate limit (every 5 seconds or significant change)
         current_time = time.time()
         if not hasattr(self, '_last_bar_update'):
             self._last_bar_update = 0
@@ -374,8 +374,8 @@ class MarketAnalyzer:
         time_since_last = current_time - self._last_bar_update
         completion_change = total_completed - self._last_bar_completed
         
-        # Show initial display or update every 2 seconds/2 completions
-        if not self._bars_displayed or time_since_last >= 2.0 or completion_change >= 2:
+        # Show initial display or update every 5 seconds/5 completions
+        if not self._bars_displayed or time_since_last >= 5.0 or completion_change >= 5:
             self._last_bar_update = current_time
             self._last_bar_completed = total_completed
             
@@ -439,13 +439,14 @@ class MarketAnalyzer:
                 for line in lines:
                     print(f"\033[K{line}")  # Clear line and print new content
                 
-                # Log milestone updates to file (not terminal)
-                milestones = [0, 25, 50, 75, 100]
-                current_milestone = int((overall_pct * 100) // 25) * 25
-                if not hasattr(self, '_logged_milestone') or current_milestone > self._logged_milestone:
-                    if current_milestone in milestones and current_milestone > 0:
-                        logging.info(f"📊 Download progress: {current_milestone}% ({total_completed}/{total_symbols})")
-                        self._logged_milestone = current_milestone
+                # Log only major milestones (50%, 100%)
+                milestones = [50, 100]
+                current_milestone = int((overall_pct * 100) // 50) * 50
+                if not hasattr(self, '_logged_milestone'):
+                    self._logged_milestone = 0
+                if current_milestone > self._logged_milestone and current_milestone in milestones:
+                    logging.info(f"📊 Download progress: {current_milestone}% ({total_completed}/{total_symbols})")
+                    self._logged_milestone = current_milestone
 
     def clear_data(self):
         """Clear stored market data to free memory"""

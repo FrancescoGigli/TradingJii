@@ -187,6 +187,13 @@ class TradingOrchestrator:
             else:
                 # Fallback: calcolo classico
                 levels = self.risk_calculator.calculate_position_levels(market_data, side, confidence, balance)
+                
+                # Check if position would be too small (e.g., high-price assets)
+                if levels is None:
+                    error_msg = f"Position too small for {symbol} (estimated IM < ${config.MIN_MARGIN:.0f})"
+                    logging.warning(colored(f"⚠️ {error_msg}", "yellow"))
+                    return TradingResult(False, "", error_msg)
+                
                 logging.debug(f"⚠️ Using fallback margin calculation: ${levels.margin:.2f}")
 
             # 2) Portfolio check

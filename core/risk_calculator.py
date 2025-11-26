@@ -202,8 +202,13 @@ class RiskCalculator:
             return entry_price * (1.05 if side.lower() == 'buy' else 0.95)
     
     def calculate_position_levels(self, market_data: MarketData, side: str, 
-                                 confidence: float, balance: float) -> PositionLevels:
-        """Calculate complete position levels"""
+                                 confidence: float, balance: float) -> Optional[PositionLevels]:
+        """
+        Calculate complete position levels
+        
+        Returns:
+            PositionLevels if valid, None if position would be too small
+        """
         try:
             # 1. Fixed Margin
             margin = self.fixed_size
@@ -211,6 +216,18 @@ class RiskCalculator:
             # 2. Position Size
             notional_value = margin * LEVERAGE
             position_size = notional_value / market_data.price
+            
+            # 🛡️ SAFETY CHECK: Validate minimum IM before proceeding
+            # For high-price assets (XAUT, ZEC), IM can be as low as $2
+            # We need at least MIN_MARGIN to avoid unsafe tiny positions
+            estimated_im = self._estimate_bybit_initial_margin(position_size, market_data.price, LEVERAGE)
+            
+            if estimated_im < self.min_margin:
+                logging.warning(
+                    f"⚠️ Position too small for {market_data.price:.2f} price asset: "
+                    f"Est. IM ${estimated_im:.2f} < Min ${self.min_margin:.2f} - SKIPPING"
+                )
+                return None
             
             # 3. SL/TP
             stop_loss = self.calculate_stop_loss_fixed(market_data.price, side)
@@ -238,18 +255,24 @@ class RiskCalculator:
             
         except Exception as e:
             logging.error(f"Error calculating position levels: {e}")
-            # Fallback
-            fallback_margin = self.fixed_size
-            fallback_sl = self.calculate_stop_loss_fixed(market_data.price, side)
-            return PositionLevels(
-                margin=fallback_margin,
-                position_size=(fallback_margin * LEVERAGE) / market_data.price,
-                stop_loss=fallback_sl,
-                take_profit=market_data.price, # Dummy
-                risk_pct=5.0,
-                reward_pct=5.0,
-                risk_reward_ratio=1.0
-            )
+            return None  # Return None on error instead of fallback
+    
+    def _estimate_bybit_initial_margin(self, position_size: float, price: float, leverage: float) -> float:
+        """
+        Estimate what Bybit's Initial Margin will be for a given position
+        
+        Bybit IM calculation (simplified):
+        IM = (Position Size × Price) / Leverage
+        
+        For small positions on expensive assets, IM can be very low.
+        Example: 0.036 contracts of XAUT @ $4113 with 5x = ~$2 IM
+        """
+        try:
+            notional = position_size * price
+            estimated_im = notional / leverage
+            return estimated_im
+        except:
+            return 0.0
     
     def validate_portfolio_margin(self, existing_margins: list, new_margin: float, 
                                  total_balance: float) -> Tuple[bool, str]:

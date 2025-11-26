@@ -367,6 +367,15 @@ class TradingEngine:
                     market_data, first_signal["signal_name"].lower(), first_signal["confidence"], usdt_balance
                 )
                 
+                # Skip if position would be too small (e.g., high-price assets like XAUT)
+                if levels is None:
+                    enhanced_logger.display_table(
+                        f"⚠️ FIRST SIGNAL SKIPPED: {first_signal['symbol']} requires too small IM (high-price asset)",
+                        "yellow"
+                    )
+                    # Continue to other signals
+                    return
+                
                 # Early exit if first signal requires more than available balance
                 if levels.margin > usdt_balance:
                     enhanced_logger.display_table(f"⚠️ INSUFFICIENT BALANCE: Need ${levels.margin:.2f}+ per trade, have ${usdt_balance:.2f}", "yellow")
@@ -460,6 +469,19 @@ class TradingEngine:
                     levels = self.global_risk_calculator.calculate_position_levels(
                         market_data, signal["signal_name"].lower(), signal["confidence"], available_balance
                     )
+                    
+                    # Check if position would be too small
+                    if levels is None:
+                        display_execution_card(
+                            i, len(signals_to_execute), symbol, signal, None, "SKIPPED",
+                            f"IM would be too low (high-price asset: ${current_price:.2f})"
+                        )
+                        logging.info(colored(
+                            f"⏭️ {symbol_short}: High price (${current_price:.2f}) → estimated IM < $20 → SKIP",
+                            "yellow"
+                        ))
+                        continue
+                    
                     logging.debug(f"⚠️ Using fallback margin calculation for {symbol_short}")
                 
                 # Portfolio margin check with beautiful card display
