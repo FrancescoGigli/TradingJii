@@ -692,7 +692,7 @@ class TradingEngine:
             try:
                 await self.realtime_display.update_snapshot(exchange)
                 # Show REAL Bybit data instead of cached session data
-                self.realtime_display.show_snapshot(exchange=exchange, show_bybit_history=True)
+                self.realtime_display.show_snapshot()
             except Exception as e:
                 logging.error(f"❌ Snapshot display failed: {e}")
 
