@@ -260,67 +260,86 @@ class PositionSync:
         
         # 🆕 STEP 1: Try to fetch REAL PnL from Bybit closed-pnl endpoint
         trade_data_found = False
+        pnl_pct = 0.0
         
-        try:
-            logging.info(f"🔍 Fetching closed PnL data for {symbol_short}...")
-            
-            # ✅ FIX: Use correct Bybit endpoint for closed positions
-            # This endpoint has the REAL realized PnL with all fees included
-            closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
-                'category': 'linear',
-                'symbol': position.symbol.replace('/', ''),
-                'limit': 1
-            })
-            
-            if closed_pnl_data and 'result' in closed_pnl_data:
-                result_list = closed_pnl_data['result'].get('list', [])
+        # 🆕 FIX: Correct symbol format for Bybit API (KASUSDT not KASUSDT:USDT)
+        bybit_symbol = position.symbol.replace('/', '').replace(':USDT', '')
+        
+        # 🆕 Retry logic: Bybit may not have data immediately after position close
+        max_retries = 3
+        retry_delay = 1.5  # seconds
+        
+        for attempt in range(max_retries):
+            if trade_data_found:
+                break  # Already found data, no more retries needed
                 
-                if result_list:
-                    closed_position = result_list[0]
-                    
-                    # 🆕 Get REAL closed PnL (includes ALL fees)
-                    closed_pnl = closed_position.get('closedPnl')
-                    if closed_pnl:
-                        pnl_usd = float(closed_pnl)
-                        position.unrealized_pnl_usd = pnl_usd
-                        
-                        # Calculate % from USD using REAL initial margin
-                        # Use real_initial_margin if available, otherwise calculate
-                        if hasattr(position, 'real_initial_margin') and position.real_initial_margin:
-                            initial_margin = position.real_initial_margin
-                        else:
-                            initial_margin = position.position_size / position.leverage
-                        
-                        if initial_margin > 0:
-                            pnl_pct = (pnl_usd / initial_margin) * 100
-                            position.unrealized_pnl_pct = pnl_pct
-                        
-                        logging.info(f"✅ {symbol_short}: REAL PnL from Bybit: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%) [includes ALL fees]")
-                        trade_data_found = True
-                    
-                    # 🆕 Get REAL exit price
-                    avg_exit_price = closed_position.get('avgExitPrice')
-                    if avg_exit_price:
-                        position.current_price = float(avg_exit_price)
-                        logging.info(f"✅ {symbol_short}: Real exit price: ${position.current_price:.6f}")
-                    
-                    # 🆕 Get REAL close timestamp
-                    updated_time = closed_position.get('updatedTime')
-                    if updated_time:
-                        # Bybit returns timestamp in milliseconds
-                        position.close_time = datetime.fromtimestamp(int(updated_time)/1000).isoformat()
-                        logging.info(f"✅ {symbol_short}: Real close time: {position.close_time}")
-                    
-                    # 🆕 Log raw data for debugging
-                    logging.debug(f"📊 RAW CLOSED PNL DATA for {symbol_short}:")
-                    logging.debug(json.dumps(closed_position, indent=2, default=str))
-                    
-        except Exception as e:
-            logging.warning(f"⚠️ Could not fetch closed PnL from Bybit for {symbol_short}: {e}")
-            
-            # FALLBACK: Try old method with trade history
             try:
-                logging.info(f"🔄 Trying fallback: trade history for {symbol_short}...")
+                if attempt > 0:
+                    logging.debug(f"🔄 Retry {attempt}/{max_retries} for {symbol_short} closed PnL...")
+                    await asyncio.sleep(retry_delay)
+                
+                logging.debug(f"🔍 Fetching closed PnL data for {symbol_short} (symbol={bybit_symbol})...")
+                
+                # ✅ FIX: Use correct Bybit endpoint for closed positions
+                # This endpoint has the REAL realized PnL with all fees included
+                closed_pnl_data = await exchange.privateGetV5PositionClosedPnl({
+                    'category': 'linear',
+                    'symbol': bybit_symbol,
+                    'limit': 5  # Get last 5 to find the right one
+                })
+                
+                if closed_pnl_data and 'result' in closed_pnl_data:
+                    result_list = closed_pnl_data['result'].get('list', [])
+                    
+                    if result_list:
+                        closed_position = result_list[0]
+                        
+                        # 🆕 Get REAL closed PnL (includes ALL fees)
+                        closed_pnl = closed_position.get('closedPnl')
+                        if closed_pnl:
+                            pnl_usd = float(closed_pnl)
+                            position.unrealized_pnl_usd = pnl_usd
+                            
+                            # Calculate % from USD using REAL initial margin
+                            # Use real_initial_margin if available, otherwise calculate
+                            if hasattr(position, 'real_initial_margin') and position.real_initial_margin:
+                                initial_margin = position.real_initial_margin
+                            else:
+                                initial_margin = position.position_size / position.leverage
+                            
+                            if initial_margin > 0:
+                                pnl_pct = (pnl_usd / initial_margin) * 100
+                                position.unrealized_pnl_pct = pnl_pct
+                            
+                            logging.info(f"✅ {symbol_short}: REAL PnL from Bybit: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%) [includes ALL fees]")
+                            trade_data_found = True
+                        
+                        # 🆕 Get REAL exit price
+                        avg_exit_price = closed_position.get('avgExitPrice')
+                        if avg_exit_price:
+                            position.current_price = float(avg_exit_price)
+                            logging.debug(f"✅ {symbol_short}: Real exit price: ${position.current_price:.6f}")
+                        
+                        # 🆕 Get REAL close timestamp
+                        updated_time = closed_position.get('updatedTime')
+                        if updated_time:
+                            # Bybit returns timestamp in milliseconds
+                            position.close_time = datetime.fromtimestamp(int(updated_time)/1000).isoformat()
+                            logging.debug(f"✅ {symbol_short}: Real close time: {position.close_time}")
+                        
+                        # 🆕 Log raw data for debugging
+                        logging.debug(f"📊 RAW CLOSED PNL DATA for {symbol_short}:")
+                        logging.debug(json.dumps(closed_position, indent=2, default=str))
+                        
+            except Exception as e:
+                logging.debug(f"⚠️ Attempt {attempt+1}/{max_retries} failed for {symbol_short}: {e}")
+                if attempt == max_retries - 1:
+                    logging.warning(f"⚠️ Could not fetch closed PnL from Bybit for {symbol_short} after {max_retries} attempts")
+        
+        # FALLBACK: If API didn't work, try trade history
+        if not trade_data_found:
+            try:
+                logging.debug(f"🔄 Trying fallback: trade history for {symbol_short}...")
                 trades = await exchange.fetch_my_trades(symbol=position.symbol, limit=5)
                 
                 if trades:
@@ -332,7 +351,7 @@ class PositionSync:
                     exit_price = last_trade.get('price')
                     if exit_price:
                         position.current_price = float(exit_price)
-                        logging.info(f"✅ {symbol_short}: Exit price from trades: ${exit_price:.6f}")
+                        logging.debug(f"✅ {symbol_short}: Exit price from trades: ${exit_price:.6f}")
                     
                     # Get timestamp
                     close_timestamp = last_trade.get('timestamp')
@@ -340,23 +359,21 @@ class PositionSync:
                         position.close_time = datetime.fromtimestamp(close_timestamp/1000).isoformat()
                         
             except Exception as trade_error:
-                logging.warning(f"⚠️ Fallback trade history also failed for {symbol_short}: {trade_error}")
+                logging.debug(f"⚠️ Fallback trade history also failed for {symbol_short}: {trade_error}")
         
-        # FALLBACK: Use last known unrealizedPnl or calculate
+        # FINAL FALLBACK: Use last known unrealizedPnl or calculate
         if not trade_data_found:
-            logging.warning(f"⚠️ {symbol_short}: Using fallback PnL calculation")
-            
-            # Try last known PnL from Bybit position data
+            # Try last known PnL from Bybit position data (this is usually accurate enough)
             if hasattr(position, 'unrealized_pnl_usd') and position.unrealized_pnl_usd != 0:
                 pnl_usd = position.unrealized_pnl_usd
                 initial_margin = position.position_size / position.leverage
                 if initial_margin > 0:
                     pnl_pct = (pnl_usd / initial_margin) * 100
                     position.unrealized_pnl_pct = pnl_pct
-                logging.info(f"💰 {symbol_short}: Using last known PnL: ${pnl_usd:+.2f} (may not include final fees)")
+                logging.info(f"💰 {symbol_short}: Using last known PnL: ${pnl_usd:+.2f}")
             else:
-                # Final fallback: calculate
-                logging.warning(f"⚠️ {symbol_short}: Calculating PnL (NO FEES INCLUDED)")
+                # Final fallback: calculate from price movement
+                logging.warning(f"⚠️ {symbol_short}: Using fallback PnL calculation")
                 
                 if position.side == 'buy':
                     pnl_pct = ((position.current_price - position.entry_price) / position.entry_price) * 100 * position.leverage
@@ -368,8 +385,6 @@ class PositionSync:
                 
                 position.unrealized_pnl_pct = pnl_pct
                 position.unrealized_pnl_usd = pnl_usd
-                
-                logging.warning(f"❌ CALCULATED PnL: ${pnl_usd:+.2f} (DOES NOT INCLUDE FEES)")
             
             # Set close time to now if not set
             if not position.close_time or position.close_time == "":

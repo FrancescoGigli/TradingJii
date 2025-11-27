@@ -393,12 +393,23 @@ class RealTimePositionDisplay:
         self._render_session_summary(len(positions), total_pnl, winning)
     
     def _render_session_summary(self, trade_count: int, total_pnl: float, winning: int):
-        """Render compact session summary"""
+        """Render compact session summary with duration"""
         if trade_count == 0:
             return
         
         try:
             win_rate = (winning / trade_count * 100) if trade_count > 0 else 0
+            
+            # Calculate session duration
+            session_duration = datetime.now() - self._session_start_time
+            total_seconds = int(session_duration.total_seconds())
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            
+            if hours > 0:
+                duration_str = f"{hours}h{minutes:02d}m"
+            else:
+                duration_str = f"{minutes}m"
             
             # Get balance info
             start_bal = 200.0
@@ -411,27 +422,47 @@ class RealTimePositionDisplay:
             net_change = curr_bal - start_bal
             net_change_pct = (net_change / start_bal * 100) if start_bal > 0 else 0
             
+            # Calculate average PnL per trade
+            avg_pnl = total_pnl / trade_count if trade_count > 0 else 0
+            
+            # Calculate trades per hour
+            hours_float = total_seconds / 3600 if total_seconds > 0 else 1
+            trades_per_hour = trade_count / hours_float
+            
             # Render compact session summary
             enhanced_logger.display_table("")
             
-            # Single line summary
+            # Line 1: Main stats with session duration
             stats_line = (
-                colored("📊 SESSION: ", "cyan", attrs=['bold']) +
+                colored("📊 SESSION (", "cyan", attrs=['bold']) +
+                colored(f"⏱️{duration_str}", "magenta", attrs=['bold']) +
+                colored("): ", "cyan", attrs=['bold']) +
                 colored("P&L: ", "white") +
                 colored(f"{fmt_money(total_pnl)}", pct_color(total_pnl), attrs=['bold']) +
                 colored(" | ", "white") +
-                colored(f"Trades: {trade_count}", "white") +
+                colored(f"Trades: {trade_count} ({trades_per_hour:.1f}/hr)", "white") +
                 colored(" | ", "white") +
-                colored("Win Rate: ", "white") +
-                colored(f"{win_rate:.1f}%", "green" if win_rate >= 60 else "yellow" if win_rate >= 40 else "red") +
+                colored("WR: ", "white") +
+                colored(f"{win_rate:.1f}%", "green" if win_rate >= 60 else "yellow" if win_rate >= 40 else "red", attrs=['bold']) +
                 colored(" | ", "white") +
-                colored("Balance: ", "white") +
-                colored(f"${start_bal:.0f}", "cyan") +
-                colored(" ➜ ", "white") +
-                colored(f"${curr_bal:.0f}", "cyan") +
-                colored(f" ({fmt_money(net_change)} / {net_change_pct:+.1f}%)", "green" if net_change >= 0 else "red")
+                colored(f"${start_bal:.0f}➜${curr_bal:.0f}", "cyan") +
+                colored(f" ({net_change_pct:+.1f}%)", "green" if net_change >= 0 else "red")
             )
             logging.info(stats_line)
+            
+            # Line 2: Additional insights (if significant)
+            if trade_count >= 3:
+                avg_line = (
+                    colored("   📈 Avg Trade: ", "white") +
+                    colored(f"{fmt_money(avg_pnl)}", pct_color(avg_pnl)) +
+                    colored(" | ", "white") +
+                    colored("Winning: ", "white") +
+                    colored(f"{winning}", "green") +
+                    colored(" | ", "white") +
+                    colored("Losing: ", "white") +
+                    colored(f"{trade_count - winning}", "red")
+                )
+                logging.info(avg_line)
             
         except Exception as e:
             logging.error(f"Error in session summary: {e}")

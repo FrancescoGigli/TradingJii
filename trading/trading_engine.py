@@ -25,6 +25,16 @@ except ImportError:
     DECISION_EXPLAINER_AVAILABLE = False
     global_decision_explainer = None
 
+# Import Dual-Engine System (XGBoost vs AI parallel analysis)
+try:
+    from core.ai_technical_analyst import AITechnicalAnalyst, global_ai_technical_analyst
+    from core.decision_comparator import DecisionComparator, ExecutionStrategy, global_decision_comparator
+    DUAL_ENGINE_AVAILABLE = True
+    logging.debug("🔄 Dual-Engine System (XGBoost vs AI) available")
+except ImportError as e:
+    DUAL_ENGINE_AVAILABLE = False
+    logging.warning(f"⚠️ Dual-Engine System not available: {e}")
+
 # Import trade decision logger
 try:
     from core.trade_decision_logger import global_trade_decision_logger
@@ -88,6 +98,40 @@ class TradingEngine:
         else:
             self.session_stats = None
             logging.warning("⚠️ Integrated systems not available - using basic mode")
+        
+        # Initialize hybrid AI system (Rizzo integration)
+        if config.AI_VALIDATION_ENABLED or config.MARKET_INTELLIGENCE_ENABLED:
+            self._init_hybrid_ai_system()
+    
+    def _init_hybrid_ai_system(self):
+        """Initialize hybrid AI system components (Rizzo integration)"""
+        import os
+        
+        self.market_intelligence_hub = None
+        self.ai_validator = None
+        
+        if config.MARKET_INTELLIGENCE_ENABLED:
+            # Market Intelligence Hub will be initialized later (needs exchange)
+            logging.info("🤖 Market Intelligence Hub will be initialized with exchange")
+        
+        if config.AI_VALIDATION_ENABLED:
+            try:
+                from core.ai_decision_validator import AIDecisionValidator
+                
+                self.ai_validator = AIDecisionValidator(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    model=config.OPENAI_MODEL
+                )
+                
+                if self.ai_validator.is_available():
+                    logging.info(f"✅ AI Decision Validator ready ({config.OPENAI_MODEL})")
+                else:
+                    logging.warning("⚠️ AI validation enabled but OpenAI API key not available")
+                    if not config.AI_FALLBACK_TO_XGBOOST:
+                        logging.error("❌ AI validation required but unavailable - set AI_FALLBACK_TO_XGBOOST=True")
+            except Exception as e:
+                logging.error(f"❌ Failed to initialize AI validator: {e}")
+                self.ai_validator = None
 
     def _init_database_system(self):
         """Initialize database system if available"""
@@ -212,6 +256,205 @@ class TradingEngine:
             cycle_logger.log_phase(3, "SIGNAL PROCESSING & FILTERING", "yellow")
             await self.signal_processor.display_complete_analysis(prediction_results, all_symbol_data)
             all_signals = await self.signal_processor.process_prediction_results(prediction_results, all_symbol_data)
+
+            # 🆕 PHASE 3.5: DUAL-ENGINE SYSTEM or LEGACY AI VALIDATION
+            market_intel = None
+            
+            # Check if Dual-Engine mode is enabled
+            use_dual_engine = (
+                getattr(config, 'DUAL_ENGINE_ENABLED', False) and 
+                DUAL_ENGINE_AVAILABLE and 
+                getattr(config, 'AI_ANALYST_ENABLED', False)
+            )
+            
+            if use_dual_engine:
+                # ═══════════════════════════════════════════════════════════════
+                # 🔄 DUAL-ENGINE MODE: XGBoost and AI analyze same indicators
+                # ═══════════════════════════════════════════════════════════════
+                try:
+                    import os
+                    enhanced_logger.display_table("🔄 DUAL-ENGINE ANALYSIS (XGBoost vs GPT-4o)", "cyan", attrs=['bold'])
+                    
+                    # Determine execution strategy
+                    strategy_name = getattr(config, 'DUAL_ENGINE_STRATEGY', 'consensus')
+                    strategy_map = {
+                        'xgboost_only': ExecutionStrategy.XGBOOST_ONLY,
+                        'ai_only': ExecutionStrategy.AI_ONLY,
+                        'consensus': ExecutionStrategy.CONSENSUS,
+                        'weighted': ExecutionStrategy.WEIGHTED,
+                        'champion': ExecutionStrategy.CHAMPION
+                    }
+                    strategy = strategy_map.get(strategy_name, ExecutionStrategy.CONSENSUS)
+                    global_decision_comparator.set_strategy(strategy)
+                    
+                    logging.info(colored(f"📊 Dual-Engine Strategy: {strategy_name.upper()}", "cyan"))
+                    
+                    # Initialize Market Intelligence Hub if needed
+                    if config.MARKET_INTELLIGENCE_ENABLED and not self.market_intelligence_hub:
+                        from core.market_intelligence import MarketIntelligenceHub
+                        self.market_intelligence_hub = MarketIntelligenceHub(
+                            exchange,
+                            cmc_api_key=os.getenv("CMC_PRO_API_KEY"),
+                            whale_api_key=os.getenv("WHALE_ALERT_API_KEY")
+                        )
+                        logging.info("🤖 Market Intelligence Hub initialized")
+                    
+                    # Collect market intelligence for AI context
+                    if config.MARKET_INTELLIGENCE_ENABLED and self.market_intelligence_hub:
+                        top_symbols = self.market_analyzer.get_top_symbols()[:10]
+                        market_intel = await self.market_intelligence_hub.collect_intelligence(top_symbols)
+                        if market_intel and market_intel.sentiment:
+                            s = market_intel.sentiment
+                            logging.info(f"😨 Sentiment: {s.get('value', 'N/A')}/100 ({s.get('classification', 'N/A')})")
+                    
+                    # Limit signals for AI analysis (cost control)
+                    max_ai_symbols = getattr(config, 'AI_ANALYST_MAX_SYMBOLS', 10)
+                    signals_to_analyze = all_signals[:max_ai_symbols]
+                    
+                    # AI Technical Analyst - Parallel independent analysis
+                    logging.info(colored(f"🧠 AI Technical Analyst analyzing {len(signals_to_analyze)} signals...", "magenta"))
+                    ai_signals = await global_ai_technical_analyst.analyze_batch(
+                        signals_to_analyze, 
+                        market_intel
+                    )
+                    
+                    logging.info(colored(f"🧠 AI returned {len(ai_signals)} independent analyses", "magenta"))
+                    
+                    # Compare XGBoost vs AI for each signal
+                    filtered_signals = []
+                    
+                    for signal in signals_to_analyze:
+                        symbol = signal['symbol']
+                        ai_signal = ai_signals.get(symbol)
+                        
+                        # Compare using Decision Comparator
+                        comparison = global_decision_comparator.compare_signal(
+                            xgb_signal=signal,
+                            ai_signal=ai_signal,
+                            strategy_override=None  # Use global strategy
+                        )
+                        
+                        # Apply execution decision
+                        if comparison.should_trade:
+                            # Enrich signal with comparison data
+                            signal['dual_engine_comparison'] = comparison.to_dict()
+                            signal['ai_analysis'] = ai_signal.to_dict() if ai_signal else None
+                            
+                            # Use consensus confidence if available
+                            if comparison.consensus_confidence > 0:
+                                signal['original_confidence'] = signal['confidence']
+                                signal['confidence'] = comparison.consensus_confidence / 100  # Convert to 0-1 scale
+                            
+                            filtered_signals.append(signal)
+                    
+                    # Log comparison summary
+                    agreement_rate = global_decision_comparator.stats.get_agreement_rate()
+                    logging.info(colored(
+                        f"🔄 Dual-Engine Results: {len(filtered_signals)}/{len(signals_to_analyze)} approved | "
+                        f"Agreement Rate: {agreement_rate:.1f}%",
+                        "cyan"
+                    ))
+                    
+                    # Update all_signals with filtered results
+                    all_signals = filtered_signals
+                    
+                    # Show comparison dashboard if configured
+                    if getattr(config, 'DUAL_ENGINE_SHOW_DASHBOARD', False):
+                        global_decision_comparator.display_stats_dashboard()
+                    
+                except Exception as e:
+                    logging.error(f"❌ Dual-Engine error: {e}")
+                    if not config.AI_FALLBACK_TO_XGBOOST:
+                        logging.warning("⚠️ Dual-Engine failed and fallback disabled - skipping cycle")
+                        return
+                    logging.info("⚠️ Falling back to XGBoost-only mode")
+            
+            elif config.MARKET_INTELLIGENCE_ENABLED or config.AI_VALIDATION_ENABLED:
+                # ═══════════════════════════════════════════════════════════════
+                # 🤖 LEGACY AI VALIDATION MODE (validator only, not parallel)
+                # ═══════════════════════════════════════════════════════════════
+                try:
+                    import os
+                    
+                    # Initialize Market Intelligence Hub on first use (needs exchange)
+                    if config.MARKET_INTELLIGENCE_ENABLED and not self.market_intelligence_hub:
+                        from core.market_intelligence import MarketIntelligenceHub
+                        self.market_intelligence_hub = MarketIntelligenceHub(
+                            exchange,
+                            cmc_api_key=os.getenv("CMC_PRO_API_KEY"),
+                            whale_api_key=os.getenv("WHALE_ALERT_API_KEY")
+                        )
+                        logging.info("🤖 Market Intelligence Hub initialized")
+                    
+                    # Collect market intelligence
+                    if config.MARKET_INTELLIGENCE_ENABLED and self.market_intelligence_hub:
+                        enhanced_logger.display_table("📊 COLLECTING MARKET INTELLIGENCE", "magenta", attrs=['bold'])
+                        
+                        top_symbols = self.market_analyzer.get_top_symbols()[:10]  # Top 10 for intel
+                        market_intel = await self.market_intelligence_hub.collect_intelligence(top_symbols)
+                        
+                        logging.info(f"📰 News: {len(market_intel.news[:100])}+ chars")
+                        if market_intel.sentiment:
+                            s = market_intel.sentiment
+                            logging.info(f"😨 Sentiment: {s.get('value', 'N/A')}/100 ({s.get('classification', 'N/A')})")
+                        if market_intel.forecasts and 'forecasts' in market_intel.forecasts:
+                            logging.info(f"🔮 Forecasts: {len(market_intel.forecasts['forecasts'])} symbols")
+                    
+                    # AI Validation (Legacy mode)
+                    if config.AI_VALIDATION_ENABLED and self.ai_validator and self.ai_validator.is_available():
+                        if market_intel:
+                            enhanced_logger.display_table("🤖 AI VALIDATION WITH GPT-4o (Legacy Mode)", "cyan", attrs=['bold'])
+                            
+                            # Get portfolio state
+                            portfolio_state = {}
+                            if self.clean_modules_available:
+                                session_summary = self.position_manager.get_session_summary()
+                                portfolio_state = {
+                                    'balance': session_summary.get('balance', 0),
+                                    'available_balance': session_summary.get('available_balance', 0),
+                                    'active_positions': session_summary.get('active_positions', 0)
+                                }
+                            
+                            # Validate signals with AI
+                            validated_signals, ai_metadata = await self.ai_validator.validate_signals(
+                                all_signals[:config.AI_MAX_SIGNALS_TO_VALIDATE],
+                                market_intel,
+                                portfolio_state,
+                                max_signals=config.AI_MAX_SIGNALS_TO_VALIDATE
+                            )
+                            
+                            # Filter to approved signals only
+                            approved_signals = self.ai_validator.filter_approved_signals(validated_signals)
+                            
+                            # Log AI decision
+                            logging.info(
+                                f"🤖 AI Validation: {len(approved_signals)}/{len(all_signals[:config.AI_MAX_SIGNALS_TO_VALIDATE])} approved | "
+                                f"Outlook: {ai_metadata.get('market_outlook', 'N/A')} | "
+                                f"Risk: {ai_metadata.get('overall_risk_level', 'N/A')} | "
+                                f"Cost: ${ai_metadata.get('cost_usd', 0):.4f}"
+                            )
+                            
+                            # Replace signals with AI-approved ones
+                            all_signals = approved_signals
+                            
+                            # Show approved signals with AI reasoning
+                            if config.AI_VERBOSE_LOGGING and approved_signals:
+                                for sig in approved_signals[:3]:  # Top 3
+                                    if 'ai_reasoning' in sig:
+                                        symbol_short = sig['symbol'].replace('/USDT:USDT', '')
+                                        logging.info(f"   💡 {symbol_short}: {sig['ai_reasoning'][:80]}...")
+                        else:
+                            logging.warning("⚠️ AI validation enabled but no market intelligence available")
+                    elif config.AI_VALIDATION_ENABLED and not config.AI_FALLBACK_TO_XGBOOST:
+                        # AI required but not available - skip cycle
+                        logging.warning("⚠️ AI validation required but not available - skipping cycle")
+                        return
+                        
+                except Exception as e:
+                    logging.error(f"❌ Market intelligence/AI error: {e}")
+                    if config.AI_VALIDATION_ENABLED and not config.AI_FALLBACK_TO_XGBOOST:
+                        logging.warning("⚠️ AI validation failed and fallback disabled - skipping cycle")
+                        return
 
             # Phase 4: Ranking
             cycle_logger.log_phase(4, "RANKING & TOP SIGNAL SELECTION", "green")

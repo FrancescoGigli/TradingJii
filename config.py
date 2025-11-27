@@ -564,3 +564,110 @@ if PUMP_CATCHING_MODE:
     TOP_SYMBOLS_COUNT = 75           # Analyze more symbols for better coverage
     MIN_CONFIDENCE_BASE = 0.70       # Slightly lower threshold for pumps (was 0.65)
     VOLUME_SURGE_MIN_CONFIDENCE = 0.65  # Even lower for volume surge detection
+
+
+# ==============================================================================
+# 🤖 HYBRID AI SYSTEM (Rizzo Integration)
+# ==============================================================================
+# Integration of Rizzo project components for enhanced decision making
+# Combines XGBoost ML with GPT-4o AI validation and market intelligence
+
+# ---- MASTER SWITCH ----
+AI_VALIDATION_ENABLED = True        # Enable AI validation system (requires OpenAI API key)
+                                     # True: XGBoost signals validated by GPT-4o
+                                     # False: Pure XGBoost mode (current behavior)
+
+# ---- AI CONFIGURATION ----
+OPENAI_MODEL = "gpt-4o"              # OpenAI model for validation
+AI_MAX_SIGNALS_TO_VALIDATE = 10      # Maximum signals to send to AI (cost control)
+AI_TEMPERATURE = 0.3                 # Lower = more consistent decisions
+
+# ---- MARKET INTELLIGENCE ----
+# News, sentiment, forecasts, whale alerts collection
+MARKET_INTELLIGENCE_ENABLED = True   # Collect market intelligence data
+                                     # Can be enabled even without AI validation for logging
+
+# CoinMarketCap Sentiment (Fear & Greed Index)
+CMC_SENTIMENT_ENABLED = True         # Enable sentiment analysis
+# Requires CMC_PRO_API_KEY environment variable
+
+# Prophet Forecasting
+PROPHET_FORECASTS_ENABLED = True     # Enable price forecasting
+PROPHET_MAX_SYMBOLS = 5              # Max symbols to forecast (performance control)
+PROPHET_TIMEFRAME = "15m"            # Timeframe for forecasts
+
+# News Feed
+NEWS_FEED_ENABLED = True             # Enable crypto news collection
+NEWS_MAX_CHARS = 4000                # Max characters for news feed
+
+# Whale Alerts
+WHALE_ALERTS_ENABLED = False         # Enable whale alert tracking (requires API subscription)
+# Requires WHALE_ALERT_API_KEY environment variable
+
+# ---- AI VALIDATION BEHAVIOR ----
+# How AI validates XGBoost signals
+AI_MODE = "validator"                # "validator" = AI filters XGBoost signals
+                                     # "primary" = AI is primary decision maker (experimental)
+
+AI_MIN_APPROVED_SIGNALS = 1          # Minimum signals AI must approve to proceed
+AI_MAX_APPROVED_SIGNALS = 5          # Maximum signals AI can approve per cycle
+AI_CONSERVATIVE_MODE = True          # Be conservative in bearish conditions
+
+# ---- COST CONTROLS ----
+# OpenAI API cost management
+AI_COST_LIMIT_PER_CYCLE = 0.10       # Max $0.10 per cycle (safety limit)
+AI_COST_LIMIT_DAILY = 5.00           # Max $5.00 per day (safety limit)
+AI_COST_TRACKING_ENABLED = True      # Track and log AI costs
+
+# ---- FALLBACK BEHAVIOR ----
+# What to do if AI validation fails
+AI_FALLBACK_TO_XGBOOST = True        # True: use XGBoost signals if AI fails
+                                     # False: skip cycle if AI unavailable
+
+# ---- LOGGING & MONITORING ----
+AI_LOG_DECISIONS = True              # Log all AI decisions for analysis
+AI_LOG_MARKET_INTEL = True           # Log market intelligence data
+AI_VERBOSE_LOGGING = True            # ENABLE: Show AI reasoning for EACH signal (verbose)
+
+
+# ==============================================================================
+# 🔄 DUAL-ENGINE SYSTEM (XGBoost vs GPT-4o Parallel Analysis)
+# ==============================================================================
+# Enables parallel analysis where both XGBoost ML and GPT-4o AI independently
+# analyze the same technical indicators and provide their own signals
+
+# ---- MASTER SWITCH ----
+DUAL_ENGINE_ENABLED = True           # Enable dual-engine parallel analysis
+                                     # True: Both XGBoost and AI analyze independently
+                                     # False: Use existing validator system
+
+# ---- EXECUTION STRATEGY ----
+# Determines how to combine/use the two signals
+# Options:
+#   "xgboost_only"  - Ignore AI, use only XGBoost (baseline for A/B testing)
+#   "ai_only"       - Ignore XGBoost, use only AI (test AI standalone)
+#   "consensus"     - Trade ONLY when both agree on direction
+#   "weighted"      - Weighted average: 70% XGBoost, 30% AI
+#   "champion"      - Use best performer based on recent win rate
+DUAL_ENGINE_STRATEGY = "consensus"   # Default: consensus for maximum accuracy
+
+# ---- CONFIDENCE THRESHOLDS ----
+DUAL_ENGINE_XGB_MIN_CONFIDENCE = 65  # Min XGBoost confidence to consider (%)
+DUAL_ENGINE_AI_MIN_CONFIDENCE = 70   # Min AI confidence to consider (%)
+DUAL_ENGINE_CONSENSUS_MIN = 70       # Min consensus confidence to trade (%)
+
+# ---- AI TECHNICAL ANALYST CONFIG ----
+AI_ANALYST_ENABLED = True            # Enable AI Technical Analyst module
+AI_ANALYST_MODEL = "gpt-4o"          # Model for AI Analyst
+AI_ANALYST_TEMPERATURE = 0.2         # Lower = more consistent analysis
+AI_ANALYST_MAX_SYMBOLS = 10          # Max symbols to analyze per cycle
+
+# ---- PERFORMANCE TRACKING ----
+DUAL_ENGINE_TRACK_STATS = True       # Track XGB vs AI performance
+DUAL_ENGINE_LOG_DISAGREEMENTS = True # Log when XGB and AI disagree
+DUAL_ENGINE_SHOW_DASHBOARD = True    # Show performance dashboard at cycle end
+
+# ---- COST MANAGEMENT ----
+# AI Analyst adds ~$0.02-0.04 per symbol analyzed
+AI_ANALYST_COST_LIMIT_CYCLE = 0.50   # Max $0.50 per cycle for AI Analyst
+AI_ANALYST_COST_LIMIT_DAILY = 20.00  # Max $20/day for AI Analyst
