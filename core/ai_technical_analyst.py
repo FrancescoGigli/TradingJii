@@ -319,12 +319,18 @@ Your analysis MUST be objective and based solely on the data provided.
 You are NOT validating someone else's signal - you are providing YOUR OWN analysis.
 
 Key principles:
-- RSI >70 = overbought caution, <30 = oversold opportunity
-- ADX >25 = strong trend, <20 = weak/ranging market
+- RSI >70 = overbought (potential SHORT), <30 = oversold (potential LONG)
+- ADX >20 = tradeable trend, <15 = too weak (avoid)
 - MACD histogram direction shows momentum
-- Volume confirmation is essential
+- Volume confirmation strengthens signals
 - Bollinger squeeze indicates potential breakout
-- Always consider risk/reward ratio"""
+- Always consider risk/reward ratio
+
+IMPORTANT: Be DECISIVE. Only use NEUTRAL when:
+- ADX < 15 (extremely weak trend)
+- Conflicting signals from ALL indicators
+- Extreme volatility (>6%) without clear direction
+Otherwise, pick LONG or SHORT based on the dominant indicators."""
     
     def _build_technical_prompt(
         self,
@@ -508,11 +514,20 @@ ANALYSIS RULES:
 
 • Weight technical indicators 70%, fundamentals 30%
 • High confidence (>75%) requires multiple confirming factors
-• NEUTRAL if signals conflict or market is ranging (ADX <20)
+• NEUTRAL ONLY if ADX < 15 OR all indicators conflict
 • Consider risk/reward: don't go LONG near resistance, SHORT near support
-• Volume confirmation essential for high-confidence signals
-• Extreme RSI + strong ADX = potential continuation
-• Extreme RSI + weak ADX = potential reversal
+• Volume confirmation strengthens signals
+• Trending market (ADX >20) = pick a direction based on indicators
+• Strong MACD + aligned EMAs = go with the trend
+• Extreme RSI (>75 or <25) = potential reversal, moderate confidence
+
+CONFIDENCE GUIDELINES:
+• 80-100%: All indicators align, strong trend (ADX >30)
+• 65-80%: Most indicators align, decent trend (ADX >20)
+• 50-65%: Mixed signals but one side dominant
+• <50%: Use NEUTRAL (extremely rare)
+
+BE DECISIVE - In crypto trading, sitting out costs opportunities.
 
 Provide your analysis in JSON format."""
 
