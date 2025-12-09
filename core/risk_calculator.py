@@ -24,14 +24,7 @@ from config import (
     TP_MIN_PROFIT_PCT,
     # Fixed Size Mode
     FIXED_POSITION_SIZE_AMOUNT,
-    BASE_MARGIN,
-    MIN_MARGIN,
-    MAX_MARGIN,
-    CONFIDENCE_HIGH_THRESHOLD,
-    CONFIDENCE_LOW_THRESHOLD,
-    VOLATILITY_LOW_TIER,
-    VOLATILITY_HIGH_TIER,
-    ADX_STRONG_THRESHOLD,
+    MIN_MARGIN,  # Only used parameter for safety checks
 )
 
 @dataclass
@@ -97,63 +90,9 @@ class RiskCalculator:
         # Fixed Size
         self.fixed_size = FIXED_POSITION_SIZE_AMOUNT
         
-        # Threshold reference (kept for logging/analysis)
-        self.confidence_high = CONFIDENCE_HIGH_THRESHOLD
-        self.confidence_low = CONFIDENCE_LOW_THRESHOLD
-        self.volatility_low = VOLATILITY_LOW_TIER
-        self.volatility_high = VOLATILITY_HIGH_TIER
-        self.adx_strong = ADX_STRONG_THRESHOLD
-        
-        # Limits
+        # Safety limit
         self.min_margin = MIN_MARGIN
-        self.max_margin = MAX_MARGIN
-        self.base_margin = BASE_MARGIN
         
-    def calculate_dynamic_position_sizes(self, available_balance: float) -> Tuple[float, float, float]:
-        """
-        🎯 FIXED: Restituisce sempre la size fissa configurata
-        
-        Args:
-            available_balance: Balance USDT disponibile (non usato per il calcolo size)
-            
-        Returns:
-            Tuple[float, float, float]: (fixed, fixed, fixed)
-        """
-        return (self.fixed_size, self.fixed_size, self.fixed_size)
-    
-    def calculate_intelligent_position_size(self, confidence: float, atr_pct: float, 
-                                           adx: float = 0.0, 
-                                           available_balance: float = 1000.0) -> float:
-        """
-        🎯 FIXED: Restituisce sempre la size fissa configurata
-        Ignora i parametri di input del segnale.
-        """
-        return self.fixed_size
-    
-    def calculate_dynamic_margin(self, atr_pct: float, confidence: float, 
-                                volatility: float = 0.0, balance: float = 200.0,
-                                adx: float = 0.0) -> float:
-        """
-        Calculate margin using fixed size strategy
-        """
-        try:
-            # Always use fixed size
-            position_size = self.fixed_size
-            
-            # Balance safety check
-            # Ensure we have enough balance for at least 1 position
-            if balance < position_size:
-                logging.warning(
-                    f"⚠️ Insufficient balance ${balance:.2f} for fixed size ${position_size:.2f}"
-                )
-                return 0.0 # Cannot open
-            
-            return position_size
-            
-        except Exception as e:
-            logging.error(f"Error calculating margin: {e}")
-            return self.fixed_size
-    
     def calculate_stop_loss_fixed(self, entry_price: float, side: str) -> float:
         """
         🛡️ FIXED STOP LOSS: -5% contro posizione
@@ -334,17 +273,6 @@ class RiskCalculator:
         except Exception as e:
             logging.error(f"Allocation failed: {e}")
             return []
-
-    def calculate_adaptive_margins(self, signals, wallet_equity, max_positions=5):
-        """Fallback for adaptive calls - redirects to fixed strategy"""
-        return self._fallback_to_portfolio_sizing(signals, wallet_equity)
-    
-    def _fallback_to_portfolio_sizing(self, signals, wallet_equity):
-        """Calculates fixed margins and creates stats dummy"""
-        margins = self.calculate_portfolio_based_margins(signals, wallet_equity)
-        symbols = [s.get('symbol', f'UNKNOWN_{i}') for i, s in enumerate(signals[:len(margins)])]
-        stats = {'mode': 'FIXED'}
-        return margins, symbols, stats
 
 # Global risk calculator instance
 global_risk_calculator = RiskCalculator()

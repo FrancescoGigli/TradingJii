@@ -78,90 +78,18 @@ exchange_config = {
 }
 
 # Trading parameters
-LEVERAGE = 8  # ⚡ OPZIONE B: Increased to 8x for better profit potential (balanced risk/reward)
+LEVERAGE = 5  # ⚡ MODIFICATO: Leva 5x per ridurre il rischio (con SL 6% = -30% ROE)
 
 # ==============================================================================
-# 🎯 POSITION SIZING SYSTEM SELECTOR
+# 🎯 FIXED POSITION SIZING (SIMPLIFIED)
 # ==============================================================================
-# Choose between FIXED (legacy) or ADAPTIVE (new) position sizing
+# Sistema semplificato: tutte le posizioni usano la stessa size fissa
 
-ADAPTIVE_SIZING_ENABLED = False  # True = Adaptive (learns from results), False = Fixed 3-tier
-
-# ==============================================================================
-# 🎯 FIXED SIZE MODE (USER REQUESTED)
-# ==============================================================================
 FIXED_POSITION_SIZE_ENABLED = True   # Force fixed size for all trades
-FIXED_POSITION_SIZE_AMOUNT = 40.0    # ⚡ INCREASED: Always open at $40 Margin (from $30)
+FIXED_POSITION_SIZE_AMOUNT = 15.0    # Always open at $15 Margin
 
-# ==============================================================================
-# 🎯 POSITION SIZE LIMITS (Safety Validation Only)
-# ==============================================================================
-# Used only for safety checks in portfolio validation
-POSITION_SIZE_MIN_ABSOLUTE = 40.0  # Minimum position size (Safety Check)
-POSITION_SIZE_MAX_ABSOLUTE = 40.0  # Maximum position size (Safety Check)
-
-# ==============================================================================
-# 🎯 DYNAMIC POSITION SIZING PARAMETERS (FIX #1)
-# ==============================================================================
-# Parameters for dynamic position sizing that scales with balance
-POSITION_SIZING_TARGET_POSITIONS = 10  # Target at least 10 aggressive positions possible
-
-# ==============================================================================
-# 🎯 3-TIER POSITION SIZING (Fallback)
-# ==============================================================================
-# Used when ADAPTIVE_SIZING_ENABLED = False, or as fallback values
-# Sistema a 3 livelli basato su confidence ML, volatilità e trend strength (ADX)
-
-# Position sizes per tier (in USD)
-POSITION_SIZE_CONSERVATIVE = 40.0    # Fixed $40
-POSITION_SIZE_MODERATE = 40.0        # Fixed $40
-POSITION_SIZE_AGGRESSIVE = 40.0      # Fixed $40
-
-# Base margin for fallback calculations
-BASE_MARGIN = 45.0                   # Default margin when dynamic calculation fails
-
-# Risk limits
-MIN_MARGIN = 20.0                    # Minimum margin per position ($20 × 5 lev = $100 notional, Bybit minimum)
-MAX_MARGIN = 50.0                    # Maximum margin per position
-
-# Confidence thresholds for tier selection
-CONFIDENCE_HIGH_THRESHOLD = 0.75     # ≥75% = high confidence
-CONFIDENCE_LOW_THRESHOLD = 0.65      # <65% = low confidence
-
-# Volatility thresholds (ATR %)
-VOLATILITY_LOW_TIER = 0.015          # <1.5% ATR = low volatility
-VOLATILITY_HIGH_TIER = 0.035         # >3.5% ATR = high volatility
-
-# Trend strength (ADX)
-ADX_STRONG_THRESHOLD = 25.0          # ≥25 ADX = strong trend
-
-# ==============================================================================
-# 🎯 ADAPTIVE POSITION SIZING (NEW SYSTEM)
-# ==============================================================================
-# Sistema adattivo che impara dalle performance reali per simbolo
-# - Premia monete vincenti aumentando size
-# - Punisce monete perdenti bloccandole per 3 cicli
-# - Si auto-adatta al wallet growth
-
-# Session Management
-ADAPTIVE_FRESH_START = True          # ⚠️ True = Reset stats e riparti da capo | False = Continua con stats esistenti
-                                     # Se True: cancella tutte le statistiche storiche e ricomincia
-                                     # Se False: mantiene win/loss rate e continua l'apprendimento
-
-# Wallet structure
-ADAPTIVE_WALLET_BLOCKS = 10          # Divide wallet in N blocks (10 blocks = wallet/10 per position)
-ADAPTIVE_FIRST_CYCLE_FACTOR = 0.5    # First cycle uses 50% of block (prudent start)
-
-# Penalty system
-ADAPTIVE_BLOCK_CYCLES = 3            # Block losing symbols for N cycles
-ADAPTIVE_CAP_MULTIPLIER = 1.0        # Max size = slot_value × multiplier
-
-# Risk management
-ADAPTIVE_RISK_MAX_PCT = 0.20         # Max 20% wallet at risk (total max loss)
-ADAPTIVE_LOSS_MULTIPLIER = 0.30      # Stop loss = 30% of margin (with 10x leverage)
-
-# Memory persistence
-ADAPTIVE_MEMORY_FILE = "adaptive_sizing_memory.json"  # File for symbol memory
+# Safety limit - minimum margin to avoid too small positions on expensive assets
+MIN_MARGIN = 10.0  # Minimum $10 margin per position (prevents tiny positions on high-price assets)
 
 # ==============================================================================
 # 📊 VOLATILITY THRESHOLDS
@@ -177,7 +105,7 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # ==============================================================================
 # MASTER STOP LOSS PARAMETER (used by both training and runtime)
 # This ensures ML learns with the same SL that will be used in live trading
-STOP_LOSS_PCT = 0.06                 # ⚡ OPZIONE B: 6% stop loss = -48% ROE with 8x leverage (balanced protection)
+STOP_LOSS_PCT = 0.06                 # ⚡ MODIFICATO: 6% stop loss = -30% ROE con leva 5x (protezione bilanciata)
 
 # ==============================================================================
 # Stop Loss: ALWAYS FIXED at 6%
@@ -185,12 +113,12 @@ STOP_LOSS_PCT = 0.06                 # ⚡ OPZIONE B: 6% stop loss = -48% ROE wi
 # Simple and predictable stop loss system:
 # - LONG positions: SL = entry_price × 0.94 (-6% from entry)
 # - SHORT positions: SL = entry_price × 1.06 (+6% from entry)
-# - With 8x leverage: -6% price = -48% ROE
+# - With 5x leverage: -6% price = -30% ROE
 # 
 # Protection layers (in order):
 # 1. Early Exit: Exits before SL if rapid crash detected (-10%/-15% ROE)
-# 2. Fixed SL: Hard stop at -5% price / -40% ROE
-# 3. Trailing Stop: Locks profits when trade goes >+40% ROE
+# 2. Fixed SL: Hard stop at -6% price / -30% ROE
+# 3. Trailing Stop: Locks profits when trade goes in profit
 #
 # NO adaptive/confidence-based SL - keeps system simple and predictable
 
@@ -235,9 +163,9 @@ TP_MIN_PROFIT_PCT = 0.03             # Minimum 3% profit target
 TRAILING_ENABLED = True              # Enable trailing stop system
 TRAILING_SILENT_MODE = False         # SPIKE OPTIMIZED: Verbose to see trailing action
 
-# EARLY ACTIVATION for spike catching (+12% ROE = +1.5% price with 8x leverage)
+# EARLY ACTIVATION for spike catching (+12% ROE = +2.4% price with 5x leverage)
 TRAILING_TRIGGER_PCT = 0.015         # Legacy (not used with ROE system)
-TRAILING_TRIGGER_ROE = 0.12          # ⚡ OPZIONE B: Activate at +12% ROE (more aggressive profit capture)
+TRAILING_TRIGGER_ROE = 0.12          # ⚡ MODIFICATO: Activate at +12% ROE (cattura profitti aggressiva)
 
 # BALANCED PROTECTION (8% ROE breathing room to let it run)
 TRAILING_DISTANCE_PCT = 0.10         # Legacy (not used)
@@ -439,35 +367,13 @@ TIMEFRAME_WEIGHTS = {
 }
 
 # ----------------------------------------------------------------------
-# Position Limits & Sizing Strategy
+# Position Limits
 # ----------------------------------------------------------------------
-# PORTFOLIO SIZING OPTIMIZATION with IM 15%
-# 
-# With 10x leverage and Initial Margin = 15% of notional:
-# - Margin per position = position_size × leverage × IM% = position_size × 1.5
-# - Max concurrent positions depends on available balance
-#
-# CALCULATION EXAMPLES (with min position size $15):
-# Balance $100:  100 / (15 × 1.5) = 4.4 positions
-# Balance $150:  150 / (15 × 1.5) = 6.6 positions  
-# Balance $200:  200 / (15 × 1.5) = 8.8 positions
-# Balance $300:  300 / (15 × 1.5) = 13.3 positions
-#
-# STRATEGY: Set limit to 10, let RiskCalculator dynamically size positions based on:
-# - Available balance
-# - ML confidence (higher = more weight)
-# - Volatility (lower = more weight, safer)
-# - Trend strength ADX (stronger = more weight)
+# Maximum number of concurrent positions allowed
+# With fixed $15 per position, this determines minimum capital needed:
+# - 10 positions = $150 minimum balance recommended
 
-# ADAPTIVE SIZING: Max positions = wallet blocks (5)
-# With adaptive sizing enabled, this limit must match ADAPTIVE_WALLET_BLOCKS
-MAX_CONCURRENT_POSITIONS = 10  # Increased to 10 positions for better diversification
-
-# DEPRECATED: Position sizing weights (replaced by dynamic risk-weighted system)
-# See: RiskCalculator.calculate_portfolio_based_margins()
-
-# Percentage of balance to use (default 98% to leave buffer)
-PORTFOLIO_BALANCE_USAGE = 0.98
+MAX_CONCURRENT_POSITIONS = 10  # Max 10 concurrent positions
 
 # ----------------------------------------------------------------------
 # Data Cache
@@ -498,19 +404,6 @@ SL_AWARENESS_BORDERLINE_SELL = STOP_LOSS_PCT * 0.5  # Symmetric borderline
 # 🎯 CONFIDENCE THRESHOLD (SIMPLIFIED)
 # ==============================================================================
 MIN_CONFIDENCE = 0.65  # Minimum ML confidence required to open trade (65%)
-
-# ==============================================================================
-# 🎯 KELLY CRITERION SIZING (FIX #4: CRITICAL!)
-# ==============================================================================
-ADAPTIVE_USE_KELLY = True            # FIX: Use Kelly Criterion formula
-ADAPTIVE_KELLY_FRACTION = 0.25       # Use 25% of Kelly (conservative)
-ADAPTIVE_MAX_POSITION_PCT = 0.25     # Max 25% of wallet per position
-ADAPTIVE_MIN_POSITION_PCT = 0.05     # Min 5% of wallet per position
-
-# Expected values for Kelly when no history
-KELLY_DEFAULT_WIN_RATE = 0.52        # Default 52% win rate
-KELLY_DEFAULT_AVG_WIN = 0.56         # Default +56% ROE
-KELLY_DEFAULT_AVG_LOSS = 0.33        # Default -33% ROE
 
 # ==============================================================================
 # 💰 COST ACCOUNTING - CORRECTED BYBIT FEES
