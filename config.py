@@ -233,21 +233,22 @@ DASHBOARD_UPDATE_INTERVAL = 60      # If enabled: update every 60s instead of 30
 # ==============================================================================
 # 🔥 SPIKE DETECTION: OPTIMIZED TIMEFRAMES & LOOKBACK
 # ==============================================================================
-ENABLED_TIMEFRAMES: list[str] = ["5m", "15m", "30m"]  # Spike optimized
-TIMEFRAME_DEFAULT: str | None = "5m"  # Default to fastest timeframe
+ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]  # ✅ FIXED: Aligned with config_manager default
+TIMEFRAME_DEFAULT: str | None = "15m"  # Default to 15m timeframe
 
 # DIFFERENTIATED LOOKBACK per timeframe (spike optimization)
 LOOKBACK_HOURS_5M = 2   # 5m: 2 hours = 24 candles (recent spike focus)
 LOOKBACK_HOURS_15M = 4  # 15m: 4 hours = 16 candles (balance)
 LOOKBACK_HOURS_30M = 6  # 30m: 6 hours = 12 candles (trend stability)
-LOOKBACK_HOURS = LOOKBACK_HOURS_5M  # Default for compatibility
+LOOKBACK_HOURS_1H = 8   # 1h: 8 hours = 8 candles (trend confirmation) ✅ ADDED
+LOOKBACK_HOURS = LOOKBACK_HOURS_15M  # Default for compatibility
 
 TIMEFRAME_TIMESTEPS = {
     "5m": int(LOOKBACK_HOURS_5M * 60 / 5),    # 24 candles (2 hours)
     "15m": int(LOOKBACK_HOURS_15M * 60 / 15), # 16 candles (4 hours)
     "30m": int(LOOKBACK_HOURS_30M * 60 / 30), # 12 candles (6 hours)
+    "1h": int(LOOKBACK_HOURS_1H),              # 8 candles (8 hours) ✅ ADDED
     # Legacy timeframes kept for compatibility
-    "1h": int(6 / 1),
     "4h": max(2, int(6 / 4)),
 }
 
@@ -446,9 +447,32 @@ Z_SCORE_NORMALIZATION = True             # Enable Z-Score Rolling Normalization
                                          # True: Rolling z-score (required for Global Model)
                                          # False: Standard scaling (legacy, per-symbol only)
 
-Z_SCORE_WINDOW = 96                      # Rolling window: 96 candeles
-                                         # 5m: 8h, 15m: 24h, 30m: 48h
-                                         # Captures recent market regime without old data
+# ✅ FIXED: Adaptive Z-Score window per timeframe for consistent temporal memory
+TEMPORAL_MEMORY_HOURS = 24               # Constant: 24 hours of market memory
+
+Z_SCORE_WINDOWS = {
+    "5m": int(TEMPORAL_MEMORY_HOURS * 60 / 5),    # 288 candles = 24h
+    "15m": int(TEMPORAL_MEMORY_HOURS * 60 / 15),  # 96 candles = 24h ✅
+    "30m": int(TEMPORAL_MEMORY_HOURS * 60 / 30),  # 48 candles = 24h ✅
+    "1h": int(TEMPORAL_MEMORY_HOURS),              # 24 candles = 24h ✅
+    "4h": max(6, int(TEMPORAL_MEMORY_HOURS / 4))  # 6 candles = 24h
+}
+
+Z_SCORE_WINDOW = 96                      # Legacy default (for backward compatibility)
+                                         # Use get_z_score_window_for_timeframe() for adaptive
+
+def get_z_score_window_for_timeframe(timeframe: str) -> int:
+    """
+    Get Z-Score window adapted to timeframe.
+    Maintains consistent temporal memory (24h) across all timeframes.
+    
+    Args:
+        timeframe: Timeframe string (e.g., '15m', '30m', '1h')
+        
+    Returns:
+        int: Number of candles for Z-Score rolling window
+    """
+    return Z_SCORE_WINDOWS.get(timeframe, 96)
 
 # Z-Score converts absolute values to statistical significance:
 # Example: "Volume is +2.5 sigma above mean" (anomaly/breakout)

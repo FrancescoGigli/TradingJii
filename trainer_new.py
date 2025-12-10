@@ -144,7 +144,10 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
             timesteps_for_tf = config.get_timesteps_for_timeframe(timeframe)
             for i in range(timesteps_for_tf, len(data) - config.FUTURE_RETURN_STEPS):
                 if i < len(labels):
-                    sequence = data[i - timesteps_for_tf : i]
+                    # ✅ FIXED: Include current candle (i) in sequence
+                    # Python slicing [start:end] excludes 'end', so we use i+1 to include candle i
+                    # Example: if i=10, timesteps=8 → data[3:11] gives 8 candles [3,4,5,6,7,8,9,10]
+                    sequence = data[i - timesteps_for_tf + 1 : i + 1]
                     temporal_features = create_temporal_features(sequence)
                     X_all.append(temporal_features)
                     y_all.append(labels[i])
