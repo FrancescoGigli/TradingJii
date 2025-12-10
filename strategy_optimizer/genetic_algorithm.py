@@ -283,15 +283,15 @@ class GeneticAlgorithmEngine:
         """Wrapper per convertire Individual DEAP in StrategyParams"""
         return self._chromosome_to_params(list(individual))
     
-    def _evaluate_wrapper(self, individual: creator.Individual, fitness_func: Callable) -> Tuple[float]:
+    def _evaluate_wrapper(self, individual: creator.Individual, fitness_func: Callable) -> float:
         """Wrapper per valutazione (converte individual → params → fitness)"""
         try:
             params = self._individual_to_params(individual)
             fitness = fitness_func(params)
-            return (fitness,)
+            return fitness  # DEAP si aspetta un float, non una tupla
         except Exception as e:
             _LOG.warning(f"Evaluation failed: {e}")
-            return (0.0,)  # Fitness pessima per individui invalidi
+            return 0.0  # Fitness pessima per individui invalidi
     
     def _mutate_gaussian_bounded(
         self,

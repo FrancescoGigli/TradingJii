@@ -29,26 +29,27 @@ _LOG = logging.getLogger(__name__)
 @dataclass
 class Signal:
     """Segnale XGBoost per un asset/timeframe/timestamp"""
+    # Identificatori (required)
     symbol: str
     timeframe: str
     timestamp: str  # o int per index
     candle_index: int  # Indice nella serie storica
     
-    # Probabilità XGBoost
+    # Probabilità XGBoost (required)
     p_up: float
     p_down: float
     p_neutral: float
     
-    # Metriche aggiuntive
+    # Metriche aggiuntive (required)
     ret_exp: float  # Ritorno atteso
-    p_sl: float = 0.0  # Prob. SL (opzionale)
     
-    # Dati mercato al momento del segnale
+    # Dati mercato al momento del segnale (required)
     price: float
     atr: float
     volatility: float
     
-    # Per accesso ai dati futuri (backtest)
+    # Optional fields (con default devono venire DOPO i required)
+    p_sl: float = 0.0  # Prob. SL (opzionale)
     future_data: pd.DataFrame = None  # Dataframe con high/low/close futuro
 
 
