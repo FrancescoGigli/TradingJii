@@ -72,7 +72,7 @@ from core.trade_history_logger import global_trade_history_logger
 
 # Models
 from model_loader import load_xgboost_model_func
-from trainer import train_xgboost_model_wrapper, ensure_trained_models_dir
+from trainer_new import train_xgboost_model_wrapper, ensure_trained_models_dir
 from trade_manager import get_real_balance
 from utils.display_utils import display_selected_symbols
 

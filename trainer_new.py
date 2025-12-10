@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import numpy as np
+from pathlib import Path
 from termcolor import colored
 
 import config
@@ -25,6 +26,20 @@ from training.features import create_temporal_features
 from training.walk_forward import walk_forward_training
 
 _LOG = logging.getLogger(__name__)
+
+
+def ensure_trained_models_dir() -> str:
+    """
+    Create trained_models directory and return its path.
+    
+    This function maintains compatibility with main.py.
+    
+    Returns:
+        str: Path to trained_models directory
+    """
+    trained_dir = Path(config.get_xgb_model_file("tmp")).parent
+    trained_dir.mkdir(parents=True, exist_ok=True)
+    return str(trained_dir)
 
 
 async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe, use_future_returns=False):

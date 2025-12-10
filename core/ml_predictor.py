@@ -262,7 +262,7 @@ class RobustMLPredictor:
         """
         try:
             # Import the exact same function from trainer to ensure perfect sync
-            from trainer import create_temporal_features
+            from training.features import create_temporal_features
             return create_temporal_features(sequence)
             
         except Exception as e:

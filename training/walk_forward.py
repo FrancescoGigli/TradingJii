@@ -17,8 +17,8 @@ from pathlib import Path
 
 import config
 from training.xgb_trainer import train_xgb_model, create_temporal_split
-from training_simulator import TradingSimulator
-from training_report import generate_walk_forward_report, save_detailed_trades
+from training.training_simulator import TradingSimulator
+from training.training_report import generate_walk_forward_report, save_detailed_trades
 
 _LOG = logging.getLogger(__name__)
 
