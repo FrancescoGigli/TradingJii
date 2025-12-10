@@ -77,8 +77,32 @@ exchange_config = {
     },
 }
 
+# ==============================================================================
+# 🧬 GA-OPTIMIZED PARAMETERS AUTO-LOAD
+# ==============================================================================
+# Load GA-optimized parameters if available (overrides defaults)
+_GA_PARAMS = None
+_GA_PARAMS_LOADED = False
+
+try:
+    import json
+    from pathlib import Path as _PathGA
+    
+    _ga_params_file = _PathGA(__file__).parent / "strategy_optimizer" / "optimized_params.json"
+    
+    if _ga_params_file.exists():
+        with open(_ga_params_file, 'r') as _f:
+            _GA_PARAMS = json.load(_f)
+        _GA_PARAMS_LOADED = True
+        logging.info("🧬 GA-optimized parameters loaded from strategy_optimizer/optimized_params.json")
+    else:
+        logging.info("📋 Using default hardcoded parameters (GA params file not found)")
+except Exception as e:
+    logging.warning(f"⚠️ Failed to load GA parameters: {e}. Using defaults.")
+    _GA_PARAMS = None
+
 # Trading parameters
-LEVERAGE = 5  # ⚡ MODIFICATO: Leva 5x per ridurre il rischio (con SL 6% = -30% ROE)
+LEVERAGE = _GA_PARAMS.get("leverage_base", 5) if _GA_PARAMS else 5  # Default 5x or GA-optimized
 
 # ==============================================================================
 # 🎯 FIXED POSITION SIZING (SIMPLIFIED)
@@ -105,7 +129,7 @@ VOLATILITY_HIGH_THRESHOLD = 0.04    # >4% ATR = alta volatilità
 # ==============================================================================
 # MASTER STOP LOSS PARAMETER (used by both training and runtime)
 # This ensures ML learns with the same SL that will be used in live trading
-STOP_LOSS_PCT = 0.06                 # ⚡ MODIFICATO: 6% stop loss = -30% ROE con leva 5x (protezione bilanciata)
+STOP_LOSS_PCT = _GA_PARAMS.get("sl_percentage", 0.06) if _GA_PARAMS else 0.06  # Default 6% or GA-optimized
 
 # ==============================================================================
 # Stop Loss: ALWAYS FIXED at 6%
@@ -497,7 +521,7 @@ ADVANCED_CLASS_WEIGHTING = True          # Enable advanced sample weighting
 # ==============================================================================
 # 🎯 CONFIDENCE THRESHOLD (SIMPLIFIED)
 # ==============================================================================
-MIN_CONFIDENCE = 0.65  # Minimum ML confidence required to open trade (65%)
+MIN_CONFIDENCE = _GA_PARAMS.get("min_confidence_buy", 0.65) if _GA_PARAMS else 0.65  # Default 65% or GA-optimized
 
 # ==============================================================================
 # 🔄 WALK-FORWARD TESTING (NEW!)
