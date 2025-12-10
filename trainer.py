@@ -45,7 +45,131 @@ def ensure_trained_models_dir() -> str:
 
 
 # ----------------------------------------------------------------------
-# SL-AWARE LABELING (Active System)
+# TRIPLE BARRIER LABELING (New - Global Model Compatible)
+# ----------------------------------------------------------------------
+def label_with_triple_barrier(df, lookforward=8, tp_pct=0.09, sl_pct=0.06):
+    """
+    🎯 TRIPLE BARRIER METHOD - Mathematically Rigorous Labeling
+    
+    Simula trade execution con barriere SL/TP allineate al trading reale.
+    Per ogni candela, testa LONG e SHORT e verifica chi tocca TP/SL per primo.
+    
+    VANTAGGI vs SL-Aware percentile:
+    - Matematicamente rigoroso (no percentili relativi)
+    - Allineato con trading reale (SL=6%, TP=9%)
+    - Asimmetrico TP/SL per migliore risk/reward
+    - Supporta SHORT trading (classe 2)
+    - Più semplice da interpretare
+    
+    Args:
+        df: DataFrame con OHLCV
+        lookforward: Candele future (default 8 = 2h su 15m, 40min su 5m)
+        tp_pct: Take profit % (default 0.09 = 9%)
+        sl_pct: Stop loss % (default 0.06 = 6%)
+    
+    Returns:
+        labels: Array [0=NEUTRAL, 1=BUY, 2=SELL]
+    
+    Labels logic:
+    - BUY (1): Se TP long raggiunto PRIMA di SL long
+    - SELL (2): Se TP short raggiunto PRIMA di SL short  
+    - NEUTRAL (0): Se SL hit per primo, o nulla toccato, o timeout
+    """
+    labels = np.zeros(len(df), dtype=int)  # Default NEUTRAL
+    
+    close_prices = df['close'].values
+    high_prices = df['high'].values
+    low_prices = df['low'].values
+    
+    # Statistics
+    stats = {
+        'buy_tp_hit': 0,
+        'buy_sl_hit': 0,
+        'sell_tp_hit': 0,
+        'sell_sl_hit': 0,
+        'both_valid': 0,
+        'timeout': 0
+    }
+    
+    for i in range(len(df) - lookforward):
+        entry_price = close_prices[i]
+        
+        # Future path
+        future_highs = high_prices[i+1:i+1+lookforward]
+        future_lows = low_prices[i+1:i+1+lookforward]
+        
+        # === LONG SCENARIO ===
+        long_tp = entry_price * (1 + tp_pct)
+        long_sl = entry_price * (1 - sl_pct)
+        
+        # Chi viene toccato prima?
+        long_tp_hits = np.where(future_highs >= long_tp)[0]
+        long_sl_hits = np.where(future_lows <= long_sl)[0]
+        
+        long_tp_time = long_tp_hits[0] if len(long_tp_hits) > 0 else float('inf')
+        long_sl_time = long_sl_hits[0] if len(long_sl_hits) > 0 else float('inf')
+        
+        # === SHORT SCENARIO ===
+        short_tp = entry_price * (1 - tp_pct)  # Profit per short
+        short_sl = entry_price * (1 + sl_pct)  # Loss per short
+        
+        short_tp_hits = np.where(future_lows <= short_tp)[0]
+        short_sl_hits = np.where(future_highs >= short_sl)[0]
+        
+        short_tp_time = short_tp_hits[0] if len(short_tp_hits) > 0 else float('inf')
+        short_sl_time = short_sl_hits[0] if len(short_sl_hits) > 0 else float('inf')
+        
+        # === LABELING LOGIC ===
+        long_wins = long_tp_time < long_sl_time
+        short_wins = short_tp_time < short_sl_time
+        
+        if long_wins and short_wins:
+            # Entrambi validi - chi tocca TP per primo vince
+            stats['both_valid'] += 1
+            if long_tp_time < short_tp_time:
+                labels[i] = 1  # BUY
+                stats['buy_tp_hit'] += 1
+            else:
+                labels[i] = 2  # SELL
+                stats['sell_tp_hit'] += 1
+        elif long_wins:
+            labels[i] = 1  # BUY
+            stats['buy_tp_hit'] += 1
+            if long_sl_time < float('inf'):
+                stats['buy_sl_hit'] += 1  # SL hit ma dopo TP
+        elif short_wins:
+            labels[i] = 2  # SELL
+            stats['sell_tp_hit'] += 1
+            if short_sl_time < float('inf'):
+                stats['sell_sl_hit'] += 1  # SL hit ma dopo TP
+        else:
+            # NEUTRAL: SL hit per primo o timeout
+            labels[i] = 0  # NEUTRAL
+            if long_sl_time < float('inf') or short_sl_time < float('inf'):
+                if long_sl_time <= short_sl_time:
+                    stats['buy_sl_hit'] += 1
+                else:
+                    stats['sell_sl_hit'] += 1
+            else:
+                stats['timeout'] += 1
+    
+    # Log statistics
+    buy_count = np.sum(labels == 1)
+    sell_count = np.sum(labels == 2)
+    neutral_count = np.sum(labels == 0)
+    total = len(labels)
+    
+    _LOG.info(f"📊 Triple Barrier Labeling (lookforward={lookforward}, TP={tp_pct:.1%}, SL={sl_pct:.1%}):")
+    _LOG.info(f"   BUY:     {buy_count:5d} ({buy_count/total*100:.1f}%) - TP hits: {stats['buy_tp_hit']}")
+    _LOG.info(f"   SELL:    {sell_count:5d} ({sell_count/total*100:.1f}%) - TP hits: {stats['sell_tp_hit']}")
+    _LOG.info(f"   NEUTRAL: {neutral_count:5d} ({neutral_count/total*100:.1f}%) - SL/Timeout")
+    _LOG.info(f"   Both valid: {stats['both_valid']}, Timeouts: {stats['timeout']}")
+    
+    return labels
+
+
+# ----------------------------------------------------------------------
+# SL-AWARE LABELING (Legacy - kept for compatibility)
 # ----------------------------------------------------------------------
 def label_with_sl_awareness_v2(df, lookforward_steps=3, sl_percentage=0.05,
                                 percentile_buy=80, percentile_sell=80):
@@ -458,22 +582,49 @@ async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe
                 
             successful_symbols += 1
             
-            # ======= SL-Aware Labeling =======
-            labels, sl_features = label_with_sl_awareness_v2(
-                df_with_indicators,
-                lookforward_steps=config.FUTURE_RETURN_STEPS,
-                sl_percentage=config.SL_AWARENESS_PERCENTAGE,
-                percentile_buy=config.SL_AWARENESS_PERCENTILE_BUY,
-                percentile_sell=config.SL_AWARENESS_PERCENTILE_SELL
-            )
-            _LOG.debug(f"🎯 Using SL-Aware labeling for {timeframe} (SL={config.SL_AWARENESS_PERCENTAGE*100:.1f}%)")
+            # ======= Z-SCORE NORMALIZATION (if enabled) =======
+            if config.Z_SCORE_NORMALIZATION:
+                from data_utils import add_z_score_normalization
+                df_with_indicators = add_z_score_normalization(
+                    df_with_indicators,
+                    window=config.Z_SCORE_WINDOW
+                )
+                _LOG.debug(f"🔄 Z-Score normalization applied (window={config.Z_SCORE_WINDOW})")
+            
+            # ======= LABELING: Triple Barrier OR SL-Aware =======
+            if config.TRIPLE_BARRIER_ENABLED:
+                # NEW: Triple Barrier Method (mathematically rigorous)
+                labels = label_with_triple_barrier(
+                    df_with_indicators,
+                    lookforward=config.TRIPLE_BARRIER_LOOKFORWARD,
+                    tp_pct=config.TRIPLE_BARRIER_TP_PCT,
+                    sl_pct=config.TRIPLE_BARRIER_SL_PCT
+                )
+                _LOG.debug(f"🎯 Using Triple Barrier labeling for {timeframe} (TP={config.TRIPLE_BARRIER_TP_PCT*100:.1f}%, SL={config.TRIPLE_BARRIER_SL_PCT*100:.1f}%)")
+            else:
+                # LEGACY: SL-Aware Labeling (percentile-based)
+                labels, sl_features = label_with_sl_awareness_v2(
+                    df_with_indicators,
+                    lookforward_steps=config.FUTURE_RETURN_STEPS,
+                    sl_percentage=config.SL_AWARENESS_PERCENTAGE,
+                    percentile_buy=config.SL_AWARENESS_PERCENTILE_BUY,
+                    percentile_sell=config.SL_AWARENESS_PERCENTILE_SELL
+                )
+                _LOG.debug(f"🎯 Using SL-Aware labeling for {timeframe} (SL={config.SL_AWARENESS_PERCENTAGE*100:.1f}%)")
             
             # Calculate label distribution for display
-            buy_count = np.sum(labels == 1)
-            sell_count = np.sum(labels == 0)
-            neutral_count = np.sum(labels == 2)
-            total = len(labels)
+            # NOTE: Triple Barrier uses 0=NEUTRAL, 1=BUY, 2=SELL
+            #       SL-Aware uses 0=SELL, 1=BUY, 2=NEUTRAL
+            if config.TRIPLE_BARRIER_ENABLED:
+                buy_count = np.sum(labels == 1)
+                sell_count = np.sum(labels == 2)
+                neutral_count = np.sum(labels == 0)
+            else:
+                buy_count = np.sum(labels == 1)
+                sell_count = np.sum(labels == 0)
+                neutral_count = np.sum(labels == 2)
             
+            total = len(labels)
             buy_pct = (buy_count / total * 100) if total > 0 else 0
             sell_pct = (sell_count / total * 100) if total > 0 else 0
             neutral_pct = (neutral_count / total * 100) if total > 0 else 0

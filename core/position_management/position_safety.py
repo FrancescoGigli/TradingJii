@@ -12,8 +12,8 @@ from termcolor import colored
 from .position_core import PositionCore
 
 # Export constants for external use
-MIN_POSITION_USD = 100.0  # Minimum notional value for a position
-MIN_IM_USD = 10.0  # Minimum initial margin
+MIN_POSITION_USD = 10.0  # Minimum notional value for a position (reduced from 100)
+MIN_IM_USD = 5.0  # Minimum initial margin (reduced from 10)
 
 
 class PositionSafety:

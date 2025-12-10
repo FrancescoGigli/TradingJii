@@ -367,3 +367,69 @@ def add_swing_probability_features(df):
             df[feature] = 0.0
     
     return df
+
+def add_z_score_normalization(df, window=96, indicators_to_normalize=None):
+    """
+    Z-Score Rolling Normalization per Global Model.
+    
+    Converte ogni indicatore in "deviazioni standard dalla media mobile locale"
+    → Rende i dati comparabili tra BTC (90K) e PEPE ($0.0001)
+    
+    Questa normalizzazione è CRITICA per il Global Model perché:
+    - BTC volume: 1000 BTC
+    - PEPE volume: 1,000,000,000 PEPE
+    
+    Con Z-Score entrambi diventano comparabili:
+    - "Volume è +2.5 sigma sopra media" (anomalia/breakout)
+    - Funziona indipendentemente dalla scala assoluta
+    
+    Args:
+        df: DataFrame con indicatori tecnici
+        window: Finestra rolling (default 96 = 24h su 15m)
+        indicators_to_normalize: Lista indicatori da normalizzare
+                                 (se None, normalizza automaticamente)
+    
+    Returns:
+        df: DataFrame con colonne normalizzate (suffisso _zscore)
+    """
+    import config
+    
+    if indicators_to_normalize is None:
+        # Normalizza indicatori chiave (non tutti, solo quelli sensibili alla scala)
+        indicators_to_normalize = [
+            'close', 'volume',  # Prezzi e volumi (molto sensibili alla scala)
+            'rsi_fast', 'stoch_rsi',  # Oscillatori (già 0-100, ma z-score cattura anomalie)
+            'macd', 'macd_signal', 'macd_histogram',  # MACD (scala varia per asset)
+            'atr', 'volatility',  # Volatilità (diversa per ogni asset)
+            'obv', 'vwap',  # Volume indicators
+            'adx'  # Trend strength
+        ]
+    
+    for indicator in indicators_to_normalize:
+        if indicator not in df.columns:
+            logging.debug(f"Indicator {indicator} not in dataframe, skipping z-score normalization")
+            continue
+        
+        try:
+            # Rolling mean e std con min_periods per evitare NaN iniziali
+            rolling_mean = df[indicator].rolling(window=window, min_periods=1).mean()
+            rolling_std = df[indicator].rolling(window=window, min_periods=1).std()
+            
+            # Z-Score = (valore - media) / std
+            # Evita divisione per zero aggiungendo epsilon
+            epsilon = 1e-8
+            df[f'{indicator}_zscore'] = (df[indicator] - rolling_mean) / (rolling_std + epsilon)
+            
+            # Clip valori estremi (oltre ±5 sigma sono outliers statistici)
+            # Questi sono eventi rarissimi (<0.00006% probabilità)
+            df[f'{indicator}_zscore'] = df[f'{indicator}_zscore'].clip(-5, 5)
+            
+            # Handle NaN/Inf residui
+            df[f'{indicator}_zscore'] = df[f'{indicator}_zscore'].replace([np.inf, -np.inf], 0.0)
+            df[f'{indicator}_zscore'] = df[f'{indicator}_zscore'].fillna(0.0)
+            
+        except Exception as e:
+            logging.error(f"Error calculating z-score for {indicator}: {e}")
+            df[f'{indicator}_zscore'] = 0.0
+    
+    return df

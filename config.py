@@ -312,7 +312,7 @@ EXCLUDED_FROM_TRADING = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
 MIN_REQUIRED_CANDLES = 50
 EXCLUDED_SYMBOLS_FILE = "excluded_symbols.txt"  
 
-TOP_SYMBOLS_COUNT = 50
+TOP_SYMBOLS_COUNT = 100  # Increased from 50 to 100
 TOP_TRAIN_CRYPTO = TOP_SYMBOLS_COUNT
 TOP_ANALYSIS_CRYPTO = TOP_SYMBOLS_COUNT
 
@@ -399,6 +399,76 @@ SL_AWARENESS_PERCENTILE_BUY = 80          # Top 20% returns for BUY labels
 SL_AWARENESS_PERCENTILE_SELL = 80         # Top 20% returns for SELL labels
 SL_AWARENESS_BORDERLINE_BUY = STOP_LOSS_PCT * 0.5   # 50% of SL (borderline threshold)
 SL_AWARENESS_BORDERLINE_SELL = STOP_LOSS_PCT * 0.5  # Symmetric borderline
+
+# ==============================================================================
+# 🌍 GLOBAL MODEL TRAINING (HYBRID APPROACH)
+# ==============================================================================
+# Train on all symbols together for better generalization and transfer learning
+# Instead of separate models per symbol, create one unified model that learns
+# universal patterns across the entire crypto market
+
+GLOBAL_MODEL_ENABLED = True              # Enable Global Model (train on all 100 symbols together)
+                                         # True: Single model learns from all symbols (recommended)
+                                         # False: Traditional per-symbol training (legacy)
+
+# ==============================================================================
+# 🎯 TRIPLE BARRIER LABELING (MATHEMATICAL RIGOR)
+# ==============================================================================
+# Replace percentile-based labeling with mathematically rigorous Triple Barrier Method
+# Simulates actual trade execution with SL/TP barriers aligned to real trading
+
+TRIPLE_BARRIER_ENABLED = True            # Enable Triple Barrier labeling
+                                         # True: Use SL/TP barrier method (recommended)
+                                         # False: Use SL-Aware percentile method (legacy)
+
+# Barrier configuration (aligned with actual trading parameters)
+# ⚡ CUSTOM: Con leva 5x → TP=20% ROE richiede 4% spot, SL=35% ROE richiede 7% spot
+TRIPLE_BARRIER_TP_PCT = 0.04             # Take Profit: +4% spot (con leva 5x = +20% ROE)
+TRIPLE_BARRIER_SL_PCT = 0.07             # Stop Loss: -7% spot (con leva 5x = -35% ROE max loss)
+TRIPLE_BARRIER_LOOKFORWARD = 8           # Lookforward window: 8 candele (5m=40min, 15m=2h)
+                                         # 5m: 40 min, 15m: 2h, 30m: 4h
+                                         # Shorter than original proposal (96) for faster signals
+
+# Asymmetric TP/SL ratio provides better risk/reward after costs
+# With 5x leverage:
+# - SL -6% = -30% ROE
+# - TP +9% = +45% ROE
+# - Ratio: 1:1.5 (reward 50% higher than risk)
+
+# ==============================================================================
+# 📊 Z-SCORE ROLLING NORMALIZATION (GLOBAL MODEL REQUIREMENT)
+# ==============================================================================
+# Normalize indicators using rolling window statistics instead of global scaling
+# This makes BTC ($100K) and PEPE ($0.0001) data comparable for Global Model
+# Each value becomes "deviations from its local mean" (context-aware)
+
+Z_SCORE_NORMALIZATION = True             # Enable Z-Score Rolling Normalization
+                                         # True: Rolling z-score (required for Global Model)
+                                         # False: Standard scaling (legacy, per-symbol only)
+
+Z_SCORE_WINDOW = 96                      # Rolling window: 96 candeles
+                                         # 5m: 8h, 15m: 24h, 30m: 48h
+                                         # Captures recent market regime without old data
+
+# Z-Score converts absolute values to statistical significance:
+# Example: "Volume is +2.5 sigma above mean" (anomaly/breakout)
+# This works regardless of whether it's BTC volume (1000 BTC) or PEPE (1M tokens)
+
+# ==============================================================================
+# ⚖️ ADVANCED CLASS WEIGHTING (MATHEMATICAL BALANCE)
+# ==============================================================================
+# Use inverse frequency weighting for class balance instead of generic sklearn weights
+# Penalizes model more for errors on rare signals (BUY/SELL) vs common signals (NEUTRAL)
+
+ADVANCED_CLASS_WEIGHTING = True          # Enable advanced sample weighting
+                                         # True: Inverse frequency weights (recommended)
+                                         # False: Generic sklearn weights (legacy)
+
+# With inverse frequency weighting:
+# - NEUTRAL (70% of data): weight = 1.0
+# - BUY (15% of data): weight = ~4.7 (penalize errors 4.7x more)
+# - SELL (15% of data): weight = ~4.7
+# Model learns to NOT predict NEUTRAL for everything just to get 70% accuracy
 
 # ==============================================================================
 # 🎯 CONFIDENCE THRESHOLD (SIMPLIFIED)
