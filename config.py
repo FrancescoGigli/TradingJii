@@ -312,7 +312,7 @@ EXCLUDED_FROM_TRADING = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
 MIN_REQUIRED_CANDLES = 50
 EXCLUDED_SYMBOLS_FILE = "excluded_symbols.txt"  
 
-TOP_SYMBOLS_COUNT = 100  # Increased from 50 to 100
+TOP_SYMBOLS_COUNT = 50  # WALK-FORWARD OPTIMIZED: 50 monete (balance quality/speed)
 TOP_TRAIN_CRYPTO = TOP_SYMBOLS_COUNT
 TOP_ANALYSIS_CRYPTO = TOP_SYMBOLS_COUNT
 
@@ -474,6 +474,42 @@ ADVANCED_CLASS_WEIGHTING = True          # Enable advanced sample weighting
 # 🎯 CONFIDENCE THRESHOLD (SIMPLIFIED)
 # ==============================================================================
 MIN_CONFIDENCE = 0.65  # Minimum ML confidence required to open trade (65%)
+
+# ==============================================================================
+# 🔄 WALK-FORWARD TESTING (NEW!)
+# ==============================================================================
+# Walk-Forward Analysis: Test model on multiple unseen periods with periodic retraining
+# More robust than single train/test split - simulates real-world retraining strategy
+
+# Master switch
+WALK_FORWARD_ENABLED = True          # Enable Walk-Forward Testing during training
+                                     # True: 3-round testing with retraining (recommended)
+                                     # False: Legacy single train/test split
+
+# Walk-Forward configuration (90 days total)
+WALK_FORWARD_ROUNDS = 3              # Number of test rounds (3x 9-day periods)
+
+# Round 1: Train on days 1-63 (70%), Test on days 64-72 (10%)
+# Round 2: Retrain on days 1-72 (80%), Test on days 73-81 (10%) 
+# Round 3: Retrain on days 1-81 (90%), Test on days 82-90 (10%)
+# Final: Train on all 90 days for production use
+
+WF_TRAIN_DAYS_ROUND_1 = 63           # Training days for Round 1
+WF_TEST_DAYS_PER_ROUND = 9           # Test days per round (10% of 90)
+WF_VALIDATION_PCT = 0.10             # Internal validation during each training (10%)
+
+# Trading Simulation Parameters (uses existing config values)
+# These parameters are automatically pulled from existing config:
+# - LEVERAGE (5x)
+# - STOP_LOSS_PCT (6%)
+# - TRAILING_TRIGGER_ROE (12%)
+# - TRAILING_DISTANCE_ROE_OPTIMAL (8%)
+# - MIN_CONFIDENCE (65%)
+
+# Report generation
+WF_GENERATE_CHARTS = True            # Generate visual charts for each timeframe
+WF_SAVE_DETAILED_TRADES = True       # Save individual trade details to JSON
+WF_SAVE_AGGREGATE_REPORT = True      # Save aggregate performance report
 
 # ==============================================================================
 # 💰 COST ACCOUNTING - CORRECTED BYBIT FEES

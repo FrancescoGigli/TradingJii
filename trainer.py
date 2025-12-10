@@ -541,16 +541,39 @@ def _train_xgb_sync_improved(X, y):
     return final_model, scaler, m, y_final_val, y_pred_final, y_pred_proba
 
 # ----------------------------------------------------------------------
-# WRAPPER TRAINING - DUAL MODE LABELING
+# WRAPPER TRAINING - NOW USES WALK-FORWARD SYSTEM
 # ----------------------------------------------------------------------
 async def train_xgboost_model_wrapper(top_symbols, exchange, timestep, timeframe, use_future_returns=False):
     """
-    Wrapper per training XGBoost con dual-mode labeling.
+    Wrapper per training XGBoost - NOW USES MODULAR WALK-FORWARD SYSTEM
     
-    FIXED: Now uses fetch_and_save_data instead of get_data_async to get data with indicators
+    This function now delegates to the new modular training system (trainer_new.py)
+    while maintaining compatibility with main.py
     
     Args:
-        use_future_returns (bool): Se True, usa future returns. Se False, usa swing points.
+        top_symbols: List of symbols to train on
+        exchange: CCXT exchange instance
+        timestep: Legacy parameter (not used in new system)
+        timeframe: Timeframe string (e.g., '15m')
+        use_future_returns: Legacy parameter (not used)
+        
+    Returns:
+        tuple: (model, scaler, metrics)
+    """
+    # Delegate to new modular Walk-Forward system
+    from trainer_new import train_xgboost_model_wrapper as train_new
+    
+    _LOG.info(f"🔄 Using new Walk-Forward Training System for {timeframe}")
+    
+    return await train_new(top_symbols, exchange, timestep, timeframe, use_future_returns)
+
+
+# LEGACY FUNCTION (kept for reference, not used)
+async def _train_xgboost_model_wrapper_legacy(top_symbols, exchange, timestep, timeframe, use_future_returns=False):
+    """
+    OLD TRAINING SYSTEM - Kept for reference only
+    
+    This is the original training function. It's no longer used but kept for comparison.
     """
     from fetcher import fetch_and_save_data
 
