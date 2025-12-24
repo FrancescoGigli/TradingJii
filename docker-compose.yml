@@ -1,0 +1,71 @@
+# Docker Compose - Multi-Agent Crypto System
+# ==========================================
+# 
+# Agenti:
+#   - data-fetcher: Daemon che scarica Top 100 crypto e aggiorna candele ogni 15 min
+#   - frontend: Dashboard Streamlit con grafici e lista Top 100
+#
+# Uso:
+#   docker-compose up -d                          # Avvia tutto in background
+#   docker-compose up -d data-fetcher             # Solo data-fetcher daemon
+#   docker-compose up -d frontend                 # Solo frontend
+#   docker-compose logs -f data-fetcher           # Vedi logs del fetcher
+#   docker-compose run data-fetcher --once        # Singolo download (no daemon)
+#
+
+services:
+  # =========================================
+  # DATA FETCHER AGENT (DAEMON)
+  # =========================================
+  # Scarica Top 100 all'avvio, poi aggiorna candele ogni 15 minuti
+  # Per forzare refresh lista: crea file shared/refresh_signal.txt
+  data-fetcher:
+    build:
+      context: ./agents/data-fetcher
+      dockerfile: Dockerfile
+    container_name: crypto-data-fetcher
+    volumes:
+      - shared-data:/app/shared
+    environment:
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - SHARED_DATA_PATH=/app/shared
+    networks:
+      - trading-network
+    restart: unless-stopped  # Daemon che gira continuamente
+    
+  # =========================================
+  # FRONTEND AGENT (Streamlit Dashboard)
+  # =========================================
+  frontend:
+    build:
+      context: ./agents/frontend
+      dockerfile: Dockerfile
+    container_name: crypto-frontend
+    ports:
+      - "8501:8501"
+    volumes:
+      - shared-data:/app/shared
+    environment:
+      - SHARED_DATA_PATH=/app/shared
+    networks:
+      - trading-network
+    restart: unless-stopped
+    depends_on:
+      - data-fetcher
+
+# =========================================
+# NETWORKS
+# =========================================
+networks:
+  trading-network:
+    driver: bridge
+    name: trading-network
+
+# =========================================
+# VOLUMES
+# =========================================
+volumes:
+  shared-data:
+    name: crypto-shared-data
+    driver: local

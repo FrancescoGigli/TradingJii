@@ -1,7 +1,7 @@
 """
-Configurazione semplificata per Download Dati Crypto
+Configurazione Data Fetcher Agent
 
-Solo funzionalità di download OHLCV con cache SQLite
+Configurazioni per il download dati OHLCV da Bybit
 """
 
 from __future__ import annotations
@@ -50,23 +50,31 @@ exchange_config = {
 # Configurazione Download Dati
 # ----------------------------------------------------------------------
 # Timeframes disponibili
-ENABLED_TIMEFRAMES: list[str] = ["15m", "30m", "1h"]
+ENABLED_TIMEFRAMES: list[str] = ["15m", "1h", "4h", "1d"]
 TIMEFRAME_DEFAULT: str = "15m"
 
 # Numero di candele da salvare per ogni simbolo
-CANDLES_LIMIT = 1000
+CANDLES_LIMIT = 200
 
 # Numero di simboli da analizzare (top per volume)
-TOP_SYMBOLS_COUNT = 50
+TOP_SYMBOLS_COUNT = 100
 
 # Giorni di dati massimi da mantenere nel database
 DATA_RETENTION_DAYS = 90
 
+# Intervallo di aggiornamento candele (minuti)
+UPDATE_INTERVAL_MINUTES = 15
+
+# File di segnale per refresh manuale
+REFRESH_SIGNAL_FILE = "refresh_signal.txt"
+
 # ----------------------------------------------------------------------
-# Configurazione Cache
+# Configurazione Cache (shared volume)
 # ----------------------------------------------------------------------
-CACHE_DIR = "data_cache"
+# Path al volume condiviso Docker
+SHARED_DATA_PATH = os.getenv("SHARED_DATA_PATH", "/app/shared")
+CACHE_DIR = f"{SHARED_DATA_PATH}/data_cache"
 DB_FILE = "trading_data.db"
 
-# Cache freshness (in minuti) - dopo questo tempo, ri-scarica i dati
+# Cache freshness (in minuti)
 CACHE_MAX_AGE_MINUTES = 5

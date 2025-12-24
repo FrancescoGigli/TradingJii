@@ -1,558 +1,366 @@
-# fetcher.py
+"""
+📥 Fetcher Module - Download OHLCV da Bybit
+
+Modulo per scaricare dati OHLCV e salvarli nel database SQLite.
+Può essere usato standalone o importato da altri moduli.
+
+Uso come modulo:
+    from fetcher import CryptoDataFetcher
+    
+    async with CryptoDataFetcher() as fetcher:
+        symbols = await fetcher.get_top_symbols(n=10)
+        data = await fetcher.download_symbols(symbols, timeframe='15m')
+"""
 
 import asyncio
 import logging
 import pandas as pd
-from datetime import datetime, timedelta
-from pathlib import Path
-from config import TIMEFRAME_DEFAULT, DATA_LIMIT_DAYS, TOP_ANALYSIS_CRYPTO
-from termcolor import colored
-import re
-import time
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from asyncio import Semaphore
+from termcolor import colored
+from typing import List, Dict, Optional
 
-# Import database cache system
-try:
-    from core.database_cache import fetch_with_database, global_db_cache, global_db_manager, display_database_stats
-    DATABASE_CACHE_AVAILABLE = True
-    # Silenced: logging.info("🗄️ Database cache system loaded successfully")
-except ImportError as e:
-    logging.warning(f"⚠️ Database cache system not available: {e}")
-    DATABASE_CACHE_AVAILABLE = False
+import config
 
-def is_candle_closed(candle_timestamp, timeframe):
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+
+class CryptoDataFetcher:
     """
-    ENHANCED: Determina se una candela è completamente chiusa con validazione robusta
+    Classe principale per il download di dati crypto da Bybit.
     
-    CRITICAL FIXES V2:
-    - Timezone handling migliorato
-    - Validation dei parametri di input
-    - Timeframe parsing più robusto
-    - Error recovery completo
-    
-    Args:
-        candle_timestamp (pd.Timestamp): Timestamp della candela
-        timeframe (str): Timeframe (es. "15m", "1h")
-        
-    Returns:
-        bool: True se la candela è chiusa, False se ancora aperta
+    Uso:
+        async with CryptoDataFetcher() as fetcher:
+            symbols = await fetcher.get_top_symbols(n=10)
+            data = await fetcher.download_symbols(symbols, '15m')
     """
-    try:
-        # Input validation
-        if candle_timestamp is None:
-            logging.error("Candle timestamp is None")
-            return True  # Safe fallback
+    
+    def __init__(self, exchange=None):
+        """
+        Inizializza il fetcher
         
-        if not isinstance(timeframe, str) or not timeframe:
-            logging.error(f"Invalid timeframe: {timeframe}")
-            return True  # Safe fallback
+        Args:
+            exchange: Istanza ccxt exchange (opzionale, verrà creata automaticamente)
+        """
+        self._exchange = exchange
+        self._own_exchange = False
+        self.markets = None
+        self.downloaded_symbols = []  # Traccia simboli scaricati
+    
+    async def __aenter__(self):
+        """Context manager entry - inizializza exchange se necessario"""
+        if self._exchange is None:
+            import ccxt.async_support as ccxt
+            self._exchange = ccxt.bybit(config.exchange_config)
+            self._own_exchange = True
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - chiude exchange se creato internamente"""
+        if self._own_exchange and self._exchange:
+            await self._exchange.close()
+    
+    @property
+    def exchange(self):
+        return self._exchange
+    
+    async def load_markets(self) -> Dict:
+        """Carica i mercati disponibili"""
+        if self.markets is None:
+            self.markets = await self._exchange.load_markets()
+        return self.markets
+    
+    async def get_usdt_perpetual_symbols(self) -> List[str]:
+        """
+        Ottiene lista di tutti i simboli USDT perpetual futures
         
-        # Get current time
-        current_time = pd.Timestamp.now(tz='UTC')
+        Returns:
+            Lista di simboli (es. ['BTC/USDT:USDT', 'ETH/USDT:USDT', ...])
+        """
+        markets = await self.load_markets()
         
-        # Enhanced timezone handling
-        if isinstance(candle_timestamp, str):
-            candle_timestamp = pd.Timestamp(candle_timestamp)
+        symbols = [
+            symbol for symbol in markets.keys()
+            if '/USDT:USDT' in symbol and markets[symbol].get('active', False)
+        ]
         
-        if candle_timestamp.tz is None:
-            candle_timestamp = candle_timestamp.tz_localize('UTC')
-        else:
-            candle_timestamp = candle_timestamp.tz_convert('UTC')
+        return symbols
+    
+    async def get_ticker_volume(self, symbol: str) -> tuple:
+        """Ottiene il volume di trading per un simbolo"""
+        try:
+            ticker = await self._exchange.fetch_ticker(symbol)
+            return symbol, ticker.get('quoteVolume', 0)
+        except Exception as e:
+            logging.debug(f"Errore ticker {symbol}: {e}")
+            return symbol, None
+    
+    async def get_top_symbols(self, n: int = None, symbols: List[str] = None) -> List[str]:
+        """
+        Ottiene i top N simboli per volume di trading
         
-        # Enhanced timeframe parsing with validation
-        timeframe_lower = timeframe.lower().strip()
-        minutes = 0
+        Args:
+            n: Numero di simboli da restituire (default: config.TOP_SYMBOLS_COUNT)
+            symbols: Lista di simboli da analizzare (default: tutti USDT perpetual)
         
-        if timeframe_lower.endswith('m'):
-            try:
-                minutes = int(timeframe_lower[:-1])
-                if minutes <= 0:
-                    raise ValueError("Invalid minutes")
-            except ValueError:
-                logging.warning(f"Invalid minute timeframe: {timeframe}, using 15m")
-                minutes = 15
-                
-        elif timeframe_lower.endswith('h'):
-            try:
-                hours = int(timeframe_lower[:-1])
-                if hours <= 0:
-                    raise ValueError("Invalid hours")
-                minutes = hours * 60
-            except ValueError:
-                logging.warning(f"Invalid hour timeframe: {timeframe}, using 1h")
-                minutes = 60
-                
-        elif timeframe_lower.endswith('d'):
-            try:
-                days = int(timeframe_lower[:-1])
-                if days <= 0:
-                    raise ValueError("Invalid days")
-                minutes = days * 24 * 60
-            except ValueError:
-                logging.warning(f"Invalid day timeframe: {timeframe}, using 1d")
-                minutes = 24 * 60
-        else:
-            logging.warning(f"Unknown timeframe format: {timeframe}, using 15m fallback")
-            minutes = 15
+        Returns:
+            Lista dei top simboli ordinati per volume
+        """
+        if n is None:
+            n = config.TOP_SYMBOLS_COUNT
         
-        # Calculate candle end time with validation
-        if minutes <= 0:
-            logging.error(f"Invalid calculated minutes: {minutes}")
-            return True  # Safe fallback
+        if symbols is None:
+            symbols = await self.get_usdt_perpetual_symbols()
         
-        candle_end_time = candle_timestamp + pd.Timedelta(minutes=minutes)
+        print(colored(f"\n📊 Analizzando volumi per {len(symbols)} simboli...", "cyan"))
         
-        # Validate calculated times
-        if candle_end_time <= candle_timestamp:
-            logging.error("Invalid candle end time calculation")
-            return True  # Safe fallback
+        # Fetch parallelo con rate limiting
+        semaphore = Semaphore(20)
         
-        is_closed = current_time >= candle_end_time
+        async def fetch_with_semaphore(symbol):
+            async with semaphore:
+                return await self.get_ticker_volume(symbol)
         
-        # Debug logging for open candles (rate limited)
-        if not is_closed:
-            time_remaining = candle_end_time - current_time
-            # Only log occasionally to avoid spam
-            if hash(str(candle_timestamp)) % 100 == 0:  # Log ~1% of open candles
-                logging.debug(f"Candle {candle_timestamp} [{timeframe}] still open, closes in {time_remaining}")
+        tasks = [fetch_with_semaphore(s) for s in symbols]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        return is_closed
+        # Filtra e ordina
+        symbol_volumes = []
+        for result in results:
+            if isinstance(result, tuple) and result[1] is not None:
+                symbol_volumes.append(result)
         
-    except Exception as e:
-        logging.error(f"Critical error in candle closure check: {e}")
-        # Safe fallback: assume candle is closed
-        return True
+        symbol_volumes.sort(key=lambda x: x[1], reverse=True)
+        
+        selected = [x[0] for x in symbol_volumes[:n]]
+        
+        # Mostra simboli selezionati
+        print(colored(f"✅ Top {len(selected)} simboli per volume:", "green"))
+        self._print_symbols_table(selected, symbol_volumes[:n])
+        
+        return selected
+    
+    def _print_symbols_table(self, symbols: List[str], volumes: List[tuple]):
+        """Stampa tabella simboli con volumi"""
+        print(colored("-" * 50, "cyan"))
+        print(colored(f"{'#':<4} {'Simbolo':<20} {'Volume 24h':>20}", "white", attrs=['bold']))
+        print(colored("-" * 50, "cyan"))
+        
+        for i, (symbol, vol) in enumerate(volumes, 1):
+            symbol_short = symbol.replace('/USDT:USDT', '')
+            vol_str = f"${vol/1e6:.1f}M" if vol >= 1e6 else f"${vol/1e3:.1f}K"
+            print(f"{i:<4} {symbol_short:<20} {vol_str:>20}")
+        
+        print(colored("-" * 50, "cyan"))
+    
+    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 1000) -> Optional[pd.DataFrame]:
+        """
+        Scarica dati OHLCV per un simbolo
+        
+        Args:
+            symbol: Simbolo (es. 'BTC/USDT:USDT')
+            timeframe: Timeframe (es. '15m', '1h')
+            limit: Numero massimo di candele
+        
+        Returns:
+            DataFrame con OHLCV o None
+        """
+        try:
+            ohlcv = await self._exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=min(limit, 1000))
+            
+            if not ohlcv:
+                return None
+            
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+            
+            return df
+            
+        except Exception as e:
+            logging.error(f"Errore download {symbol}[{timeframe}]: {e}")
+            return None
+    
+    async def download_symbols(
+        self, 
+        symbols: List[str], 
+        timeframe: str, 
+        limit: int = 1000,
+        max_concurrent: int = 15
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Scarica dati per una lista di simboli
+        
+        Args:
+            symbols: Lista di simboli
+            timeframe: Timeframe
+            limit: Candele per simbolo
+            max_concurrent: Max richieste parallele
+        
+        Returns:
+            Dict {symbol: DataFrame}
+        """
+        semaphore = Semaphore(max_concurrent)
+        results = {}
+        
+        async def fetch_single(symbol):
+            async with semaphore:
+                await asyncio.sleep(0.05)
+                df = await self.fetch_ohlcv(symbol, timeframe, limit)
+                return symbol, df
+        
+        print(colored(f"\n⬇️  Scaricando {len(symbols)} simboli [{timeframe}]...", "yellow"))
+        
+        tasks = [fetch_single(s) for s in symbols]
+        completed = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        success_count = 0
+        for result in completed:
+            if isinstance(result, tuple) and result[1] is not None:
+                results[result[0]] = result[1]
+                self.downloaded_symbols.append(result[0])
+                success_count += 1
+        
+        print(colored(f"✅ Scaricati {success_count}/{len(symbols)} simboli con successo", "green"))
+        
+        return results
+    
+    def get_downloaded_symbols(self) -> List[str]:
+        """Restituisce lista dei simboli scaricati in questa sessione"""
+        return list(set(self.downloaded_symbols))
+    
+    def print_downloaded_summary(self):
+        """Stampa riepilogo simboli scaricati"""
+        symbols = self.get_downloaded_symbols()
+        if not symbols:
+            print(colored("⚠️ Nessun simbolo scaricato", "yellow"))
+            return
+        
+        print(colored(f"\n📋 SIMBOLI SCARICATI ({len(symbols)}):", "cyan", attrs=['bold']))
+        print(colored("-" * 60, "cyan"))
+        
+        # Formatta in colonne
+        cols = 4
+        for i in range(0, len(symbols), cols):
+            row = symbols[i:i+cols]
+            row_str = "  ".join(s.replace('/USDT:USDT', '').ljust(15) for s in row)
+            print(row_str)
+        
+        print(colored("-" * 60, "cyan"))
+
+
+# ============================================================
+# FUNZIONI STANDALONE (per compatibilità)
+# ============================================================
 
 async def fetch_markets(exchange):
+    """Carica i mercati disponibili dall'exchange"""
     return await exchange.load_markets()
 
+
 async def fetch_ticker_volume(exchange, symbol):
+    """Ottiene il volume di un ticker"""
     try:
         ticker = await exchange.fetch_ticker(symbol)
         return symbol, ticker.get('quoteVolume')
     except Exception as e:
-        logging.error(f"Error fetching ticker volume for {symbol}: {e}")
+        logging.debug(f"Errore ticker {symbol}: {e}")
         return symbol, None
 
-async def get_top_symbols(exchange, symbols, top_n=TOP_ANALYSIS_CRYPTO):
-    # 🚫 FILTER EXCLUDED SYMBOLS FIRST
-    from core.symbol_exclusion_manager import global_symbol_exclusion_manager
-    
-    initial_count = len(symbols)
-    filtered_symbols = global_symbol_exclusion_manager.filter_symbols(symbols)
-    
-    if len(filtered_symbols) < initial_count:
-        excluded_count = initial_count - len(filtered_symbols)
-        logging.info(f"🚫 Pre-filtered {excluded_count} excluded symbols ({len(filtered_symbols)} candidates remaining)")
-    
-    # Parallel ticker volume fetching with rate limiting
-    semaphore = Semaphore(20)  # Max 20 concurrent requests
-    
-    async def fetch_with_semaphore(symbol):
-        async with semaphore:
-            return await fetch_ticker_volume(exchange, symbol)
-    
-    tasks = [fetch_with_semaphore(symbol) for symbol in filtered_symbols]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Filter out exceptions and None values
-    symbol_volumes = []
-    for result in results:
-        if isinstance(result, tuple) and result[1] is not None:
-            symbol_volumes.append(result)
-    
-    symbol_volumes.sort(key=lambda x: x[1], reverse=True)
-    logging.info(f"🚀 Parallel ticker fetch: {len(symbol_volumes)} symbols processed concurrently")
-    
-    selected_symbols = [x[0] for x in symbol_volumes[:top_n]]
-    
-    # 🚫 Show exclusion summary if any symbols were excluded
-    if global_symbol_exclusion_manager.get_session_excluded_count() > 0:
-        global_symbol_exclusion_manager.print_exclusion_report()
-    
-    return selected_symbols
 
-async def fetch_min_amounts(exchange, top_symbols, markets):
-    min_amounts = {}
-    for symbol in top_symbols:
-        market = markets.get(symbol)
-        if market and 'limits' in market and 'amount' in market['limits'] and 'min' in market['limits']['amount']:
-            min_amounts[symbol] = market['limits']['amount']['min']
-        else:
-            min_amounts[symbol] = 1
-    return min_amounts
+async def get_top_symbols(exchange, symbols, top_n=None):
+    """Ottiene i top N simboli per volume"""
+    async with CryptoDataFetcher(exchange) as fetcher:
+        fetcher.markets = await exchange.load_markets()
+        return await fetcher.get_top_symbols(n=top_n, symbols=symbols)
 
-async def get_data_async(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, limit=1000):
+
+async def fetch_ohlcv(exchange, symbol, timeframe, limit=1000):
+    """Scarica dati OHLCV per un simbolo"""
+    async with CryptoDataFetcher(exchange) as fetcher:
+        return await fetcher.fetch_ohlcv(symbol, timeframe, limit)
+
+
+async def download_and_save(exchange, db_cache, symbols=None, timeframes=None, limit=1000):
     """
-    Fetch OHLCV data with proper error handling and rate limiting.
-    
-    Fixes:
-    - Prevents infinite loops with timestamp validation
-    - Adds exponential backoff for rate limiting
-    - Limits maximum iterations for safety
-    """
-    ohlcv_all = []
-    since_dt = datetime.utcnow() - timedelta(days=DATA_LIMIT_DAYS)
-    since = int(since_dt.timestamp() * 1000)
-    current_time = int(datetime.utcnow().timestamp() * 1000)
-    
-    # Safety limits to prevent infinite loops
-    max_iterations = 100
-    iteration_count = 0
-    last_timestamp_seen = None
-    consecutive_same_timestamps = 0
-    
-    # Rate limiting parameters
-    base_delay = 0.1  # 100ms base delay
-    max_delay = 5.0   # 5s max delay
-    current_delay = base_delay
-    
-    while iteration_count < max_iterations:
-        iteration_count += 1
-        
-        try:
-            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit, since=since)
-            
-            # Reset delay on successful request
-            current_delay = base_delay
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            
-            # Handle rate limiting specifically
-            if any(keyword in error_msg for keyword in ['rate', 'limit', 'too many', 'throttle']):
-                logging.warning(f"Rate limit hit for {symbol}, backing off for {current_delay:.2f}s")
-                await asyncio.sleep(current_delay)
-                current_delay = min(current_delay * 2, max_delay)  # Exponential backoff
-                continue
-            else:
-                logging.error(f"Error fetching ohlcv for {symbol}: {e}")
-                break
-        
-        if not ohlcv:
-            logging.debug(f"No more data available for {symbol}")
-            break
-        
-        # Detect timestamp stagnation to prevent infinite loops
-        current_last_timestamp = ohlcv[-1][0]
-        if last_timestamp_seen == current_last_timestamp:
-            consecutive_same_timestamps += 1
-            if consecutive_same_timestamps >= 3:
-                logging.warning(f"Timestamp stagnation detected for {symbol}, stopping fetch")
-                break
-        else:
-            consecutive_same_timestamps = 0
-            last_timestamp_seen = current_last_timestamp
-        
-        ohlcv_all.extend(ohlcv)
-        
-        # Check if we've reached current time
-        if current_last_timestamp >= current_time:
-            logging.debug(f"Reached current time for {symbol}")
-            break
-            
-        # Calculate next since timestamp
-        new_since = current_last_timestamp + 1
-        
-        # Additional safety check: ensure we're making progress
-        if new_since <= since:
-            logging.warning(f"No progress in timestamp advancement for {symbol}, stopping")
-            break
-            
-        since = new_since
-        
-        # Small delay to be respectful to the exchange
-        if current_delay > base_delay:
-            await asyncio.sleep(base_delay)
-
-    if iteration_count >= max_iterations:
-        logging.warning(f"Maximum iterations ({max_iterations}) reached for {symbol}")
-
-    if ohlcv_all:
-        # Remove duplicates based on timestamp while preserving order
-        df = pd.DataFrame(ohlcv_all, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df = df.drop_duplicates(subset=['timestamp'], keep='last')
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df.sort_index(inplace=True)  # Ensure chronological order
-        
-        # Log and save last candle information
-        last_candle = df.iloc[-1]
-        last_date = df.index[-1].strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Format last candle data: O,H,L,C,V
-        last_candle_formatted = f"{last_candle['open']:.4f},{last_candle['high']:.4f},{last_candle['low']:.4f},{last_candle['close']:.4f},{last_candle['volume']:.0f}"
-        
-        # Only log to console during normal operations, not during training
-        import inspect
-        frame = inspect.currentframe()
-        is_training_phase = False
-        
-        # Check if we're being called from training context
-        try:
-            for i in range(5):  # Check up to 5 frames up the stack
-                if frame is None:
-                    break
-                frame_info = frame.f_code
-                if 'train' in frame_info.co_filename.lower() or 'train' in frame_info.co_name.lower():
-                    is_training_phase = True
-                    break
-                frame = frame.f_back
-        except:
-            pass
-
-        # Only log during analysis phase, not training (silenced for clean output)
-        pass
-        return df
-    else:
-        logging.info(f"No data available for {symbol} in the last {DATA_LIMIT_DAYS} days.")
-        return None
-
-async def fetch_and_save_data(exchange, symbol, timeframe=TIMEFRAME_DEFAULT, limit=1000):
-    """
-    🚀 ENHANCED CACHE-OPTIMIZED FETCH (GAME CHANGER!)
-    
-    NEW: Usa database con indicatori pre-calcolati per 10x speedup!
-    
-    Strategy:
-    1. Check enhanced_data table for existing data with indicators
-    2. If fresh (< 5 min), return directly → 10x FASTER!
-    3. If stale/missing, calculate & save all indicators
-    4. Future calls use cached indicators → MASSIVE SPEEDUP!
-    """
-    
-    if DATABASE_CACHE_AVAILABLE:
-        symbol_short = symbol.replace('/USDT:USDT', '')
-        
-        try:
-            # 🚀 FIRST: Try to get enhanced data with ALL indicators pre-calculated
-            enhanced_data = global_db_cache.get_enhanced_cached_data(symbol, timeframe)
-            
-            if enhanced_data is not None and len(enhanced_data) > 0:
-                # CRITICAL FIX: Strict data freshness validation for ML predictions
-                last_timestamp = enhanced_data.index[-1]
-                now = pd.Timestamp.now(tz='UTC')
-                if last_timestamp.tz is None:
-                    last_timestamp = last_timestamp.tz_localize('UTC')
-                
-                age_minutes = (now - last_timestamp).total_seconds() / 60
-                
-                # CRITICAL: Tightened freshness requirement for trading decisions
-                max_age_for_trading = 0.5  # Maximum 30 seconds for trading signals (real-time data)
-                
-                if age_minutes <= max_age_for_trading:  # Strict freshness for trading
-                    # 🎉 JACKPOT: Return pre-calculated indicators (10x speedup!)
-                    logging.debug(f"🚀 {symbol_short}[{timeframe}]: ENHANCED cache hit - ALL indicators ready ({age_minutes:.1f}m old)")
-                    
-                    # Filter closed candles
-                    closed_candles_mask = enhanced_data.index.to_series().apply(
-                        lambda ts: is_candle_closed(ts, timeframe)
-                    )
-                    enhanced_data_filtered = enhanced_data[closed_candles_mask]
-                    
-                    return enhanced_data_filtered
-                else:
-                    logging.debug(f"🔄 {symbol_short}[{timeframe}]: Enhanced data too old ({age_minutes:.1f}m), recalculating...")
-            
-        except Exception as enhanced_error:
-            logging.debug(f"Enhanced cache miss for {symbol_short}[{timeframe}]: {enhanced_error}")
-    
-    # FALLBACK: Standard calculation with enhanced caching
-    try:
-        # Get OHLCV data (from cache or exchange)
-        if DATABASE_CACHE_AVAILABLE:
-            df = await global_db_manager.get_ohlcv_smart(exchange, symbol, timeframe, limit)
-        else:
-            df = await get_data_async(exchange, symbol, timeframe, limit)
-        
-        if df is not None:
-            from data_utils import add_technical_indicators, add_swing_probability_features
-            
-            # Calculate all technical indicators (CPU intensive but cached afterward!)
-            df_with_indicators = add_technical_indicators(df.copy(), symbol)
-            
-            # Add swing probability features (no lookahead bias)
-            df_with_indicators = add_swing_probability_features(df_with_indicators)
-            
-            # Filter closed candles for consistency
-            closed_candles_mask = df_with_indicators.index.to_series().apply(
-                lambda ts: is_candle_closed(ts, timeframe)
-            )
-            df_with_indicators = df_with_indicators[closed_candles_mask]
-            
-            # 🚀 SAVE TO ENHANCED DATABASE with WARMUP SKIP (QUALITY IMPROVEMENT!)
-            if DATABASE_CACHE_AVAILABLE:
-                try:
-                    from config import WARMUP_PERIODS
-                    symbol_short = symbol.replace('/USDT:USDT', '')
-                    
-                    # Skip first WARMUP_PERIODS candeles to ensure reliable indicators
-                    if len(df_with_indicators) > WARMUP_PERIODS:
-                        df_stable = df_with_indicators[WARMUP_PERIODS:]  # Skip primi 30 dati di warmup
-                        global_db_cache.save_enhanced_data_to_db(symbol, timeframe, df_stable)
-                        logging.debug(f"💾 {symbol_short}[{timeframe}]: Saved {len(df_stable)} stable indicators (skipped {WARMUP_PERIODS} warmup)")
-                    else:
-                        # Not enough data for reliable indicators
-                        logging.warning(f"⚠️ {symbol_short}[{timeframe}]: Insufficient data {len(df_with_indicators)} <= {WARMUP_PERIODS} warmup")
-                except Exception as save_error:
-                    logging.warning(f"Failed to save enhanced data for {symbol_short}[{timeframe}]: {save_error}")
-            
-            return df_with_indicators
-            
-        return None
-        
-    except Exception as e:
-        logging.error(f"❌ Enhanced fetch failed for {symbol}[{timeframe}]: {e}")
-        return None
-
-# ==============================================================================
-# PARALLEL FETCHING OPTIMIZATION - Threading Implementation
-# ==============================================================================
-
-async def fetch_all_data_parallel(exchange, symbols, timeframes, max_concurrent=15, chunk_deadline=90):
-    """
-    🚀 PARALLEL DATA FETCHING OPTIMIZATION with chunk deadlines
-    
-    Fetches data for all symbol/timeframe combinations concurrently with intelligent
-    rate limiting and deadline protection.
-    
-    CRITICAL FIX: Chunk deadline prevents slow symbols from blocking entire fetch
+    Scarica dati e li salva nel database
     
     Args:
-        exchange: Exchange instance
-        symbols: List of symbols to fetch
-        timeframes: List of timeframes to fetch
-        max_concurrent: Maximum concurrent requests (default: 15)
-        chunk_deadline: Max seconds per chunk (default: 90s)
-        
+        exchange: Istanza exchange ccxt
+        db_cache: Istanza DatabaseCache
+        symbols: Lista simboli (se None, prende i top per volume)
+        timeframes: Lista timeframes (se None, usa config.ENABLED_TIMEFRAMES)
+        limit: Candele per simbolo (default: 1000)
+    
     Returns:
-        dict: {symbol: {timeframe: dataframe}} structure
-        
-    Performance:
-        - Sequential: ~300-600 seconds for 50 symbols × 3 timeframes
-        - Parallel: ~30-60 seconds for same workload (5-10x speedup)
-        - With deadline: guaranteed completion even if some symbols timeout
+        Dict con statistiche download
     """
-    start_time = time.time()
+    stats = {
+        'symbols_processed': 0,
+        'candles_saved': 0,
+        'errors': 0,
+        'downloaded_symbols': []
+    }
     
-    # Rate limiting semaphore - critical for exchange stability
-    semaphore = Semaphore(max_concurrent)
-    
-    # Progress tracking
-    total_tasks = len(symbols) * len(timeframes)
-    completed_tasks = 0
-    
-    logging.info(f"🚀 Starting parallel data fetch: {len(symbols)} symbols × {len(timeframes)} timeframes = {total_tasks} total tasks")
-    logging.info(f"⚡ Max concurrent requests: {max_concurrent}")
-    
-    async def fetch_single_with_semaphore(symbol, timeframe):
-        """Fetch single symbol/timeframe combination with semaphore control"""
-        nonlocal completed_tasks
+    async with CryptoDataFetcher(exchange) as fetcher:
+        # Carica mercati
+        print(colored("\n🔄 Caricamento mercati Bybit...", "cyan"))
+        await fetcher.load_markets()
         
-        async with semaphore:
-            try:
-                # Add small delay to distribute requests evenly
-                await asyncio.sleep(0.05)  # 50ms between requests
-                
-                df = await fetch_and_save_data(exchange, symbol, timeframe)
-                
-                completed_tasks += 1
-                progress_pct = (completed_tasks / total_tasks) * 100
-                
-                if completed_tasks % 10 == 0 or completed_tasks == total_tasks:
-                    elapsed = time.time() - start_time
-                    rate = completed_tasks / elapsed if elapsed > 0 else 0
-                    eta = (total_tasks - completed_tasks) / rate if rate > 0 else 0
-                    
-                    logging.info(f"📊 Progress: {completed_tasks}/{total_tasks} ({progress_pct:.1f}%) | Rate: {rate:.1f}/s | ETA: {eta:.0f}s")
-                
-                return symbol, timeframe, df
-                
-            except Exception as e:
-                logging.error(f"❌ Failed to fetch {symbol}[{timeframe}]: {e}")
-                completed_tasks += 1
-                return symbol, timeframe, None
-    
-    # Create all tasks
-    tasks = []
-    for symbol in symbols:
-        for timeframe in timeframes:
-            task = fetch_single_with_semaphore(symbol, timeframe)
-            tasks.append(task)
-    
-    # Execute all tasks concurrently
-    logging.info(f"⏳ Executing {len(tasks)} concurrent fetch tasks...")
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Process results into structured format
-    all_data = {}
-    successful_fetches = 0
-    
-    for result in results:
-        if isinstance(result, tuple) and len(result) == 3:
-            symbol, timeframe, df = result
+        # Filtra per USDT perpetual futures
+        usdt_symbols = await fetcher.get_usdt_perpetual_symbols()
+        print(colored(f"📈 Trovati {len(usdt_symbols)} pairs USDT perpetual", "cyan"))
+        
+        # Ottieni top simboli se non specificati
+        if symbols is None:
+            symbols = await fetcher.get_top_symbols(config.TOP_SYMBOLS_COUNT)
+        
+        # Usa timeframes di default se non specificati
+        if timeframes is None:
+            timeframes = config.ENABLED_TIMEFRAMES
+        
+        # Download per ogni timeframe
+        for tf in timeframes:
+            print(colored(f"\n{'='*60}", "magenta"))
+            print(colored(f"⏰ TIMEFRAME: {tf}", "magenta", attrs=['bold']))
+            print(colored(f"{'='*60}", "magenta"))
             
-            if df is not None:
-                if symbol not in all_data:
-                    all_data[symbol] = {}
-                all_data[symbol][timeframe] = df
-                successful_fetches += 1
-            else:
-                # Log failed fetch without cluttering output
-                logging.debug(f"Failed fetch: {symbol}[{timeframe}]")
-        elif isinstance(result, Exception):
-            logging.error(f"Task exception: {result}")
-    
-    # Performance summary
-    total_time = time.time() - start_time
-    speedup_estimate = (total_tasks * 2) / total_time  # Estimated vs sequential (2s per fetch)
-    
-    logging.info(f"🎉 Parallel fetch complete!")
-    logging.info(f"   ✅ Successful: {successful_fetches}/{total_tasks} ({successful_fetches/total_tasks*100:.1f}%)")
-    logging.info(f"   ⏱️ Total time: {total_time:.1f}s")
-    logging.info(f"   🚀 Estimated speedup: {speedup_estimate:.1f}x vs sequential")
-    logging.info(f"   📊 Symbols with complete data: {len(all_data)}")
-    
-    return all_data
-
-async def fetch_symbol_data_parallel(exchange, symbol, timeframes):
-    """
-    🚀 SINGLE SYMBOL PARALLEL FETCHING
-    
-    Fetches all timeframes for a single symbol concurrently.
-    Useful when processing symbols one by one but want timeframe parallelism.
-    
-    Args:
-        exchange: Exchange instance  
-        symbol: Single symbol to fetch
-        timeframes: List of timeframes
+            # Scarica tutti i simboli per questo timeframe
+            data = await fetcher.download_symbols(symbols, tf, limit)
+            
+            # Salva nel database
+            for symbol, df in data.items():
+                if df is not None and len(df) > 0:
+                    try:
+                        db_cache.save_data_to_db(symbol, tf, df)
+                        stats['symbols_processed'] += 1
+                        stats['candles_saved'] += len(df)
+                        if symbol not in stats['downloaded_symbols']:
+                            stats['downloaded_symbols'].append(symbol)
+                    except Exception as e:
+                        logging.error(f"Errore salvataggio {symbol}[{tf}]: {e}")
+                        stats['errors'] += 1
+            
+            print(colored(f"💾 Salvati {len(data)} simboli nel database", "green"))
         
-    Returns:
-        dict: {timeframe: dataframe} for the symbol
-    """
-    semaphore = Semaphore(len(timeframes))  # Allow all timeframes concurrently for single symbol
+        # Mostra simboli scaricati
+        fetcher.print_downloaded_summary()
     
-    async def fetch_tf_with_semaphore(tf):
-        async with semaphore:
-            try:
-                await asyncio.sleep(0.02)  # Small delay between timeframes
-                return tf, await fetch_and_save_data(exchange, symbol, tf)
-            except Exception as e:
-                logging.error(f"Error fetching {symbol}[{tf}]: {e}")
-                return tf, None
-    
-    # Fetch all timeframes for this symbol concurrently
-    tasks = [fetch_tf_with_semaphore(tf) for tf in timeframes]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Build result dictionary
-    symbol_data = {}
-    for result in results:
-        if isinstance(result, tuple) and len(result) == 2:
-            tf, df = result
-            if df is not None:
-                symbol_data[tf] = df
-    
-    logging.debug(f"✅ {symbol}: {len(symbol_data)}/{len(timeframes)} timeframes fetched successfully")
-    return symbol_data
+    return stats
+
+
+def display_download_summary(stats):
+    """Mostra riepilogo download"""
+    print(colored("\n" + "="*60, "cyan"))
+    print(colored("📊 RIEPILOGO DOWNLOAD", "cyan", attrs=['bold']))
+    print(colored("="*60, "cyan"))
+    print(colored(f"  ✅ Simboli processati: {stats['symbols_processed']}", "green"))
+    print(colored(f"  📈 Candele totali salvate: {stats['candles_saved']:,}", "green"))
+    print(colored(f"  🪙 Simboli unici: {len(stats.get('downloaded_symbols', []))}", "green"))
+    if stats['errors'] > 0:
+        print(colored(f"  ❌ Errori: {stats['errors']}", "red"))
+    print(colored("="*60, "cyan"))
