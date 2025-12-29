@@ -204,10 +204,10 @@ st.markdown("""
     
     /* Neon Selectbox */
     .stSelectbox > div > div {
-        background: rgba(15, 20, 40, 0.9);
+        background: rgba(15, 20, 40, 0.95) !important;
         border: 1px solid rgba(0, 255, 255, 0.3);
         border-radius: 10px;
-        color: #ffffff;
+        color: #ffffff !important;
         transition: all 0.3s ease;
     }
     
@@ -220,6 +220,58 @@ st.markdown("""
         color: #8899aa !important;
         font-family: 'Rajdhani', sans-serif;
         font-weight: 600;
+    }
+    
+    /* Dropdown menu styling */
+    .stSelectbox [data-baseweb="select"] > div {
+        background: rgba(15, 20, 40, 0.98) !important;
+        color: #ffffff !important;
+    }
+    
+    .stSelectbox [data-baseweb="popover"] {
+        background: rgba(15, 20, 40, 0.98) !important;
+    }
+    
+    .stSelectbox [data-baseweb="menu"] {
+        background: rgba(15, 20, 40, 0.98) !important;
+    }
+    
+    .stSelectbox li {
+        background: rgba(15, 20, 40, 0.98) !important;
+        color: #ffffff !important;
+    }
+    
+    .stSelectbox li:hover {
+        background: rgba(0, 255, 255, 0.2) !important;
+    }
+    
+    /* BaseWeb select dropdown */
+    [data-baseweb="popover"] {
+        background: #0d1117 !important;
+    }
+    
+    [data-baseweb="menu"] {
+        background: #0d1117 !important;
+    }
+    
+    [data-baseweb="menu"] li {
+        background: #0d1117 !important;
+        color: #ffffff !important;
+    }
+    
+    [data-baseweb="menu"] li:hover {
+        background: rgba(0, 255, 255, 0.15) !important;
+    }
+    
+    /* Text Input styling */
+    .stTextInput input {
+        background: rgba(15, 20, 40, 0.95) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(0, 255, 255, 0.3) !important;
+    }
+    
+    .stTextInput input::placeholder {
+        color: #6688aa !important;
     }
     
     /* Glowing Buttons */
@@ -437,10 +489,46 @@ st.markdown("""
         font-family: 'Rajdhani', sans-serif;
     }
     
-    /* Hide streamlit elements */
+    /* Hide Streamlit branding only */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    
+    /* Keep header but make it minimal and dark */
+    header[data-testid="stHeader"] {
+        background: #0a0a1a !important;
+        border-bottom: 1px solid rgba(0, 255, 255, 0.2) !important;
+        height: 50px !important;
+        min-height: 50px !important;
+    }
+    
+    /* Style the sidebar toggle button */
+    [data-testid="collapsedControl"] {
+        background: rgba(0, 255, 255, 0.2) !important;
+        border: 2px solid rgba(0, 255, 255, 0.5) !important;
+        border-radius: 10px !important;
+        margin: 8px !important;
+    }
+    
+    [data-testid="collapsedControl"] svg {
+        fill: #00ffff !important;
+        color: #00ffff !important;
+    }
+    
+    [data-testid="collapsedControl"]:hover {
+        background: rgba(0, 255, 255, 0.4) !important;
+        box-shadow: 0 0 15px rgba(0, 255, 255, 0.3) !important;
+    }
+    
+    /* Ensure sidebar is visible */
+    section[data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+    }
+    
+    /* Remove extra top padding from main content */
+    .main .block-container {
+        padding-top: 1rem !important;
+    }
     
     /* Neon scrollbar */
     ::-webkit-scrollbar {
@@ -929,120 +1017,153 @@ def main():
     with st.sidebar:
         st.markdown("## ⚡ Control Panel")
         
-        # Live clock con JavaScript
-        next_info = get_next_update_info()
-        components.html(f"""
+        # Live clock with JavaScript - clean unified component
+        components.html("""
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
-            .live-clock-container {{
-                background: rgba(10, 15, 30, 0.8);
+            @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;600&display=swap');
+            .control-panel {
+                background: rgba(10, 15, 30, 0.9);
                 border: 1px solid rgba(0, 255, 255, 0.3);
-                border-radius: 10px;
-                padding: 15px;
-                margin-bottom: 10px;
-            }}
-            .status-dot {{
-                display: inline-block;
-                width: 10px;
-                height: 10px;
+                border-radius: 12px;
+                padding: 18px;
+            }
+            .live-row {
+                display: flex;
+                align-items: center;
+                margin-bottom: 8px;
+            }
+            .status-dot {
+                width: 8px;
+                height: 8px;
                 background: #00ff88;
                 border-radius: 50%;
                 margin-right: 8px;
-                box-shadow: 0 0 10px #00ff88;
+                box-shadow: 0 0 8px #00ff88;
                 animation: pulse 1.5s ease-in-out infinite;
-            }}
-            @keyframes pulse {{
-                0%, 100% {{ opacity: 1; transform: scale(1); }}
-                50% {{ opacity: 0.7; transform: scale(1.1); }}
-            }}
-            .live-text {{
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
+            }
+            .live-text {
                 color: #00ff88;
                 font-family: 'Orbitron', sans-serif;
                 font-weight: 700;
-                font-size: 0.9rem;
-            }}
-            .clock {{
+                font-size: 0.75rem;
+                letter-spacing: 1px;
+            }
+            .clock {
                 color: #00ffff;
                 font-family: 'Orbitron', sans-serif;
                 font-weight: 700;
-                font-size: 1.5rem;
-                text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
-                margin: 10px 0;
-            }}
-            .date {{
-                color: #8899aa;
+                font-size: 1.6rem;
+                text-shadow: 0 0 10px rgba(0, 255, 255, 0.4);
+            }
+            .date {
+                color: #7a8899;
+                font-family: 'Rajdhani', sans-serif;
                 font-size: 0.85rem;
-            }}
-            .countdown-container {{
-                background: rgba(0, 255, 255, 0.1);
-                border: 1px solid rgba(0, 255, 255, 0.3);
+                margin-bottom: 12px;
+            }
+            .update-box {
+                background: rgba(0, 255, 255, 0.08);
+                border: 1px solid rgba(0, 255, 255, 0.2);
                 border-radius: 8px;
-                padding: 10px;
-                margin-top: 10px;
-                text-align: center;
-            }}
-            .countdown-label {{
-                color: #8899aa;
+                padding: 12px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .update-left {
+                text-align: left;
+            }
+            .update-label {
+                color: #7a8899;
+                font-family: 'Rajdhani', sans-serif;
                 font-size: 0.7rem;
                 text-transform: uppercase;
                 letter-spacing: 1px;
-            }}
-            .countdown-time {{
+            }
+            .update-time {
+                color: #00ffff;
+                font-family: 'Orbitron', sans-serif;
+                font-weight: 700;
+                font-size: 1rem;
+            }
+            .countdown-box {
+                text-align: right;
+            }
+            .countdown-label {
+                color: #7a8899;
+                font-family: 'Rajdhani', sans-serif;
+                font-size: 0.7rem;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }
+            .countdown {
                 color: #ffc107;
                 font-family: 'Orbitron', sans-serif;
                 font-weight: 700;
-                font-size: 1.2rem;
-            }}
-            .next-update {{
-                color: #00ffff;
-                font-size: 0.9rem;
-                margin-top: 5px;
-            }}
+                font-size: 1rem;
+            }
         </style>
-        <div class="live-clock-container">
-            <div>
+        <div class="control-panel">
+            <div class="live-row">
                 <span class="status-dot"></span>
                 <span class="live-text">LIVE</span>
             </div>
             <div class="clock" id="clock">--:--:--</div>
             <div class="date" id="date">--/--/----</div>
-            <div class="countdown-container">
-                <div class="countdown-label">Prossimo Update</div>
-                <div class="next-update">⏰ {next_info['next_update']}</div>
-                <div class="countdown-time" id="countdown">--:--</div>
+            <div class="update-box">
+                <div class="update-left">
+                    <div class="update-label">Next Update</div>
+                    <div class="update-time" id="nextUpdate">--:--</div>
+                </div>
+                <div class="countdown-box">
+                    <div class="countdown-label">Remaining</div>
+                    <div class="countdown" id="countdown">--:--</div>
+                </div>
             </div>
         </div>
         <script>
-            function updateClock() {{
+            function updateClock() {
                 const now = new Date();
-                // Converti in orario Roma
-                const options = {{ timeZone: 'Europe/Rome' }};
-                const timeStr = now.toLocaleTimeString('it-IT', {{ ...options, hour: '2-digit', minute: '2-digit', second: '2-digit' }});
-                const dateStr = now.toLocaleDateString('it-IT', {{ ...options, day: '2-digit', month: '2-digit', year: 'numeric' }});
+                const options = { timeZone: 'Europe/Rome' };
+                const timeStr = now.toLocaleTimeString('en-GB', { ...options, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                const dateStr = now.toLocaleDateString('en-GB', { ...options, day: '2-digit', month: '2-digit', year: 'numeric' });
                 
                 document.getElementById('clock').textContent = timeStr;
                 document.getElementById('date').textContent = dateStr;
                 
-                // Calcola countdown al prossimo 15 minuti
-                const minutes = now.getMinutes();
-                const seconds = now.getSeconds();
-                const nextUpdate = Math.ceil(minutes / 15) * 15;
+                // Calculate next 15-minute interval
+                const romeTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Rome' }));
+                const minutes = romeTime.getMinutes();
+                const seconds = romeTime.getSeconds();
+                
+                const nextUpdate = Math.ceil((minutes + 1) / 15) * 15;
+                const nextHour = romeTime.getHours() + (nextUpdate >= 60 ? 1 : 0);
+                const nextMin = nextUpdate >= 60 ? 0 : nextUpdate;
+                
+                document.getElementById('nextUpdate').textContent = 
+                    String(nextHour % 24).padStart(2, '0') + ':' + String(nextMin).padStart(2, '0');
+                
+                // Calculate countdown
                 let minutesLeft = (nextUpdate >= 60 ? 60 : nextUpdate) - minutes - 1;
                 let secondsLeft = 60 - seconds;
-                if (secondsLeft === 60) {{
+                if (secondsLeft === 60) {
                     secondsLeft = 0;
                     minutesLeft += 1;
-                }}
+                }
                 if (minutesLeft < 0) minutesLeft = 14;
                 
-                const countdownStr = String(minutesLeft).padStart(2, '0') + ':' + String(secondsLeft).padStart(2, '0');
-                document.getElementById('countdown').textContent = '⏱️ -' + countdownStr;
-            }}
+                const countdownStr = '-' + String(minutesLeft).padStart(2, '0') + ':' + String(secondsLeft).padStart(2, '0');
+                document.getElementById('countdown').textContent = countdownStr;
+            }
             
             updateClock();
             setInterval(updateClock, 1000);
         </script>
-        """, height=200)
+        """, height=185)
         
         # Stats
         stats = get_stats()
@@ -1055,25 +1176,10 @@ def main():
             
             st.metric("Total Candles", f"{stats['candles']:,}")
             
-            # Last Update con timezone Roma
+            # Last Update with Rome timezone
             if stats.get('updated'):
                 last_update_rome = format_datetime_rome(stats['updated'])
                 st.caption(f"🕐 Last Update: {last_update_rome}")
-            
-            st.markdown("---")
-            
-            # Timer prossimo aggiornamento
-            st.markdown("### ⏰ Next Update")
-            next_info = get_next_update_info()
-            
-            # Mostra countdown con stile
-            st.markdown(f"""
-            <div style="background: rgba(0, 255, 255, 0.1); border: 1px solid #00ffff; border-radius: 10px; padding: 15px; text-align: center;">
-                <p style="color: #aabbcc; margin: 0; font-size: 0.8rem;">PROSSIMO UPDATE ALLE</p>
-                <h2 style="color: #00ffff; margin: 5px 0; font-family: 'Orbitron', sans-serif;">{next_info['next_update']}</h2>
-                <p style="color: #ffc107; margin: 0; font-size: 1.2rem; font-family: 'Orbitron', sans-serif;">⏱️ -{next_info['countdown']}</p>
-            </div>
-            """, unsafe_allow_html=True)
             
             st.markdown("---")
         else:
@@ -1095,7 +1201,7 @@ def main():
         
         # Info
         st.markdown("### ℹ️ Info")
-        st.caption(f"📍 Timezone: Europe/Rome")
+        st.caption("📍 Timezone: Europe/Rome")
         st.caption("🔄 Updates every 15 minutes")
         st.caption("📡 Data from Bybit Exchange")
     
