@@ -8,15 +8,14 @@ Entry point principale dell'applicazione.
 """
 
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from config import PAGE_TITLE, PAGE_ICON
 from styles import inject_theme
 from components.sidebar import render_sidebar
 from components.tabs import (
     render_top_coins_tab,
-    render_advanced_charts_tab,
-    render_volume_analysis_tab,
-    render_technical_tab
+    render_analysis_tab
 )
 
 
@@ -29,6 +28,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Auto-refresh every 30 seconds to check for database updates
+# The counter increments on each refresh - we can use it to track refreshes
+refresh_count = st_autorefresh(interval=30000, limit=None, key="data_refresh")
 
 # Inject dark theme CSS
 inject_theme()
@@ -66,24 +69,16 @@ def main():
         render_sidebar()
     
     # Main content - TABS
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2 = st.tabs([
         "📊 Top 100 Coins", 
-        "📈 Advanced Charts", 
-        "📉 Volume Analysis",
-        "🔬 Technical Analysis"
+        "📈 Coin Analysis"
     ])
     
     with tab1:
         render_top_coins_tab()
     
     with tab2:
-        render_advanced_charts_tab()
-    
-    with tab3:
-        render_volume_analysis_tab()
-    
-    with tab4:
-        render_technical_tab()
+        render_analysis_tab()
     
     # Footer
     st.markdown(FOOTER_HTML, unsafe_allow_html=True)

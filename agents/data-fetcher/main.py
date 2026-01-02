@@ -2,9 +2,13 @@
 🤖 Data Fetcher Agent - Main Entry Point
 
 Daemon mode:
-- On startup: full refresh (top 100 symbols + candles for all timeframes)
-- Every 15 minutes: candles update only
-- When refresh signal file detected: full refresh
+- On startup: uses saved Top 100 list (if exists) and refreshes OHLCV data
+- If no saved list: does initial full refresh (top 100 + candles)
+- Every 15 minutes: automatic OHLCV data update (keeps existing list)
+
+Manual triggers (via signal files):
+- 'refresh_signal.txt' → Refresh OHLCV data only (keeps current Top 100 list)
+- 'update_list_signal.txt' → Update Top 100 ranking by volume + refresh all data
 
 The bot runs in daemon mode and stays alive continuously.
 """
@@ -22,9 +26,10 @@ from core.database_cache import DatabaseCache
 from fetcher import full_refresh, fetch_candles_for_symbols, display_download_summary
 
 
-# Shared path for signal file
+# Shared path for signal files
 SHARED_PATH = os.getenv("SHARED_DATA_PATH", "/app/shared")
-REFRESH_SIGNAL_FILE = f"{SHARED_PATH}/refresh_signal.txt"
+REFRESH_SIGNAL_FILE = f"{SHARED_PATH}/refresh_signal.txt"  # Refresh OHLCV data only
+UPDATE_LIST_SIGNAL_FILE = f"{SHARED_PATH}/update_list_signal.txt"  # Update top 100 list + refresh data
 
 
 def print_header():
@@ -38,15 +43,23 @@ def print_header():
 ⏱️  Timeframes: {', '.join(config.ENABLED_TIMEFRAMES)}
 🕯️ Candles per symbol: {config.CANDLES_LIMIT}
 🔁 Update interval: {config.UPDATE_INTERVAL_MINUTES} minutes
-💾 Database: {config.SHARED_DATA_PATH}/trading_data.db
+💾 Database: {config.SHARED_DATA_PATH}/data_cache/trading_data.db
 {'='*60}
 """, "cyan"))
 
 
 def check_refresh_signal():
-    """Check if manual refresh signal exists"""
+    """Check if OHLCV data refresh signal exists (refresh data only, keep existing list)"""
     if Path(REFRESH_SIGNAL_FILE).exists():
         Path(REFRESH_SIGNAL_FILE).unlink()  # Delete signal file
+        return True
+    return False
+
+
+def check_update_list_signal():
+    """Check if update list signal exists (update top 100 list + refresh all data)"""
+    if Path(UPDATE_LIST_SIGNAL_FILE).exists():
+        Path(UPDATE_LIST_SIGNAL_FILE).unlink()  # Delete signal file
         return True
     return False
 
@@ -59,42 +72,63 @@ async def run_daemon():
     exchange = ccxt.bybit(config.exchange_config)
     
     try:
-        print(colored("\n🚀 DAEMON START - Initial data load...", "green", attrs=['bold']))
+        # Check if we have saved symbols in DB
+        saved_symbols = db_cache.get_top_symbols_list()
         
-        # Initial full refresh
-        stats = await full_refresh(exchange, db_cache)
+        if not saved_symbols:
+            # No saved list - do initial full refresh (list + data)
+            print(colored("\n🚀 DAEMON START - No saved list, doing initial full refresh...", "green", attrs=['bold']))
+            stats = await full_refresh(exchange, db_cache)
+        else:
+            # We have a saved list - just refresh OHLCV data
+            print(colored(f"\n🚀 DAEMON START - Found {len(saved_symbols)} saved symbols, refreshing data...", "green", attrs=['bold']))
+            stats = await fetch_candles_for_symbols(exchange, db_cache, saved_symbols)
+        
         display_download_summary(stats)
         db_cache.print_db_stats()
         
         print(colored("\n✅ Initial load complete!", "green", attrs=['bold']))
-        print(colored(f"⏰ Next candles update in {config.UPDATE_INTERVAL_MINUTES} minutes", "cyan"))
-        print(colored(f"💡 To force list refresh: create file 'refresh_signal.txt' in shared/", "cyan"))
+        print_next_update_info()
         
         # Main loop - update every 15 minutes
         while True:
+            signal_type = None
+            
             # Wait with signal check
             for _ in range(config.UPDATE_INTERVAL_MINUTES * 60):
                 await asyncio.sleep(1)
                 
-                # Check for manual refresh signal
+                # Check for update list signal (priority)
+                if check_update_list_signal():
+                    signal_type = "UPDATE_LIST"
+                    print(colored("\n🔔 Update Top 100 List signal detected!", "yellow", attrs=['bold']))
+                    break
+                
+                # Check for data refresh signal
                 if check_refresh_signal():
-                    print(colored("\n🔔 Manual refresh signal detected!", "yellow", attrs=['bold']))
+                    signal_type = "REFRESH_DATA"
+                    print(colored("\n🔔 Refresh Data signal detected!", "yellow", attrs=['bold']))
                     break
             
-            # Check if refresh was requested
-            if check_refresh_signal():
-                print(colored("\n🔄 Running FULL REFRESH (manually requested)...", "yellow"))
+            # Execute based on signal type
+            if signal_type == "UPDATE_LIST":
+                # Update top 100 list + refresh all data
+                print(colored("\n📋 Updating Top 100 List + Refreshing Data...", "magenta", attrs=['bold']))
                 stats = await full_refresh(exchange, db_cache)
+                
+            elif signal_type == "REFRESH_DATA":
+                # Only refresh OHLCV data for existing list
+                print(colored("\n🔄 Refreshing OHLCV Data (using saved list)...", "cyan", attrs=['bold']))
+                stats = await fetch_candles_for_symbols(exchange, db_cache)
+                
             else:
                 # Normal periodic update - only candles
-                print(colored(f"\n🔄 Starting periodic update... [{datetime.now().strftime('%H:%M:%S')}]", "cyan"))
+                print(colored(f"\n🔄 Periodic data update... [{datetime.now().strftime('%H:%M:%S')}]", "cyan"))
                 stats = await fetch_candles_for_symbols(exchange, db_cache)
             
             display_download_summary(stats)
             db_cache.print_db_stats()
-            
-            print(colored(f"\n⏰ Next update in {config.UPDATE_INTERVAL_MINUTES} minutes", "cyan"))
-            print(colored(f"💡 To force list refresh: create file 'refresh_signal.txt' in shared/", "cyan"))
+            print_next_update_info()
             
     except asyncio.CancelledError:
         print(colored("\n⚠️ Daemon stopped", "yellow"))
@@ -104,6 +138,14 @@ async def run_daemon():
     finally:
         if exchange:
             await exchange.close()
+
+
+def print_next_update_info():
+    """Print info about next update and available signals"""
+    print(colored(f"\n⏰ Next automatic update in {config.UPDATE_INTERVAL_MINUTES} minutes", "cyan"))
+    print(colored("💡 Manual triggers available:", "cyan"))
+    print(colored("   • 'refresh_signal.txt' → Refresh OHLCV data (keeps current list)", "white"))
+    print(colored("   • 'update_list_signal.txt' → Update Top 100 ranking + refresh data", "white"))
 
 
 async def main():

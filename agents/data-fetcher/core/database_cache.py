@@ -17,8 +17,8 @@ import pandas as pd
 from termcolor import colored
 
 # Database path from environment
-SHARED_DATA_PATH = os.getenv("SHARED_DATA_PATH", "/app/shared/data_cache")
-DB_PATH = f"{SHARED_DATA_PATH}/trading_data.db"
+SHARED_DATA_PATH = os.getenv("SHARED_DATA_PATH", "/app/shared")
+DB_PATH = f"{SHARED_DATA_PATH}/data_cache/trading_data.db"
 
 
 class DatabaseCache:
@@ -50,6 +50,24 @@ class DatabaseCache:
                 volume_24h REAL,
                 fetched_at TEXT
             )
+        ''')
+        
+        # Update status table (tracks fetcher status for frontend)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS update_status (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                status TEXT DEFAULT 'IDLE',
+                last_update TEXT,
+                last_update_duration_sec REAL,
+                symbols_updated INTEGER DEFAULT 0,
+                candles_updated INTEGER DEFAULT 0,
+                CHECK (id = 1)
+            )
+        ''')
+        
+        # Insert default status if not exists
+        cur.execute('''
+            INSERT OR IGNORE INTO update_status (id, status) VALUES (1, 'IDLE')
         ''')
         
         # OHLCV candles table (updated every 15 minutes)
@@ -295,3 +313,66 @@ class DatabaseCache:
         
         if deleted > 0:
             logging.info(f"🧹 Cleaned up {deleted} old candles")
+    
+    # =========================================
+    # UPDATE STATUS METHODS
+    # =========================================
+    
+    def set_status_updating(self):
+        """Set status to UPDATING when starting data fetch"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        cur.execute('''
+            UPDATE update_status 
+            SET status = 'UPDATING'
+            WHERE id = 1
+        ''')
+        conn.commit()
+        conn.close()
+        logging.info("🔄 Status: UPDATING")
+    
+    def set_status_idle(self, symbols_updated: int = 0, candles_updated: int = 0, duration_sec: float = 0):
+        """Set status to IDLE after completing data fetch"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        cur.execute('''
+            UPDATE update_status 
+            SET status = 'IDLE',
+                last_update = ?,
+                last_update_duration_sec = ?,
+                symbols_updated = ?,
+                candles_updated = ?
+            WHERE id = 1
+        ''', (now, duration_sec, symbols_updated, candles_updated))
+        conn.commit()
+        conn.close()
+        logging.info(f"✅ Status: IDLE (updated {symbols_updated} symbols, {candles_updated} candles in {duration_sec:.1f}s)")
+    
+    def get_update_status(self) -> Dict:
+        """Get current update status for frontend"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT status, last_update, last_update_duration_sec, 
+                   symbols_updated, candles_updated
+            FROM update_status WHERE id = 1
+        ''')
+        row = cur.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'status': row[0] or 'IDLE',
+                'last_update': row[1],
+                'duration_sec': row[2] or 0,
+                'symbols_updated': row[3] or 0,
+                'candles_updated': row[4] or 0
+            }
+        return {
+            'status': 'IDLE',
+            'last_update': None,
+            'duration_sec': 0,
+            'symbols_updated': 0,
+            'candles_updated': 0
+        }

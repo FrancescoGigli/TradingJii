@@ -1,15 +1,12 @@
 """
-Tabs package for the Crypto Dashboard
+📑 Tab Components for the Crypto Dashboard
+Only two tabs: Top 100 Coins and Coin Analysis
 """
 
 from .top_coins import render_top_coins_tab
-from .advanced_charts import render_advanced_charts_tab
-from .volume_analysis import render_volume_analysis_tab
-from .technical import render_technical_tab
+from .analysis import render_analysis_tab
 
 __all__ = [
     'render_top_coins_tab',
-    'render_advanced_charts_tab',
-    'render_volume_analysis_tab',
-    'render_technical_tab'
+    'render_analysis_tab',
 ]

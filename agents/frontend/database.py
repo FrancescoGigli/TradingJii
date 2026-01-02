@@ -5,7 +5,7 @@ Database access functions for the Crypto Dashboard
 import sqlite3
 from pathlib import Path
 import pandas as pd
-from config import DB_PATH
+from config import DB_PATH, CANDLES_LIMIT
 
 
 def get_connection():
@@ -43,14 +43,27 @@ def get_top_symbols():
 
 
 def get_symbols():
-    """Get list of distinct symbols"""
+    """Get list of distinct symbols ordered by volume (from top_symbols table)"""
     conn = get_connection()
     if not conn:
         return []
     try:
         cur = conn.cursor()
-        cur.execute('SELECT DISTINCT symbol FROM ohlcv_data ORDER BY symbol')
-        return [r[0] for r in cur.fetchall()]
+        # First try to get from top_symbols (ordered by rank = volume)
+        cur.execute('''
+            SELECT ts.symbol 
+            FROM top_symbols ts
+            INNER JOIN (SELECT DISTINCT symbol FROM ohlcv_data) od ON ts.symbol = od.symbol
+            ORDER BY ts.rank ASC
+        ''')
+        symbols = [r[0] for r in cur.fetchall()]
+        
+        # Fallback to alphabetical if no top_symbols
+        if not symbols:
+            cur.execute('SELECT DISTINCT symbol FROM ohlcv_data ORDER BY symbol')
+            symbols = [r[0] for r in cur.fetchall()]
+        
+        return symbols
     except Exception:
         return []
     finally:
@@ -75,7 +88,7 @@ def get_timeframes(symbol):
         conn.close()
 
 
-def get_ohlcv(symbol, timeframe, limit=200):
+def get_ohlcv(symbol, timeframe, limit=CANDLES_LIMIT):
     """Get OHLCV data for a symbol and timeframe"""
     conn = get_connection()
     if not conn:
@@ -126,5 +139,53 @@ def get_stats():
         }
     except Exception:
         return {}
+    finally:
+        conn.close()
+
+
+def get_update_status():
+    """Get current update status from data-fetcher"""
+    conn = get_connection()
+    if not conn:
+        return {
+            'status': 'OFFLINE',
+            'last_update': None,
+            'duration_sec': 0,
+            'symbols_updated': 0,
+            'candles_updated': 0
+        }
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT status, last_update, last_update_duration_sec, 
+                   symbols_updated, candles_updated
+            FROM update_status WHERE id = 1
+        ''')
+        row = cur.fetchone()
+        
+        if row:
+            return {
+                'status': row[0] or 'IDLE',
+                'last_update': row[1],
+                'duration_sec': row[2] or 0,
+                'symbols_updated': row[3] or 0,
+                'candles_updated': row[4] or 0
+            }
+        return {
+            'status': 'IDLE',
+            'last_update': None,
+            'duration_sec': 0,
+            'symbols_updated': 0,
+            'candles_updated': 0
+        }
+    except Exception:
+        # Table might not exist yet
+        return {
+            'status': 'OFFLINE',
+            'last_update': None,
+            'duration_sec': 0,
+            'symbols_updated': 0,
+            'candles_updated': 0
+        }
     finally:
         conn.close()

@@ -59,13 +59,32 @@ class CryptoDataFetcher:
     
     async def get_usdt_perpetual_symbols(self) -> List[str]:
         """Get all USDT perpetual symbols, excluding options"""
+        import re
         markets = await self.load_markets()
-        symbols = [
-            symbol for symbol in markets.keys()
-            if '/USDT:USDT' in symbol 
-            and markets[symbol].get('active', False)
-            and '-' not in symbol.split('/')[0]  # Exclude options (e.g.: BTC-251226-90000-C)
-        ]
+        
+        # Pattern to detect options: contains date pattern like -260102- or -251226-
+        option_pattern = re.compile(r'-\d{6}-')
+        
+        symbols = []
+        for symbol in markets.keys():
+            if '/USDT:USDT' not in symbol:
+                continue
+            if not markets[symbol].get('active', False):
+                continue
+            
+            # Get base symbol (before /USDT)
+            base = symbol.split('/')[0]
+            
+            # Exclude options (e.g.: BTC-251226-90000-C, ETH-260102-1000-P)
+            if '-' in base:
+                continue
+            
+            # Double check: exclude if matches option pattern in full symbol
+            if option_pattern.search(symbol):
+                continue
+                
+            symbols.append(symbol)
+        
         return symbols
     
     async def get_ticker_volume(self, symbol: str) -> tuple:
@@ -255,12 +274,18 @@ async def fetch_candles_for_symbols(exchange, db_cache, symbols: List[str] = Non
         symbols: Symbol list (if None, uses database symbols)
         timeframes: Timeframe list (if None, uses config.ENABLED_TIMEFRAMES)
     """
+    import time
+    start_time = time.time()
+    
     stats = {
         'symbols_processed': 0,
         'candles_saved': 0,
         'errors': 0,
         'downloaded_symbols': []
     }
+    
+    # Set status to UPDATING
+    db_cache.set_status_updating()
     
     async with CryptoDataFetcher(exchange) as fetcher:
         await fetcher.load_markets()
@@ -283,7 +308,8 @@ async def fetch_candles_for_symbols(exchange, db_cache, symbols: List[str] = Non
             print(colored(f"⏰ TIMEFRAME: {tf}", "magenta", attrs=['bold']))
             print(colored(f"{'='*60}", "magenta"))
             
-            data = await fetcher.download_symbols(symbols, tf, config.CANDLES_LIMIT)
+            # Scarica CANDLES_LIMIT + WARMUP per avere indicatori validi fin dall'inizio
+            data = await fetcher.download_symbols(symbols, tf, config.TOTAL_CANDLES_TO_FETCH)
             
             for symbol, df in data.items():
                 if df is not None and len(df) > 0:
@@ -301,6 +327,14 @@ async def fetch_candles_for_symbols(exchange, db_cache, symbols: List[str] = Non
         
         fetcher.print_downloaded_summary()
     
+    # Calculate duration and set status to IDLE
+    duration = time.time() - start_time
+    db_cache.set_status_idle(
+        symbols_updated=len(stats.get('downloaded_symbols', [])),
+        candles_updated=stats['candles_saved'],
+        duration_sec=duration
+    )
+    
     return stats
 
 
@@ -309,14 +343,20 @@ async def full_refresh(exchange, db_cache):
     Execute full refresh: update top symbols list and download all candles.
     Called at startup and when manually requested from frontend.
     """
+    import time
+    start_time = time.time()
+    
     print(colored("\n" + "="*60, "cyan", attrs=['bold']))
     print(colored("🔄 FULL REFRESH - Top Symbols + Candles", "cyan", attrs=['bold']))
     print(colored("="*60, "cyan", attrs=['bold']))
     
+    # Set status to UPDATING at start of full refresh
+    db_cache.set_status_updating()
+    
     # 1. Fetch and save top symbols
     symbols = await fetch_top_symbols_and_save(exchange, db_cache)
     
-    # 2. Download candles for all timeframes
+    # 2. Download candles for all timeframes (this will set IDLE at the end)
     stats = await fetch_candles_for_symbols(exchange, db_cache, symbols)
     
     return stats

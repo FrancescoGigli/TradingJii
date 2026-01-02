@@ -56,6 +56,14 @@ TIMEFRAME_DEFAULT: str = "15m"
 # Numero di candele da salvare per ogni simbolo
 CANDLES_LIMIT = 200
 
+# Candele extra per il warmup degli indicatori tecnici
+# (EMA 50 = 50, MACD = 35, RSI = 14, Bollinger = 20)
+# Consigliato: almeno 100 candele per copertura completa su tutti i timeframe
+WARMUP_CANDLES = 100
+
+# Candele totali da scaricare (CANDLES_LIMIT + WARMUP_CANDLES)
+TOTAL_CANDLES_TO_FETCH = CANDLES_LIMIT + WARMUP_CANDLES
+
 # Numero di simboli da analizzare (top per volume)
 TOP_SYMBOLS_COUNT = 100
 
