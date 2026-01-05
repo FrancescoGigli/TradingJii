@@ -108,11 +108,38 @@ Apri nel browser: **http://localhost:8501**
 
 Il dashboard Streamlit offre:
 
+### Tab 1: Top 100 Coins
+- **🏆 Classifica** - Top 100 crypto per volume 24h
+- **📊 Market Overview** - Grafici a barre e pie chart
+- **🔍 Ricerca e filtri** - Cerca e ordina per volume
+
+### Tab 2: Coin Analysis
 - **📈 Grafici Candlestick** interattivi con Plotly
 - **📊 Grafici Volume** con colori buy/sell
 - **💰 Metriche** - Prezzo, High/Low, Volume, Variazione %
-- **🔍 Filtri** - Simbolo, Timeframe, Numero candele
-- **📋 Tabella dati** - Ultimi 20 dati OHLCV
+- **🔬 Indicatori Tecnici** - RSI, MACD, Bollinger Bands, ATR, VWAP
+- **🎯 Segnali Trading** - BUY/SELL/NEUTRAL basati sugli indicatori
+
+### Tab 3: Backtest 🆕
+- **🔄 Visual Backtesting** - Simula strategie sui dati storici
+- **🎯 Confidence Score** - Score da -100 (SHORT) a +100 (LONG)
+- **📈 Grafico con Marker** - Entry/Exit visualizzati sul candlestick
+- **📊 Statistiche** - Win Rate, Total Return, Average Trade
+- **📋 Trade History** - Lista dettagliata dei trade simulati
+
+#### Come funziona il Backtest:
+1. Il sistema calcola un **Confidence Score** basato su:
+   - **RSI** (±33.33 punti): Ipervenduto = LONG, Ipercomprato = SHORT
+   - **MACD** (±33.33 punti): MACD > Signal = LONG, MACD < Signal = SHORT
+   - **Bollinger** (±33.33 punti): Prezzo vicino lower = LONG, vicino upper = SHORT
+
+2. **Regole di Entry**:
+   - LONG quando score > +60
+   - SHORT quando score < -60
+
+3. **Regole di Exit**:
+   - Exit LONG quando score < -30
+   - Exit SHORT quando score > +30
 
 ## 🔧 Comandi Utili
 

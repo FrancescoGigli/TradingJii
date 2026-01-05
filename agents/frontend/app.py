@@ -2,7 +2,7 @@
 📊 Crypto Dashboard Pro - Advanced Dark Theme
 
 Dashboard avanzata per visualizzare dati crypto
-Con Tab per Top 100 Coins, Charts, Volume Analysis e Technical Indicators
+Con Tab per Top 100 Coins, Charts, Volume Analysis, Technical Indicators e Backtest
 
 Entry point principale dell'applicazione.
 """
@@ -15,7 +15,8 @@ from styles import inject_theme
 from components.sidebar import render_sidebar
 from components.tabs import (
     render_top_coins_tab,
-    render_analysis_tab
+    render_analysis_tab,
+    render_backtest_tab
 )
 
 
@@ -69,9 +70,10 @@ def main():
         render_sidebar()
     
     # Main content - TABS
-    tab1, tab2 = st.tabs([
+    tab1, tab2, tab3 = st.tabs([
         "📊 Top 100 Coins", 
-        "📈 Coin Analysis"
+        "📈 Coin Analysis",
+        "🔄 Backtest"
     ])
     
     with tab1:
@@ -79,6 +81,9 @@ def main():
     
     with tab2:
         render_analysis_tab()
+    
+    with tab3:
+        render_backtest_tab()
     
     # Footer
     st.markdown(FOOTER_HTML, unsafe_allow_html=True)
