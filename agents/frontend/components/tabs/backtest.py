@@ -6,6 +6,7 @@ Shows:
 - Confidence score bar for each candle
 - Component breakdown (RSI, MACD, BB contributions)
 - Trade statistics
+- Detailed signals list with mini analysis
 """
 
 import streamlit as st
@@ -215,8 +216,8 @@ def render_backtest_tab():
     st.plotly_chart(backtest_fig, use_container_width=True)
     
     # Show warning if no trades were generated
-    trades_df = result.trades.to_dataframe()
-    if trades_df.empty:
+    trades_list = result.trades.trades
+    if not trades_list:
         conf_min = result.confidence_scores.min()
         conf_max = result.confidence_scores.max()
         
@@ -231,6 +232,235 @@ def render_backtest_tab():
         - Try more volatile timeframes (1h, 4h)
         - Try more volatile coins (altcoins vs BTC)
         """)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # SIGNALS DETAIL LIST
+    # ═══════════════════════════════════════════════════════════════════
+    if trades_list:
+        st.markdown("---")
+        st.markdown("### 📋 Signal Details")
+        st.markdown("""
+        <p style="color: #c0c0c0; font-size: 0.9rem;">
+        Select a trade from the list to see complete indicator details and analysis.
+        </p>
+        """, unsafe_allow_html=True)
+        
+        # Create trade selector
+        trade_options = []
+        for trade in trades_list:
+            emoji = "🟢" if trade.trade_type.value == "LONG" else "🔴"
+            result_emoji = ""
+            if trade.is_closed:
+                result_emoji = "✅" if trade.is_winner else "❌"
+            else:
+                result_emoji = "⏳"
+            
+            # Format entry time
+            entry_time_str = trade.entry_time.strftime('%m/%d %H:%M') if hasattr(trade.entry_time, 'strftime') else str(trade.entry_time)[:16]
+            
+            pnl_str = f" ({trade.pnl_pct:+.2f}%)" if trade.pnl_pct is not None else ""
+            trade_options.append(f"{result_emoji} #{trade.trade_id} {emoji} {trade.trade_type.value} @ {entry_time_str}{pnl_str}")
+        
+        # Selector for trade
+        selected_trade_idx = st.selectbox(
+            "🔍 Select Trade",
+            range(len(trade_options)),
+            format_func=lambda x: trade_options[x],
+            key="selected_trade"
+        )
+        
+        # Show selected trade details
+        if selected_trade_idx is not None:
+            selected_trade = trades_list[selected_trade_idx]
+            
+            # Get indicator values at entry time
+            entry_idx = df_full.index.get_loc(selected_trade.entry_time)
+            
+            # Get component scores at entry
+            rsi_score_entry = result.signal_components.rsi_score.iloc[entry_idx]
+            macd_score_entry = result.signal_components.macd_score.iloc[entry_idx]
+            bb_score_entry = result.signal_components.bb_score.iloc[entry_idx]
+            total_score_entry = result.signal_components.total_score.iloc[entry_idx]
+            
+            # Trade details in styled container
+            st.markdown("#### 📊 Entry Details")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.markdown(f"""
+                <div style="background: #1e1e2e; padding: 12px; border-radius: 8px; border: 1px solid #3a3a5a;">
+                    <p style="color: #888; margin: 0 0 4px 0; font-size: 0.8rem;">⏱️ Entry Time</p>
+                    <p style="color: #fff; margin: 0; font-size: 0.95rem; font-weight: 500;">{selected_trade.entry_time.strftime('%Y-%m-%d %H:%M') if hasattr(selected_trade.entry_time, 'strftime') else str(selected_trade.entry_time)[:16]}</p>
+                    <p style="color: #888; margin: 10px 0 4px 0; font-size: 0.8rem;">💰 Entry Price</p>
+                    <p style="color: #fff; margin: 0; font-size: 0.95rem; font-weight: 500;">${selected_trade.entry_price:,.2f}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                trade_color = "#00ff88" if selected_trade.trade_type.value == "LONG" else "#ff4757"
+                trade_emoji = "🟢" if selected_trade.trade_type.value == "LONG" else "🔴"
+                st.markdown(f"""
+                <div style="background: #1e1e2e; padding: 12px; border-radius: 8px; border: 1px solid #3a3a5a;">
+                    <p style="color: #888; margin: 0 0 4px 0; font-size: 0.8rem;">{trade_emoji} Type</p>
+                    <p style="color: {trade_color}; margin: 0; font-size: 0.95rem; font-weight: 600;">{selected_trade.trade_type.value}</p>
+                    <p style="color: #888; margin: 10px 0 4px 0; font-size: 0.8rem;">🎯 Confidence</p>
+                    <p style="color: {trade_color}; margin: 0; font-size: 0.95rem; font-weight: 600;">{selected_trade.entry_confidence:+.1f}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                if selected_trade.is_closed:
+                    st.markdown(f"""
+                    <div style="background: #1e1e2e; padding: 12px; border-radius: 8px; border: 1px solid #3a3a5a;">
+                        <p style="color: #888; margin: 0 0 4px 0; font-size: 0.8rem;">⏱️ Exit Time</p>
+                        <p style="color: #fff; margin: 0; font-size: 0.95rem; font-weight: 500;">{selected_trade.exit_time.strftime('%Y-%m-%d %H:%M') if hasattr(selected_trade.exit_time, 'strftime') else str(selected_trade.exit_time)[:16]}</p>
+                        <p style="color: #888; margin: 10px 0 4px 0; font-size: 0.8rem;">💰 Exit Price</p>
+                        <p style="color: #fff; margin: 0; font-size: 0.95rem; font-weight: 500;">${selected_trade.exit_price:,.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div style="background: #1e1e2e; padding: 12px; border-radius: 8px; border: 1px solid #3a3a5a;">
+                        <p style="color: #888; margin: 0 0 4px 0; font-size: 0.8rem;">⏱️ Exit Time</p>
+                        <p style="color: #ffaa00; margin: 0; font-size: 0.95rem; font-weight: 500;">⏳ OPEN</p>
+                        <p style="color: #888; margin: 10px 0 4px 0; font-size: 0.8rem;">💰 Exit Price</p>
+                        <p style="color: #ffaa00; margin: 0; font-size: 0.95rem; font-weight: 500;">--</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            with col4:
+                if selected_trade.is_closed:
+                    pnl_color = "#00ff88" if selected_trade.is_winner else "#ff4757"
+                    result_text = "✅ WIN" if selected_trade.is_winner else "❌ LOSS"
+                    st.markdown(f"""
+                    <div style="background: #1e1e2e; padding: 12px; border-radius: 8px; border: 1px solid #3a3a5a;">
+                        <p style="color: #888; margin: 0 0 4px 0; font-size: 0.8rem;">📈 P&L</p>
+                        <p style="color: {pnl_color}; margin: 0; font-size: 1.1rem; font-weight: 700;">{selected_trade.pnl_pct:+.2f}%</p>
+                        <p style="color: #888; margin: 10px 0 4px 0; font-size: 0.8rem;">Result</p>
+                        <p style="color: {pnl_color}; margin: 0; font-size: 0.95rem; font-weight: 600;">{result_text}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div style="background: #1e1e2e; padding: 12px; border-radius: 8px; border: 1px solid #3a3a5a;">
+                        <p style="color: #888; margin: 0 0 4px 0; font-size: 0.8rem;">📈 P&L</p>
+                        <p style="color: #ffaa00; margin: 0; font-size: 1.1rem; font-weight: 700;">⏳ Pending</p>
+                        <p style="color: #888; margin: 10px 0 4px 0; font-size: 0.8rem;">Result</p>
+                        <p style="color: #ffaa00; margin: 0; font-size: 0.95rem; font-weight: 600;">⏳ OPEN</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Indicator breakdown
+            st.markdown("#### 🔬 Indicator Breakdown (at Entry)")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                rsi_color = "#00ff88" if rsi_score_entry > 10 else "#ff4757" if rsi_score_entry < -10 else "#ffaa00"
+                rsi_desc = "Oversold (LONG)" if rsi_score_entry > 15 else "Overbought (SHORT)" if rsi_score_entry < -15 else "Neutral"
+                st.markdown(f"""
+                <div style="background: #1e1e2e; padding: 15px; border-radius: 8px; border-left: 4px solid {rsi_color};">
+                    <p style="color: #fff; margin: 0 0 8px 0; font-weight: 600;">📊 RSI</p>
+                    <p style="font-size: 1.4rem; margin: 0 0 8px 0; color: {rsi_color}; font-weight: 700;">{rsi_score_entry:+.1f}</p>
+                    <p style="color: #aaa; font-size: 0.85rem; margin: 0;">{rsi_desc}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                macd_color = "#00ff88" if macd_score_entry > 10 else "#ff4757" if macd_score_entry < -10 else "#ffaa00"
+                macd_desc = "Bullish Cross" if macd_score_entry > 15 else "Bearish Cross" if macd_score_entry < -15 else "Neutral"
+                st.markdown(f"""
+                <div style="background: #1e1e2e; padding: 15px; border-radius: 8px; border-left: 4px solid {macd_color};">
+                    <p style="color: #fff; margin: 0 0 8px 0; font-weight: 600;">📈 MACD</p>
+                    <p style="font-size: 1.4rem; margin: 0 0 8px 0; color: {macd_color}; font-weight: 700;">{macd_score_entry:+.1f}</p>
+                    <p style="color: #aaa; font-size: 0.85rem; margin: 0;">{macd_desc}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                bb_color = "#00ff88" if bb_score_entry > 10 else "#ff4757" if bb_score_entry < -10 else "#ffaa00"
+                bb_desc = "Near Lower Band" if bb_score_entry > 15 else "Near Upper Band" if bb_score_entry < -15 else "Mid Band"
+                st.markdown(f"""
+                <div style="background: #1e1e2e; padding: 15px; border-radius: 8px; border-left: 4px solid {bb_color};">
+                    <p style="color: #fff; margin: 0 0 8px 0; font-weight: 600;">📉 Bollinger</p>
+                    <p style="font-size: 1.4rem; margin: 0 0 8px 0; color: {bb_color}; font-weight: 700;">{bb_score_entry:+.1f}</p>
+                    <p style="color: #aaa; font-size: 0.85rem; margin: 0;">{bb_desc}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col4:
+                total_color = "#00ff88" if total_score_entry > 0 else "#ff4757"
+                total_desc = "LONG Signal" if total_score_entry > entry_threshold else "SHORT Signal" if total_score_entry < -entry_threshold else "Below threshold"
+                st.markdown(f"""
+                <div style="background: #2a2a3e; padding: 15px; border-radius: 8px; border-left: 4px solid {total_color};">
+                    <p style="color: #fff; margin: 0 0 8px 0; font-weight: 600;">🎯 TOTAL</p>
+                    <p style="font-size: 1.4rem; margin: 0 0 8px 0; color: {total_color}; font-weight: 700;">{total_score_entry:+.1f}</p>
+                    <p style="color: #aaa; font-size: 0.85rem; margin: 0;">{total_desc}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Mini Analysis
+            st.markdown("#### 🧠 Signal Analysis")
+            
+            # Determine which indicators contributed most
+            contributions = [
+                ("RSI", rsi_score_entry),
+                ("MACD", macd_score_entry),
+                ("Bollinger", bb_score_entry)
+            ]
+            contributions.sort(key=lambda x: abs(x[1]), reverse=True)
+            
+            main_contributor = contributions[0]
+            second_contributor = contributions[1]
+            
+            trade_type = selected_trade.trade_type.value
+            
+            # Build analysis text using native Streamlit
+            direction = "buying" if trade_type == "LONG" else "selling"
+            threshold_text = f"+{entry_threshold}" if trade_type == "LONG" else f"-{entry_threshold}"
+            
+            st.markdown(f"""
+            **📊 {trade_type} Signal Analysis:**
+            
+            The system identified a {direction} opportunity with confidence score of **{total_score_entry:+.1f}** 
+            ({"above" if trade_type == "LONG" else "below"} the threshold of {threshold_text}).
+            
+            **Main Contributing Factors:**
+            - **{main_contributor[0]}** contributed most with score **{main_contributor[1]:+.1f}**
+            - **{second_contributor[0]}** supported with score **{second_contributor[1]:+.1f}**
+            """)
+            
+            # Indicator details
+            st.markdown("**Indicator Details:**")
+            
+            if trade_type == "LONG":
+                if rsi_score_entry > 15:
+                    st.markdown("- 📈 RSI indicates **oversold** conditions, suggesting potential bounce")
+                if macd_score_entry > 15:
+                    st.markdown("- 📈 MACD shows **bullish momentum** with line above signal")
+                if bb_score_entry > 15:
+                    st.markdown("- 📈 Price near **lower Bollinger Band**, indicating potential undervaluation")
+            else:
+                if rsi_score_entry < -15:
+                    st.markdown("- 📉 RSI indicates **overbought** conditions, suggesting potential pullback")
+                if macd_score_entry < -15:
+                    st.markdown("- 📉 MACD shows **bearish momentum** with line below signal")
+                if bb_score_entry < -15:
+                    st.markdown("- 📉 Price near **upper Bollinger Band**, indicating potential overvaluation")
+            
+            # Check if no strong signals
+            if trade_type == "LONG" and not any([rsi_score_entry > 15, macd_score_entry > 15, bb_score_entry > 15]):
+                st.markdown("- No strong indicator signals detected")
+            elif trade_type == "SHORT" and not any([rsi_score_entry < -15, macd_score_entry < -15, bb_score_entry < -15]):
+                st.markdown("- No strong indicator signals detected")
+            
+            # Outcome section using native Streamlit
+            if selected_trade.is_closed:
+                if selected_trade.is_winner:
+                    st.success(f"✅ **Outcome: PROFIT +{selected_trade.pnl_pct:.2f}%** - Trade closed in profit. Indicator analysis was correct and price moved in the predicted direction.")
+                else:
+                    st.error(f"❌ **Outcome: LOSS {selected_trade.pnl_pct:.2f}%** - Trade closed at a loss. Market moved against the position. Possible causes: false signal, sudden volatility, or trend reversal.")
     
     # ═══════════════════════════════════════════════════════════════════
     # EXPLANATION
