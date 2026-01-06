@@ -107,3 +107,47 @@ def get_confidence_level(score: float) -> dict:
         if level_info['min'] <= score <= level_info['max']:
             return {'name': level_name, **level_info}
     return CONFIDENCE_LEVELS['neutral']
+
+
+# ============================================================
+# TRADING CONFIGURATION (for real trading)
+# ============================================================
+TRADING_CONFIG = {
+    # Default values (can be overridden from sidebar)
+    'default_stop_loss_pct': 2.0,
+    'default_take_profit_pct': 4.0,
+    'default_leverage': 5,
+    
+    # Risk limits
+    'max_leverage': 20,
+    'max_position_pct': 25.0,  # Max % of balance per position
+    'max_risk_per_trade_pct': 3.0,  # Max % of balance to risk
+    
+    # AI settings
+    'ai_model': 'gpt-4o',
+    'ai_temperature': 0.3,
+    'ai_max_tokens': 1000,
+}
+
+
+# ============================================================
+# API SERVICE STATUS (for header display)
+# ============================================================
+def get_services_status() -> dict:
+    """Get status of all external services"""
+    status = {
+        'bybit': False,
+        'openai': False,
+        'cmc': False
+    }
+    
+    try:
+        from services import get_bybit_service, get_openai_service, get_market_intelligence
+        
+        status['bybit'] = get_bybit_service().is_available
+        status['openai'] = get_openai_service().is_available
+        status['cmc'] = get_market_intelligence().is_sentiment_available
+    except Exception:
+        pass
+    
+    return status

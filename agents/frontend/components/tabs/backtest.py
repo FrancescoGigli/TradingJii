@@ -400,6 +400,117 @@ def render_backtest_tab():
                 </div>
                 """, unsafe_allow_html=True)
             
+            # ═══════════════════════════════════════════════════════════════════
+            # AI ANALYSIS BUTTON
+            # ═══════════════════════════════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("#### 🤖 AI Analysis")
+            st.caption("Get GPT-4o analysis for this trade signal (requires OpenAI API key)")
+            
+            # AI Analysis button and result
+            ai_button_key = f"ai_analyze_{selected_trade.trade_id}"
+            
+            if st.button("🤖 Analyze with AI", key=ai_button_key, type="secondary", use_container_width=True):
+                with st.spinner("🤖 AI is analyzing this trade..."):
+                    try:
+                        from services import get_openai_service, get_market_intelligence
+                        
+                        openai_service = get_openai_service()
+                        market_intel = get_market_intelligence()
+                        
+                        if not openai_service.is_available:
+                            st.warning("⚠️ OpenAI API key not configured. Add OPENAI_API_KEY to your .env file.")
+                        else:
+                            # Get market context
+                            sentiment_dict = market_intel.get_sentiment_dict()
+                            news_text = market_intel.get_news_text(max_items=3)
+                            
+                            # Prepare indicators dict
+                            indicators_dict = {
+                                'rsi_score': rsi_score_entry,
+                                'macd_score': macd_score_entry,
+                                'bb_score': bb_score_entry,
+                                'total_score': total_score_entry
+                            }
+                            
+                            # Call AI
+                            ai_result = openai_service.analyze_trade(
+                                symbol=selected_name,
+                                trade_type=selected_trade.trade_type.value,
+                                entry_price=selected_trade.entry_price,
+                                indicators=indicators_dict,
+                                sentiment=sentiment_dict,
+                                news=news_text
+                            )
+                            
+                            if ai_result:
+                                # Store in session state for display
+                                st.session_state[f'ai_result_{selected_trade.trade_id}'] = ai_result
+                            else:
+                                st.error("❌ AI analysis failed. Check logs for details.")
+                                
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+            
+            # Display AI result if exists
+            ai_result_key = f'ai_result_{selected_trade.trade_id}'
+            if ai_result_key in st.session_state:
+                ai_result = st.session_state[ai_result_key]
+                
+                # AI Result Card
+                action_color = "#00ff88" if ai_result.is_approved else "#ff4757" if ai_result.action == "reject" else "#ffaa00"
+                action_emoji = "✅" if ai_result.is_approved else "❌" if ai_result.action == "reject" else "⏸️"
+                risk_color = "#00ff88" if ai_result.risk_assessment == "low" else "#ffaa00" if ai_result.risk_assessment == "medium" else "#ff4757"
+                
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+                            border: 1px solid {action_color}; border-radius: 12px; padding: 20px; margin: 15px 0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <div>
+                            <span style="font-size: 1.3rem; font-weight: bold; color: {action_color};">
+                                {action_emoji} {ai_result.action.upper()}
+                            </span>
+                            <span style="color: #888; margin-left: 10px;">
+                                Confidence: {ai_result.confidence:.0f}%
+                            </span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="background: {risk_color}22; color: {risk_color}; 
+                                         padding: 4px 12px; border-radius: 20px; font-size: 0.8rem;">
+                                Risk: {ai_result.risk_assessment.upper()}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <div style="background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+                        <p style="color: #e0e0e0; margin: 0; font-size: 0.95rem; line-height: 1.6;">
+                            {ai_result.reasoning}
+                        </p>
+                    </div>
+                    
+                    <div style="margin-bottom: 10px;">
+                        <span style="color: #888; font-size: 0.8rem;">KEY FACTORS:</span>
+                        <ul style="margin: 5px 0 0 0; padding-left: 20px;">
+                            {"".join([f'<li style="color: #c0c0c0; font-size: 0.85rem; margin: 3px 0;">{factor}</li>' for factor in ai_result.key_factors[:4]])}
+                        </ul>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; align-items: center; 
+                                border-top: 1px solid rgba(255,255,255,0.1); padding-top: 10px; margin-top: 10px;">
+                        <span style="color: #888; font-size: 0.75rem;">
+                            Confidence Boost: <span style="color: {'#00ff88' if ai_result.confidence_boost > 0 else '#ff4757'};">
+                                {ai_result.confidence_boost:+.0f}
+                            </span>
+                        </span>
+                        <span style="color: #666; font-size: 0.7rem;">
+                            Cost: ${ai_result.cost_usd:.4f} | {ai_result.timestamp.strftime('%H:%M:%S')}
+                        </span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown("---")
+            
             # Mini Analysis
             st.markdown("#### 🧠 Signal Analysis")
             

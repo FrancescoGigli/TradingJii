@@ -65,6 +65,14 @@ def main():
     # Header
     st.markdown(HEADER_HTML, unsafe_allow_html=True)
     
+    # Persistent header bar with Balance/Sentiment/Services
+    try:
+        from components.header import render_header_bar
+        render_header_bar()
+    except Exception as e:
+        # Fallback: show simple metrics if header fails
+        pass
+    
     # Sidebar
     with st.sidebar:
         render_sidebar()

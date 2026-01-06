@@ -436,5 +436,29 @@ def render_update_list_button():
 def render_sidebar():
     """Render the complete sidebar"""
     render_control_panel()
+    render_portfolio_live()
+    render_trading_settings()
     render_refresh_button()
     render_update_list_button()
+
+
+def render_portfolio_live():
+    """Render live portfolio panel (balance + positions)"""
+    try:
+        from components.portfolio_monitor import render_portfolio_panel
+        render_portfolio_panel()
+    except ImportError as e:
+        st.warning("⚠️ Portfolio monitor not available")
+    except Exception as e:
+        st.error(f"Portfolio error: {e}")
+
+
+def render_trading_settings():
+    """Render trading settings in sidebar"""
+    try:
+        from trading.risk_manager import render_trading_settings_ui
+        render_trading_settings_ui()
+    except ImportError as e:
+        st.warning("⚠️ Trading settings not available")
+    except Exception as e:
+        st.error(f"Error loading trading settings: {e}")
