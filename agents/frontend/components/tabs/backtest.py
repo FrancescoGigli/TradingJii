@@ -74,6 +74,8 @@ def render_backtest_tab():
     
     # Advanced settings expander
     with st.expander("⚙️ Backtest Settings"):
+        # Signal settings
+        st.markdown("##### 📊 Signal Settings")
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -105,6 +107,62 @@ def render_backtest_tab():
                 step=1,
                 help="Minimum candles before exit allowed"
             )
+        
+        st.markdown("---")
+        
+        # Stop Loss / Take Profit settings
+        st.markdown("##### 🛑 Stop Loss / Take Profit")
+        
+        use_sl_tp = st.checkbox(
+            "Enable SL/TP exits",
+            value=BACKTEST_CONFIG.get('use_sl_tp', True),
+            help="Exit trades when Stop Loss or Take Profit levels are hit"
+        )
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            stop_loss_pct = st.slider(
+                "🛑 Stop Loss %",
+                min_value=0.5,
+                max_value=10.0,
+                value=float(BACKTEST_CONFIG.get('stop_loss_pct', 2.0)),
+                step=0.5,
+                help="Exit if loss exceeds this percentage",
+                disabled=not use_sl_tp
+            )
+        
+        with col2:
+            take_profit_pct = st.slider(
+                "🎯 Take Profit %",
+                min_value=1.0,
+                max_value=20.0,
+                value=float(BACKTEST_CONFIG.get('take_profit_pct', 4.0)),
+                step=0.5,
+                help="Exit if profit exceeds this percentage",
+                disabled=not use_sl_tp
+            )
+        
+        with col3:
+            max_holding = st.slider(
+                "⏰ Max Holding (candles)",
+                min_value=0,
+                max_value=200,
+                value=BACKTEST_CONFIG.get('max_holding_candles', 0),
+                step=10,
+                help="Force exit after N candles (0 = disabled)"
+            )
+        
+        # Store settings in session state for optimizer
+        st.session_state['backtest_settings'] = {
+            'entry_threshold': entry_threshold,
+            'exit_threshold': exit_threshold,
+            'min_holding': min_holding,
+            'stop_loss_pct': stop_loss_pct,
+            'take_profit_pct': take_profit_pct,
+            'use_sl_tp': use_sl_tp,
+            'max_holding_candles': max_holding
+        }
     
     # Run backtest button
     run_button = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
@@ -574,6 +632,406 @@ def render_backtest_tab():
                     st.error(f"❌ **Outcome: LOSS {selected_trade.pnl_pct:.2f}%** - Trade closed at a loss. Market moved against the position. Possible causes: false signal, sudden volatility, or trend reversal.")
     
     # ═══════════════════════════════════════════════════════════════════
+    # PARAMETER OPTIMIZER
+    # ═══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    with st.expander("🔬 Parameter Optimizer (Grid Search)", expanded=False):
+        st.markdown("""
+        <p style="color: #a0a0a0; font-size: 0.9rem;">
+        Find optimal SL/TP and entry threshold values using grid search. 
+        The optimizer tests all parameter combinations and ranks them by Sharpe Ratio.
+        </p>
+        """, unsafe_allow_html=True)
+        
+        # Parameter ranges
+        st.markdown("##### 📐 Parameter Ranges")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**🛑 Stop Loss %**")
+            sl_min = st.number_input("Min", value=1.0, step=0.5, key="sl_min")
+            sl_max = st.number_input("Max", value=5.0, step=0.5, key="sl_max")
+            sl_step = st.number_input("Step", value=0.5, step=0.5, key="sl_step")
+        
+        with col2:
+            st.markdown("**🎯 Take Profit %**")
+            tp_min = st.number_input("Min", value=2.0, step=0.5, key="tp_min")
+            tp_max = st.number_input("Max", value=10.0, step=0.5, key="tp_max")
+            tp_step = st.number_input("Step", value=1.0, step=0.5, key="tp_step")
+        
+        with col3:
+            st.markdown("**📊 Entry Threshold**")
+            entry_min = st.number_input("Min", value=15, step=5, key="entry_min")
+            entry_max = st.number_input("Max", value=40, step=5, key="entry_max")
+            entry_step = st.number_input("Step", value=5, step=5, key="entry_step")
+        
+        # Build param grid
+        import numpy as np
+        sl_values = list(np.arange(sl_min, sl_max + sl_step, sl_step))
+        tp_values = list(np.arange(tp_min, tp_max + tp_step, tp_step))
+        entry_values = list(range(int(entry_min), int(entry_max) + int(entry_step), int(entry_step)))
+        
+        total_combinations = len(sl_values) * len(tp_values) * len(entry_values)
+        
+        st.markdown(f"""
+        <div style="background: #1e1e2e; padding: 10px 15px; border-radius: 8px; margin: 10px 0;">
+            <span style="color: #888;">Total combinations to test: </span>
+            <span style="color: #00ff88; font-weight: bold;">{total_combinations}</span>
+            <span style="color: #666;"> (~{total_combinations * 0.05:.1f}s estimated)</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Run optimization button
+        if st.button("🚀 Run Optimization", type="primary", use_container_width=True, key="run_optimizer"):
+            from ai.optimizer.grid_search import GridSearchOptimizer
+            
+            param_grid = {
+                'stop_loss_pct': sl_values,
+                'take_profit_pct': tp_values,
+                'entry_threshold': entry_values
+            }
+            
+            optimizer = GridSearchOptimizer()
+            
+            progress_bar = st.progress(0, text="Starting optimization...")
+            
+            def update_progress(current, total):
+                progress_bar.progress(current / total, text=f"Testing {current}/{total} combinations...")
+            
+            result = optimizer.optimize(df_full, param_grid, progress_callback=update_progress)
+            
+            progress_bar.empty()
+            
+            # Store result in session state
+            st.session_state['optimization_result'] = result
+            st.rerun()
+        
+        # Display results if available
+        if 'optimization_result' in st.session_state:
+            result = st.session_state['optimization_result']
+            
+            st.markdown("---")
+            st.markdown("##### 🏆 Optimization Results")
+            
+            # Show period information
+            start_date = df_full.index[0].strftime('%Y-%m-%d %H:%M') if hasattr(df_full.index[0], 'strftime') else str(df_full.index[0])[:16]
+            end_date = df_full.index[-1].strftime('%Y-%m-%d %H:%M') if hasattr(df_full.index[-1], 'strftime') else str(df_full.index[-1])[:16]
+            
+            st.markdown(f"""
+            <div style="background: #1a1a2e; padding: 12px 18px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #2d2d4a;">
+                <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">⏱️ Execution:</span>
+                        <span style="color: #00ff88; font-weight: 600; margin-left: 5px;">{result.execution_time_sec:.1f}s</span>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">🔢 Combinations:</span>
+                        <span style="color: #ffffff; font-weight: 600; margin-left: 5px;">{result.total_combinations}</span>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">📅 Period:</span>
+                        <span style="color: #00d4ff; font-weight: 600; margin-left: 5px;">{start_date}</span>
+                        <span style="color: #888; margin: 0 5px;">→</span>
+                        <span style="color: #00d4ff; font-weight: 600;">{end_date}</span>
+                    </div>
+                    <div>
+                        <span style="color: #888; font-size: 0.8rem;">🕯️ Candles:</span>
+                        <span style="color: #ffffff; font-weight: 600; margin-left: 5px;">{len(df_full)}</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Best result card using native Streamlit
+            if result.best_by_sharpe:
+                best = result.best_by_sharpe
+                
+                st.success("🏆 **BEST CONFIGURATION FOUND**")
+                
+                # Main parameters row
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "🛑 Stop Loss",
+                        f"{best.params.get('stop_loss_pct', 0):.1f}%"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "🎯 Take Profit",
+                        f"{best.params.get('take_profit_pct', 0):.1f}%"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "📊 Entry Threshold",
+                        f"{int(best.params.get('entry_threshold', 0))}"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "📈 Sharpe Ratio",
+                        f"{best.sharpe_ratio:.2f}"
+                    )
+                
+                # Performance metrics row
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    delta_color = "normal" if best.total_return >= 0 else "inverse"
+                    st.metric(
+                        "💰 Return",
+                        f"{best.total_return:+.2f}%",
+                        delta_color=delta_color
+                    )
+                
+                with col2:
+                    st.metric(
+                        "🎯 Win Rate",
+                        f"{best.win_rate:.1f}%"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "📊 Trades",
+                        f"{best.total_trades}"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "⚖️ Profit Factor",
+                        f"{best.profit_factor:.2f}"
+                    )
+                
+                st.markdown("")
+                
+                # Apply best values button
+                if st.button("📌 Apply Best Values", type="secondary", use_container_width=True, key="apply_best"):
+                    st.session_state['apply_best_params'] = best.params
+                    st.info(f"✅ Best parameters: SL={best.params.get('stop_loss_pct', 0):.1f}%, TP={best.params.get('take_profit_pct', 0):.1f}%, Entry={int(best.params.get('entry_threshold', 0))}")
+            
+            st.markdown("---")
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # TOP 10 RESULTS - Premium Styled Table
+            # ═══════════════════════════════════════════════════════════════════
+            st.markdown("##### 📊 Top 10 Results (sorted by Sharpe Ratio)")
+            top_results = result.get_top_n(10, sort_by='sharpe')
+            
+            if top_results:
+                # CSS styles for the premium table - High contrast version
+                st.markdown("""
+                <style>
+                .opt-results-container {
+                    background: #1a1a2e;
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin: 15px 0;
+                    border: 1px solid #2d2d4a;
+                }
+                .opt-result-row {
+                    background: #252542;
+                    border-radius: 10px;
+                    padding: 15px 18px;
+                    margin: 10px 0;
+                    border-left: 5px solid #4a4a6a;
+                    transition: all 0.3s ease;
+                }
+                .opt-result-row:hover {
+                    transform: translateX(5px);
+                    box-shadow: 0 4px 20px rgba(0, 255, 136, 0.15);
+                    background: #2d2d52;
+                }
+                .opt-result-row.opt-gold {
+                    border-left: 5px solid #ffd700;
+                    background: linear-gradient(135deg, #3d3520 0%, #4a4025 100%);
+                }
+                .opt-result-row.opt-silver {
+                    border-left: 5px solid #e0e0e0;
+                    background: linear-gradient(135deg, #353545 0%, #404055 100%);
+                }
+                .opt-result-row.opt-bronze {
+                    border-left: 5px solid #e8a050;
+                    background: linear-gradient(135deg, #3d3025 0%, #4a3a2d 100%);
+                }
+                .opt-rank-badge {
+                    font-size: 1.5rem;
+                    font-weight: bold;
+                    min-width: 50px;
+                    display: inline-block;
+                    text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                }
+                .opt-rank-badge.opt-gold { color: #ffd700; }
+                .opt-rank-badge.opt-silver { color: #e0e0e0; }
+                .opt-rank-badge.opt-bronze { color: #e8a050; }
+                .opt-rank-badge.opt-normal { color: #9999aa; font-size: 1.2rem; }
+                .opt-params-section {
+                    display: flex;
+                    gap: 25px;
+                    flex-wrap: wrap;
+                    margin-bottom: 12px;
+                }
+                .opt-param-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                .opt-param-label {
+                    color: #b0b0c0;
+                    font-size: 0.85rem;
+                    font-weight: 500;
+                }
+                .opt-param-value {
+                    color: #ffffff;
+                    font-weight: 700;
+                    font-size: 1rem;
+                }
+                .opt-metrics-section {
+                    display: flex;
+                    gap: 30px;
+                    flex-wrap: wrap;
+                    padding-top: 12px;
+                    border-top: 1px solid rgba(255,255,255,0.15);
+                }
+                .opt-metric-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+                .opt-metric-label {
+                    color: #9999aa;
+                    font-size: 0.8rem;
+                    font-weight: 500;
+                }
+                .opt-metric-value {
+                    font-weight: 700;
+                    font-size: 0.95rem;
+                }
+                .opt-metric-value.opt-positive { color: #00ff88; text-shadow: 0 0 10px rgba(0,255,136,0.3); }
+                .opt-metric-value.opt-negative { color: #ff6b7a; text-shadow: 0 0 10px rgba(255,107,122,0.3); }
+                .opt-metric-value.opt-neutral { color: #ffffff; }
+                .opt-sharpe-bar-container {
+                    width: 70px;
+                    height: 8px;
+                    background: #3a3a5a;
+                    border-radius: 4px;
+                    overflow: hidden;
+                    margin-left: 10px;
+                }
+                .opt-sharpe-bar {
+                    height: 100%;
+                    background: linear-gradient(90deg, #00ff88 0%, #00d4ff 100%);
+                    border-radius: 4px;
+                    box-shadow: 0 0 8px rgba(0,255,136,0.5);
+                }
+                </style>
+                """, unsafe_allow_html=True)
+                
+                # Start results container
+                st.markdown('<div class="opt-results-container">', unsafe_allow_html=True)
+                
+                for idx, res in enumerate(top_results):
+                    # Determine rank styling
+                    rank = idx + 1
+                    if rank == 1:
+                        rank_class = "opt-gold"
+                        rank_emoji = "🥇"
+                        row_class = "opt-gold"
+                    elif rank == 2:
+                        rank_class = "opt-silver"
+                        rank_emoji = "🥈"
+                        row_class = "opt-silver"
+                    elif rank == 3:
+                        rank_class = "opt-bronze"
+                        rank_emoji = "🥉"
+                        row_class = "opt-bronze"
+                    else:
+                        rank_class = "opt-normal"
+                        rank_emoji = f"#{rank}"
+                        row_class = ""
+                    
+                    # Extract values
+                    sl_pct = res.params.get('stop_loss_pct', 0)
+                    tp_pct = res.params.get('take_profit_pct', 0)
+                    entry_th = int(res.params.get('entry_threshold', 0))
+                    
+                    # Return color
+                    return_color = "opt-positive" if res.total_return >= 0 else "opt-negative"
+                    win_color = "opt-positive" if res.win_rate >= 50 else "opt-negative" if res.win_rate < 40 else "opt-neutral"
+                    sharpe_color = "opt-positive" if res.sharpe_ratio >= 1.0 else "opt-neutral" if res.sharpe_ratio >= 0.5 else "opt-negative"
+                    
+                    # Sharpe bar width (max 2.0 = 100%)
+                    sharpe_width = min(res.sharpe_ratio / 2.0 * 100, 100)
+                    
+                    # Build the row HTML
+                    row_html = f'''
+                    <div class="opt-result-row {row_class}">
+                        <div style="display: flex; align-items: flex-start; gap: 15px;">
+                            <span class="opt-rank-badge {rank_class}">{rank_emoji}</span>
+                            <div style="flex: 1;">
+                                <div class="opt-params-section">
+                                    <div class="opt-param-item">
+                                        <span class="opt-param-label">🛑 SL:</span>
+                                        <span class="opt-param-value">{sl_pct:.1f}%</span>
+                                    </div>
+                                    <div class="opt-param-item">
+                                        <span class="opt-param-label">🎯 TP:</span>
+                                        <span class="opt-param-value">{tp_pct:.1f}%</span>
+                                    </div>
+                                    <div class="opt-param-item">
+                                        <span class="opt-param-label">📊 Entry:</span>
+                                        <span class="opt-param-value">{entry_th}</span>
+                                    </div>
+                                    <div class="opt-param-item">
+                                        <span class="opt-param-label">📈 Trades:</span>
+                                        <span class="opt-param-value">{res.total_trades}</span>
+                                    </div>
+                                </div>
+                                <div class="opt-metrics-section">
+                                    <div class="opt-metric-item">
+                                        <span class="opt-metric-label">Return:</span>
+                                        <span class="opt-metric-value {return_color}">{res.total_return:+.2f}%</span>
+                                    </div>
+                                    <div class="opt-metric-item">
+                                        <span class="opt-metric-label">Win Rate:</span>
+                                        <span class="opt-metric-value {win_color}">{res.win_rate:.1f}%</span>
+                                    </div>
+                                    <div class="opt-metric-item">
+                                        <span class="opt-metric-label">Sharpe:</span>
+                                        <span class="opt-metric-value {sharpe_color}">{res.sharpe_ratio:.2f}</span>
+                                        <div class="opt-sharpe-bar-container">
+                                            <div class="opt-sharpe-bar" style="width: {sharpe_width}%;"></div>
+                                        </div>
+                                    </div>
+                                    <div class="opt-metric-item">
+                                        <span class="opt-metric-label">Max DD:</span>
+                                        <span class="opt-metric-value opt-negative">-{res.max_drawdown:.1f}%</span>
+                                    </div>
+                                    <div class="opt-metric-item">
+                                        <span class="opt-metric-label">PF:</span>
+                                        <span class="opt-metric-value opt-neutral">{res.profit_factor:.2f}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    '''
+                    st.markdown(row_html, unsafe_allow_html=True)
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Summary note
+                st.markdown("""
+                <p style="color: #6c757d; font-size: 0.75rem; margin-top: 10px; text-align: center;">
+                    💡 Use "Apply Best Values" button above to apply the #1 configuration to your backtest settings
+                </p>
+                """, unsafe_allow_html=True)
+            else:
+                st.warning("No results to display. Run the optimization first.")
+    
+    # ═══════════════════════════════════════════════════════════════════
     # EXPLANATION
     # ═══════════════════════════════════════════════════════════════════
     with st.expander("ℹ️ How It Works", expanded=False):
@@ -594,9 +1052,10 @@ def render_backtest_tab():
         - **SHORT Entry**: Confidence < -Entry Threshold
         
         ### Exit Rules
-        - **Exit LONG**: Confidence drops below -Exit Threshold
-        - **Exit SHORT**: Confidence rises above +Exit Threshold
-        - Minimum holding period must pass before exit
+        - **Stop Loss**: Exit if loss exceeds SL % (if enabled)
+        - **Take Profit**: Exit if profit exceeds TP % (if enabled)
+        - **Max Holding**: Exit after N candles (if enabled)
+        - **Signal Reversal**: Exit on opposite signal (after min holding)
         
         ### Chart Legend
         - **▲ Green Triangle**: LONG entry point

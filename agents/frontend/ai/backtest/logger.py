@@ -1,11 +1,11 @@
 """
-📝 Backtest Logger - Salva i risultati del backtest in file di log
+📝 Backtest Logger - Save backtest results to log files
 
-Crea file di log leggeri in formato CSV per:
-- Ogni signal (LONG, SHORT, NEUTRAL)
+Creates lightweight log files in CSV format for:
+- Each signal (LONG, SHORT, NEUTRAL)
 - Confidence score
-- Componenti del segnale (RSI, MACD, BB)
-- Trade aperti/chiusi
+- Signal components (RSI, MACD, BB)
+- Open/closed trades
 """
 
 import os
@@ -21,8 +21,8 @@ from .trades import Trade, TradeType
 
 def safe_timestamp_str(ts) -> str:
     """
-    Converte un timestamp (datetime o pandas Timestamp) in stringa ISO.
-    Gestisce NaT e valori None in modo sicuro.
+    Converts a timestamp (datetime or pandas Timestamp) to ISO string.
+    Handles NaT and None values safely.
     """
     if ts is None:
         return ''
@@ -38,24 +38,24 @@ def safe_timestamp_str(ts) -> str:
         return ''
 
 
-# Directory per i log
+# Log directory
 LOG_DIR = Path("/app/shared/backtest_logs")
 
 
 def ensure_log_dir():
-    """Crea la directory dei log se non esiste"""
+    """Create log directory if it doesn't exist"""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_signal_log_path(symbol: str, timeframe: str) -> Path:
-    """Ottiene il path del file di log dei segnali"""
+    """Get path for signal log file"""
     ensure_log_dir()
     filename = f"signals_{symbol}_{timeframe}.csv"
     return LOG_DIR / filename
 
 
 def get_trade_log_path(symbol: str, timeframe: str) -> Path:
-    """Ottiene il path del file di log dei trade"""
+    """Get path for trade log file"""
     ensure_log_dir()
     filename = f"trades_{symbol}_{timeframe}.csv"
     return LOG_DIR / filename
@@ -75,24 +75,24 @@ def log_signal(
     macd_value: Optional[float] = None
 ):
     """
-    Logga un singolo segnale nel file CSV.
+    Log a single signal to the CSV file.
     
     Args:
-        symbol: Simbolo della crypto (es. BTCUSDT)
-        timeframe: Timeframe (es. 15m)
-        timestamp: Timestamp del segnale
-        confidence: Score di confidenza (-100 a +100)
-        signal_type: Tipo di segnale (LONG, SHORT, NEUTRAL)
-        rsi_score: Contributo RSI al confidence
-        macd_score: Contributo MACD al confidence
-        bb_score: Contributo Bollinger al confidence
-        price: Prezzo corrente
-        rsi_value: Valore RSI grezzo
-        macd_value: Valore MACD grezzo
+        symbol: Crypto symbol (e.g. BTCUSDT)
+        timeframe: Timeframe (e.g. 15m)
+        timestamp: Signal timestamp
+        confidence: Confidence score (-100 to +100)
+        signal_type: Signal type (LONG, SHORT, NEUTRAL)
+        rsi_score: RSI contribution to confidence
+        macd_score: MACD contribution to confidence
+        bb_score: Bollinger contribution to confidence
+        price: Current price
+        rsi_value: Raw RSI value
+        macd_value: Raw MACD value
     """
     log_path = get_signal_log_path(symbol, timeframe)
     
-    # Header per il CSV
+    # CSV headers
     headers = [
         'timestamp', 'symbol', 'timeframe', 'price',
         'confidence', 'signal_type',
@@ -101,7 +101,7 @@ def log_signal(
         'logged_at'
     ]
     
-    # Crea file con header se non esiste
+    # Create file with headers if it doesn't exist
     file_exists = log_path.exists()
     
     with open(log_path, 'a', newline='') as f:
@@ -132,16 +132,16 @@ def log_trade(
     trade: Trade
 ):
     """
-    Logga un trade completato nel file CSV.
+    Log a completed trade to the CSV file.
     
     Args:
-        symbol: Simbolo della crypto
+        symbol: Crypto symbol
         timeframe: Timeframe
-        trade: Oggetto Trade da loggare
+        trade: Trade object to log
     """
     log_path = get_trade_log_path(symbol, timeframe)
     
-    # Header per il CSV
+    # CSV headers
     headers = [
         'entry_time', 'exit_time', 'symbol', 'timeframe',
         'trade_type', 'entry_price', 'exit_price',
@@ -149,7 +149,7 @@ def log_trade(
         'logged_at'
     ]
     
-    # Crea file con header se non esiste
+    # Create file with headers if it doesn't exist
     file_exists = log_path.exists()
     
     with open(log_path, 'a', newline='') as f:
@@ -189,7 +189,7 @@ def log_backtest_summary(
     avg_loss: float
 ):
     """
-    Logga un riepilogo del backtest.
+    Log a backtest summary.
     """
     ensure_log_dir()
     summary_path = LOG_DIR / "backtest_summaries.csv"
@@ -230,10 +230,10 @@ def log_backtest_summary(
 
 def get_recent_signals(symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
     """
-    Legge gli ultimi N segnali dal log.
+    Read the last N signals from log.
     
     Returns:
-        DataFrame con gli ultimi segnali
+        DataFrame with the last signals
     """
     log_path = get_signal_log_path(symbol, timeframe)
     
@@ -249,10 +249,10 @@ def get_recent_signals(symbol: str, timeframe: str, limit: int = 100) -> pd.Data
 
 def get_trade_history(symbol: str, timeframe: str) -> pd.DataFrame:
     """
-    Legge lo storico trade dal log.
+    Read trade history from log.
     
     Returns:
-        DataFrame con lo storico trade
+        DataFrame with trade history
     """
     log_path = get_trade_log_path(symbol, timeframe)
     
@@ -267,16 +267,16 @@ def get_trade_history(symbol: str, timeframe: str) -> pd.DataFrame:
 
 def clear_logs(symbol: str = None, timeframe: str = None):
     """
-    Cancella i file di log.
+    Delete log files.
     
     Args:
-        symbol: Se specificato, cancella solo per quel simbolo
-        timeframe: Se specificato, cancella solo per quel timeframe
+        symbol: If specified, delete only for that symbol
+        timeframe: If specified, delete only for that timeframe
     """
     ensure_log_dir()
     
     if symbol and timeframe:
-        # Cancella file specifici
+        # Delete specific files
         signal_log = get_signal_log_path(symbol, timeframe)
         trade_log = get_trade_log_path(symbol, timeframe)
         
@@ -285,17 +285,17 @@ def clear_logs(symbol: str = None, timeframe: str = None):
         if trade_log.exists():
             trade_log.unlink()
     else:
-        # Cancella tutti i log
+        # Delete all logs
         for f in LOG_DIR.glob("*.csv"):
             f.unlink()
 
 
 def get_log_stats() -> Dict:
     """
-    Ottiene statistiche sui file di log.
+    Get statistics about log files.
     
     Returns:
-        Dizionario con statistiche
+        Dictionary with statistics
     """
     ensure_log_dir()
     

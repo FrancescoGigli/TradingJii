@@ -1,11 +1,11 @@
 """
 📊 Portfolio Monitor - Live Balance & Positions
 
-Agente che recupera automaticamente:
-- Balance USDT da Bybit
-- Posizioni aperte con PnL in tempo reale
+Agent that automatically retrieves:
+- USDT Balance from Bybit
+- Open positions with real-time PnL
 
-Si aggiorna ogni 30 secondi usando st_autorefresh già presente.
+Updates every 30 seconds using st_autorefresh already present.
 """
 
 import streamlit as st
@@ -18,8 +18,8 @@ from styles.colors import PALETTE
 
 def render_portfolio_panel():
     """
-    Render il pannello portfolio nella sidebar.
-    Mostra balance e posizioni live da Bybit.
+    Render the portfolio panel in the sidebar.
+    Shows live balance and positions from Bybit.
     """
     try:
         from services.bybit_service import get_bybit_service
@@ -27,68 +27,68 @@ def render_portfolio_panel():
         bybit = get_bybit_service()
         
         st.markdown("---")
-        st.markdown("### 💰 Portfolio Live")
+        st.markdown("### 💰 Live Portfolio")
         
         if not bybit.is_available:
-            st.warning("⚠️ Bybit API non configurata")
-            st.caption("Aggiungi BYBIT_API_KEY e BYBIT_API_SECRET al .env")
+            st.warning("⚠️ Bybit API not configured")
+            st.caption("Add BYBIT_API_KEY and BYBIT_API_SECRET to .env")
             return
         
         # ═══════════════════════════════════════════════════════════════════
         # BALANCE
         # ═══════════════════════════════════════════════════════════════════
-        with st.spinner("Caricamento balance..."):
+        with st.spinner("Loading balance..."):
             balance = bybit.get_balance()
         
         if balance.is_real:
-            # Mostra balance
+            # Show balance
             col1, col2 = st.columns(2)
             with col1:
                 st.metric(
-                    "💵 Balance Totale",
+                    "💵 Total Balance",
                     f"${balance.total_usdt:,.2f}",
-                    help="Balance totale USDT su Bybit"
+                    help="Total USDT balance on Bybit"
                 )
             with col2:
                 st.metric(
-                    "🟢 Disponibile",
+                    "🟢 Available",
                     f"${balance.available_usdt:,.2f}",
-                    help="USDT disponibile per trading"
+                    help="USDT available for trading"
                 )
             
             if balance.used_usdt > 0:
-                st.caption(f"🔒 In uso: ${balance.used_usdt:,.2f}")
+                st.caption(f"🔒 In use: ${balance.used_usdt:,.2f}")
         else:
-            st.error("❌ Impossibile recuperare balance")
-            st.caption("Controlla le chiavi API o riprova più tardi")
+            st.error("❌ Unable to retrieve balance")
+            st.caption("Check API keys or try again later")
         
         # ═══════════════════════════════════════════════════════════════════
-        # POSIZIONI APERTE
+        # OPEN POSITIONS
         # ═══════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.markdown("#### 📊 Posizioni Aperte")
+        st.markdown("#### 📊 Open Positions")
         
-        with st.spinner("Caricamento posizioni..."):
+        with st.spinner("Loading positions..."):
             positions = bybit.get_positions()
         
         if not positions:
-            st.info("📭 Nessuna posizione aperta")
+            st.info("📭 No open positions")
         else:
-            # Mostra ogni posizione
+            # Show each position
             for pos in positions:
                 render_position_card(pos)
         
-        # Timestamp ultimo aggiornamento
-        st.caption(f"🔄 Ultimo update: {datetime.now().strftime('%H:%M:%S')}")
+        # Last update timestamp
+        st.caption(f"🔄 Last update: {datetime.now().strftime('%H:%M:%S')}")
         
     except Exception as e:
-        st.error(f"❌ Errore: {str(e)}")
+        st.error(f"❌ Error: {str(e)}")
 
 
 def render_position_card(pos):
-    """Render una singola posizione come card"""
+    """Render a single position as a card"""
     
-    # Determina colori basati su direzione e PnL
+    # Determine colors based on direction and PnL
     is_long = pos.side == 'long'
     side_color = PALETTE['accent_green'] if is_long else PALETTE['accent_red']
     side_emoji = "🟢" if is_long else "🔴"
@@ -97,14 +97,14 @@ def render_position_card(pos):
     pnl_color = PALETTE['accent_green'] if pos.unrealized_pnl >= 0 else PALETTE['accent_red']
     pnl_emoji = "📈" if pos.unrealized_pnl >= 0 else "📉"
     
-    # Calcola PnL percentuale
+    # Calculate PnL percentage
     if pos.entry_price > 0 and pos.size > 0:
         position_value = pos.entry_price * pos.size
         pnl_pct = (pos.unrealized_pnl / position_value) * 100 * pos.leverage
     else:
         pnl_pct = 0
     
-    # Symbol senza /USDT:USDT
+    # Symbol without /USDT:USDT
     symbol_short = pos.symbol.replace('/USDT:USDT', '').replace('/', '')
     
     # Card HTML
@@ -184,8 +184,8 @@ def render_position_card(pos):
 
 def render_portfolio_summary():
     """
-    Render un summary compatto del portfolio (per header).
-    Restituisce None se non disponibile.
+    Render a compact portfolio summary (for header).
+    Returns None if not available.
     """
     try:
         from services.bybit_service import get_bybit_service
@@ -198,7 +198,7 @@ def render_portfolio_summary():
         balance = bybit.get_balance()
         positions = bybit.get_positions()
         
-        # Calcola PnL totale
+        # Calculate total PnL
         total_pnl = sum(p.unrealized_pnl for p in positions)
         
         return {
@@ -215,13 +215,13 @@ def render_portfolio_summary():
 
 def render_portfolio_tab():
     """
-    Render una tab completa dedicata al portfolio.
-    Mostra balance, posizioni e storico in modo più dettagliato.
+    Render a complete tab dedicated to the portfolio.
+    Shows balance, positions and history in more detail.
     """
     st.markdown("### 💼 Portfolio Manager")
     st.markdown("""
     <p style="color: #a0a0a0; font-size: 0.9rem;">
-    Monitora il tuo account Bybit in tempo reale. Balance e posizioni si aggiornano ogni 30 secondi.
+    Monitor your Bybit account in real time. Balance and positions update every 30 seconds.
     </p>
     """, unsafe_allow_html=True)
     
@@ -231,17 +231,17 @@ def render_portfolio_tab():
         bybit = get_bybit_service()
         
         if not bybit.is_available:
-            st.error("❌ Bybit API non configurata")
+            st.error("❌ Bybit API not configured")
             st.markdown("""
-            Per attivare il Portfolio Manager:
+            To activate the Portfolio Manager:
             
-            1. Apri il file `.env`
-            2. Aggiungi le tue chiavi Bybit:
+            1. Open the `.env` file
+            2. Add your Bybit keys:
                ```
-               BYBIT_API_KEY=la_tua_chiave
-               BYBIT_API_SECRET=il_tuo_secret
+               BYBIT_API_KEY=your_key
+               BYBIT_API_SECRET=your_secret
                ```
-            3. Riavvia i container: `docker-compose up -d`
+            3. Restart containers: `docker-compose up -d`
             """)
             return
         
@@ -257,27 +257,27 @@ def render_portfolio_tab():
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("💵 Totale", f"${balance.total_usdt:,.2f}")
+                st.metric("💵 Total", f"${balance.total_usdt:,.2f}")
             with col2:
-                st.metric("🟢 Disponibile", f"${balance.available_usdt:,.2f}")
+                st.metric("🟢 Available", f"${balance.available_usdt:,.2f}")
             with col3:
-                st.metric("🔒 In Uso", f"${balance.used_usdt:,.2f}")
+                st.metric("🔒 In Use", f"${balance.used_usdt:,.2f}")
             with col4:
                 used_pct = (balance.used_usdt / balance.total_usdt * 100) if balance.total_usdt > 0 else 0
-                st.metric("📊 Utilizzo", f"{used_pct:.1f}%")
+                st.metric("📊 Usage", f"{used_pct:.1f}%")
         else:
-            st.warning("⚠️ Impossibile recuperare balance. Controlla le chiavi API.")
+            st.warning("⚠️ Unable to retrieve balance. Check API keys.")
         
         # ═══════════════════════════════════════════════════════════════════
-        # POSIZIONI APERTE
+        # OPEN POSITIONS
         # ═══════════════════════════════════════════════════════════════════
         st.markdown("---")
-        st.markdown("#### 📊 Posizioni Aperte")
+        st.markdown("#### 📊 Open Positions")
         
         positions = bybit.get_positions()
         
         if not positions:
-            st.info("📭 Nessuna posizione aperta al momento")
+            st.info("📭 No open positions at the moment")
         else:
             # Summary
             total_pnl = sum(p.unrealized_pnl for p in positions)
@@ -288,7 +288,7 @@ def render_portfolio_tab():
             
             with col1:
                 pnl_color = "normal" if total_pnl >= 0 else "inverse"
-                st.metric("📈 PnL Totale", f"${total_pnl:+,.2f}", delta_color=pnl_color)
+                st.metric("📈 Total PnL", f"${total_pnl:+,.2f}", delta_color=pnl_color)
             with col2:
                 st.metric("🟢 Long", long_count)
             with col3:
@@ -296,21 +296,21 @@ def render_portfolio_tab():
             
             st.markdown("")
             
-            # Tabella posizioni
+            # Positions table
             for pos in positions:
                 render_position_card_full(pos)
         
         # Timestamp
         st.markdown("---")
-        st.caption(f"🔄 Ultimo aggiornamento: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        st.caption("I dati si aggiornano automaticamente ogni 30 secondi")
+        st.caption(f"🔄 Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption("Data updates automatically every 30 seconds")
         
     except Exception as e:
-        st.error(f"❌ Errore: {str(e)}")
+        st.error(f"❌ Error: {str(e)}")
 
 
 def render_position_card_full(pos):
-    """Render posizione con più dettagli per la tab Portfolio"""
+    """Render position with more details for Portfolio tab"""
     
     is_long = pos.side == 'long'
     side_color = "#00ff88" if is_long else "#ff4757"
@@ -319,7 +319,7 @@ def render_position_card_full(pos):
     
     pnl_color = "#00ff88" if pos.unrealized_pnl >= 0 else "#ff4757"
     
-    # PnL percentuale
+    # PnL percentage
     if pos.entry_price > 0 and pos.size > 0:
         position_value = pos.entry_price * pos.size
         pnl_pct = (pos.unrealized_pnl / position_value) * 100 * pos.leverage

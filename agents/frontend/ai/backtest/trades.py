@@ -12,8 +12,8 @@ import numpy as np
 
 def safe_strftime(ts, fmt: str = '%Y-%m-%d %H:%M') -> str:
     """
-    Converte un timestamp (datetime o pandas Timestamp) in stringa formattata.
-    Gestisce NaT e valori None in modo sicuro.
+    Converts a timestamp (datetime or pandas Timestamp) to formatted string.
+    Handles NaT and None values safely.
     """
     if ts is None:
         return '-'
@@ -35,6 +35,15 @@ class TradeType(Enum):
     """Trade direction"""
     LONG = "LONG"
     SHORT = "SHORT"
+
+
+class ExitReason(Enum):
+    """Reason for trade exit"""
+    SIGNAL_REVERSAL = "Signal Reversal"     # Exit due to opposite signal
+    STOP_LOSS = "Stop Loss"                 # Exit due to stop loss hit
+    TAKE_PROFIT = "Take Profit"             # Exit due to take profit hit
+    MAX_HOLDING = "Max Holding"             # Exit due to max candles reached
+    STILL_OPEN = "Still Open"               # Trade not yet closed
 
 
 @dataclass
@@ -129,6 +138,7 @@ class Trade:
     exit_price: Optional[float] = None
     exit_confidence: Optional[float] = None
     exit_indicators: Optional[IndicatorSnapshot] = None
+    exit_reason: ExitReason = ExitReason.STILL_OPEN
     candles_held: int = 0
     
     @property
@@ -166,6 +176,15 @@ class Trade:
         entry_time_str = safe_strftime(self.entry_time)
         exit_time_str = safe_strftime(self.exit_time) if self.exit_time is not None else 'OPEN'
         
+        # Exit reason emoji
+        exit_emoji = {
+            ExitReason.SIGNAL_REVERSAL: "📊",
+            ExitReason.STOP_LOSS: "🛑",
+            ExitReason.TAKE_PROFIT: "🎯",
+            ExitReason.MAX_HOLDING: "⏰",
+            ExitReason.STILL_OPEN: "⏳"
+        }
+        
         return {
             'id': self.trade_id,
             'type': self.trade_type.value,
@@ -175,6 +194,7 @@ class Trade:
             'exit_time': exit_time_str,
             'exit_price': f"${self.exit_price:,.2f}" if self.exit_price else '-',
             'exit_confidence': f"{self.exit_confidence:+.1f}" if self.exit_confidence else '-',
+            'exit_reason': f"{exit_emoji.get(self.exit_reason, '')} {self.exit_reason.value}",
             'pnl_pct': f"{self.pnl_pct:+.2f}%" if self.pnl_pct is not None else '-',
             'candles': self.candles_held,
             'result': '✅' if self.is_winner else '❌' if self.is_winner is False else '⏳'

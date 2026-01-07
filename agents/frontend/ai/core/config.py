@@ -21,10 +21,16 @@ AI_CONFIG = {
 # BACKTEST CONFIGURATION
 # ============================================================
 BACKTEST_CONFIG = {
-    # Entry/Exit thresholds (molto bassi per generare trade anche con poca volatilità)
+    # Entry/Exit thresholds
     'entry_threshold': 25,          # |score| > 25 to open position
     'exit_threshold': 10,           # opposite score > 10 to close
     'min_holding_candles': 2,       # minimum candles before exit
+    
+    # Stop Loss / Take Profit (percentage)
+    'stop_loss_pct': 2.0,           # Exit if loss exceeds 2%
+    'take_profit_pct': 4.0,         # Exit if profit exceeds 4%
+    'use_sl_tp': True,              # Enable SL/TP exits
+    'max_holding_candles': 100,     # Max candles before forced exit (0 = disabled)
     
     # Indicator weights (must sum to 1.0)
     'weights': {
