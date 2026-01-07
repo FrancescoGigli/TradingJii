@@ -8,14 +8,23 @@ Displays:
 - Service status indicators
 
 This header appears above all tabs and persists across navigation.
+Now uses caching and non-blocking error handling.
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 from typing import Optional, Dict
 from datetime import datetime
+import logging
+import concurrent.futures
+from functools import lru_cache
 
 from styles.colors import PALETTE, STATUS_COLORS
+
+logger = logging.getLogger(__name__)
+
+# Timeout for data fetching (seconds)
+DATA_FETCH_TIMEOUT = 5
 
 
 def _get_balance_html(balance_info: Dict) -> str:

@@ -16,7 +16,8 @@ from components.sidebar import render_sidebar
 from components.tabs import (
     render_top_coins_tab,
     render_analysis_tab,
-    render_backtest_tab
+    render_backtest_tab,
+    render_historical_data_tab
 )
 
 
@@ -78,10 +79,11 @@ def main():
         render_sidebar()
     
     # Main content - TABS
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Top 100 Coins", 
         "📈 Coin Analysis",
-        "🔄 Backtest"
+        "🔄 Backtest",
+        "📚 Historical Data"
     ])
     
     with tab1:
@@ -92,6 +94,9 @@ def main():
     
     with tab3:
         render_backtest_tab()
+    
+    with tab4:
+        render_historical_data_tab()
     
     # Footer
     st.markdown(FOOTER_HTML, unsafe_allow_html=True)

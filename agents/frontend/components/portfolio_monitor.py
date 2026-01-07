@@ -6,14 +6,18 @@ Agent that automatically retrieves:
 - Open positions with real-time PnL
 
 Updates every 30 seconds using st_autorefresh already present.
+Now uses caching and non-blocking error handling.
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 from typing import Optional, List, Dict
 from datetime import datetime
+import logging
 
 from styles.colors import PALETTE
+
+logger = logging.getLogger(__name__)
 
 
 def render_portfolio_panel():

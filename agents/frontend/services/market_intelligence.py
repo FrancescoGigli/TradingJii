@@ -25,9 +25,15 @@ try:
 except ImportError:
     requests = None
 
+import socket
+import threading
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Default timeout for network operations
+DEFAULT_TIMEOUT = 10  # seconds
 
 
 @dataclass
@@ -142,13 +148,21 @@ class MarketIntelligence:
         news_items = []
         total_chars = 0
         
+        # Set socket timeout for feedparser (no native timeout support)
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(DEFAULT_TIMEOUT)
+        
         try:
             for source_name, feed_url in self.RSS_FEEDS:
                 # ╔════════════════════════════════════════════════════════════════╗
                 # ║  RSS FEED FETCH                                                ║
                 # ║  Public feed - no API key required                             ║
                 # ╚════════════════════════════════════════════════════════════════╝
-                feed = feedparser.parse(feed_url)
+                try:
+                    feed = feedparser.parse(feed_url)
+                except Exception as feed_error:
+                    logger.warning(f"⚠️ Error parsing feed {source_name}: {feed_error}")
+                    continue
                 
                 if not feed.entries:
                     continue
@@ -187,6 +201,10 @@ class MarketIntelligence:
         except Exception as e:
             logger.error(f"❌ Error fetching news: {e}")
             return self._news_cache[:max_items] if self._news_cache else []
+        
+        finally:
+            # Restore original socket timeout
+            socket.setdefaulttimeout(old_timeout)
     
     def get_news_text(self, max_items: int = 3) -> str:
         """Get news as formatted text string for AI prompts"""

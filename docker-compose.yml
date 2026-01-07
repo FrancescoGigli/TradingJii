@@ -35,6 +35,30 @@ services:
     restart: unless-stopped  # Daemon che gira continuamente
     
   # =========================================
+  # HISTORICAL DATA AGENT (ML Data)
+  # =========================================
+  # Downloads 12+ months of historical data for ML training
+  # Runs backfill on startup, then incremental updates every 15 min
+  historical-data:
+    build:
+      context: ./agents/historical-data
+      dockerfile: Dockerfile
+    container_name: crypto-historical-data
+    command: python main.py --backfill
+    volumes:
+      - shared-data:/app/shared
+    environment:
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - SHARED_DATA_PATH=/app/shared
+      - LOG_LEVEL=INFO
+    networks:
+      - trading-network
+    restart: unless-stopped
+    depends_on:
+      - data-fetcher  # Needs top_symbols table from data-fetcher
+
+  # =========================================
   # FRONTEND AGENT (Streamlit Dashboard)
   # =========================================
   frontend:
