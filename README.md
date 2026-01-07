@@ -37,7 +37,7 @@ progetto/
 ├── README.md
 │
 ├── agents/
-│   ├── data-fetcher/          # 🔄 AGENTE 1: Fetcher
+│   ├── data-fetcher/          # 🔄 AGENTE 1: Fetcher Real-time
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── config.py
@@ -46,10 +46,50 @@ progetto/
 │   │   └── core/
 │   │       └── database_cache.py
 │   │
-│   └── frontend/              # 📊 AGENTE 2: Dashboard
+│   ├── historical-data/       # 📚 AGENTE 2: Historical Data
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   ├── config.py
+│   │   ├── main.py
+│   │   ├── core/
+│   │   │   ├── database.py
+│   │   │   └── validation.py
+│   │   └── fetcher/
+│   │       └── bybit_historical.py
+│   │
+│   ├── ml-features/           # 🧮 AGENTE 3: ML Features
+│   │   ├── requirements.txt
+│   │   ├── config.py
+│   │   └── core/
+│   │       ├── features.py
+│   │       ├── market_features.py
+│   │       └── labels.py
+│   │
+│   ├── ml-training/           # 🤖 AGENTE 4: ML Training
+│   │   ├── requirements.txt
+│   │   ├── config.py
+│   │   └── core/
+│   │       ├── dataset.py
+│   │       └── trainer.py
+│   │
+│   └── frontend/              # 📊 AGENTE 5: Dashboard
 │       ├── Dockerfile
 │       ├── requirements.txt
-│       └── app.py
+│       ├── app.py
+│       ├── database.py
+│       ├── charts.py
+│       ├── indicators.py
+│       ├── components/
+│       │   ├── tabs/
+│       │   │   ├── top_coins.py
+│       │   │   ├── analysis.py
+│       │   │   ├── backtest.py
+│       │   │   └── historical_data.py
+│       │   └── ...
+│       ├── services/
+│       ├── styles/
+│       ├── ai/
+│       └── trading/
 │
 └── shared/                    # Volume condiviso
     └── data_cache/
@@ -140,6 +180,42 @@ Il dashboard Streamlit offre:
 3. **Regole di Exit**:
    - Exit LONG quando score < -30
    - Exit SHORT quando score > +30
+
+### Tab 4: Historical Data 🆕
+- **📊 Progress Rings** - Visualizzazione circolare del progresso backfill
+- **🕯️ Statistiche** - Simboli, Candele totali, Dimensione DB, Interpolazioni
+- **📅 Data Range** - Intervallo temporale dei dati ML training
+
+#### Sub-tabs:
+1. **📋 Backfill Status**
+   - Progress ring globale e per timeframe (15m, 1h)
+   - Indicatore simbolo attualmente in download
+   - Coda simboli pending
+
+2. **📊 Data Quality**
+   - Grafico a barre completezza per simbolo
+   - Filtro per timeframe
+   - Statistiche qualità (≥99%, media, gap totali)
+
+3. **📈 Price Verify**
+   - Grafico candlestick dati storici
+   - Selettore simbolo/timeframe/limite candles
+   - Evidenziazione candele interpolate
+   - Statistiche intervallo dati
+
+4. **⚠️ Gap Detector**
+   - Lista simboli con gap nei dati
+   - Ordinamento per numero gap
+   - Grafico top 20 simboli con più gap
+
+#### Historical Data Agent:
+```bash
+# Avvia il backfill dei dati storici per ML training
+docker-compose up -d historical-data
+
+# Questo agent scarica 2 anni di dati per tutti i simboli top 100
+# nei timeframe 15m e 1h, necessari per il training ML
+```
 
 ## 🔧 Comandi Utili
 

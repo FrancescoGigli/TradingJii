@@ -1,18 +1,10 @@
 """
 📊 Historical Data Tab - ML Training Data Monitor
 
-Displays status and quality of historical OHLCV data for ML training:
-- Backfill progress for all symbols
-- Data quality heatmap
-- Price chart verification
-- Gap detection
-- Statistics overview
-
-Beautiful dark theme with modern UI components.
+Fast loading with optimized caching and clear 15m/1h visualization.
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -22,699 +14,628 @@ from database import (
     get_historical_stats,
     get_backfill_status_all,
     get_historical_ohlcv,
-    get_historical_symbols,
-    get_backfill_summary
+    get_historical_inventory,
+    get_historical_symbols_by_volume,
+    get_symbol_data_quality,
+    trigger_backfill,
+    check_backfill_running,
+    clear_historical_data,
+    retry_failed_downloads
 )
-from styles.colors import PALETTE, SIGNAL_COLORS
-
-# Simple color map for the UI
-COLORS = {
-    'success': PALETTE['accent_green'],
-    'warning': PALETTE['accent_yellow'],
-    'danger': PALETTE['accent_red'],
-    'info': PALETTE['accent_blue'],
-    'cyan': PALETTE['accent_cyan'],
-    'purple': PALETTE['accent_purple'],
-}
 
 
-def render_progress_ring(percentage: float, label: str, size: int = 120, color: str = "#00ff88") -> str:
-    """Create an animated circular progress ring"""
-    # Clamp percentage between 0 and 100
-    pct = max(0, min(100, percentage))
-    
-    # Calculate stroke dasharray for the progress
-    circumference = 2 * 3.14159 * 45  # radius = 45
-    stroke_dasharray = f"{(pct / 100) * circumference} {circumference}"
-    
-    return f"""
-    <div style="display: flex; flex-direction: column; align-items: center; padding: 10px;">
-        <svg width="{size}" height="{size}" viewBox="0 0 100 100">
-            <!-- Background circle -->
-            <circle
-                cx="50" cy="50" r="45"
-                fill="none"
-                stroke="rgba(255,255,255,0.1)"
-                stroke-width="8"
-            />
-            <!-- Progress circle -->
-            <circle
-                cx="50" cy="50" r="45"
-                fill="none"
-                stroke="{color}"
-                stroke-width="8"
-                stroke-linecap="round"
-                stroke-dasharray="{stroke_dasharray}"
-                transform="rotate(-90 50 50)"
-                style="filter: drop-shadow(0 0 6px {color}80); transition: stroke-dasharray 0.5s ease;"
-            />
-            <!-- Percentage text -->
-            <text x="50" y="50" text-anchor="middle" dy="0.3em"
-                  style="font-size: 20px; font-weight: bold; fill: {color}; font-family: 'Orbitron', sans-serif;">
-                {pct:.1f}%
-            </text>
-        </svg>
-        <span style="color: #888; font-size: 12px; margin-top: 5px; text-transform: uppercase; letter-spacing: 1px;">
-            {label}
-        </span>
-    </div>
-    """
+# === CACHED FUNCTIONS (longer TTL to avoid frequent refresh) ===
+@st.cache_data(ttl=120)
+def cached_get_stats():
+    return get_historical_stats()
 
 
-def render_stat_card(icon: str, value: str, label: str, color: str = "#00ffff") -> str:
-    """Create a beautiful stat card"""
-    return f"""
-    <div style="
-        background: linear-gradient(135deg, rgba(26, 26, 46, 0.9) 0%, rgba(22, 33, 62, 0.9) 100%);
-        border: 1px solid {color}30;
-        border-radius: 16px;
-        padding: 20px;
-        text-align: center;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(10px);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-    ">
-        <div style="font-size: 32px; margin-bottom: 8px;">{icon}</div>
-        <div style="font-size: 28px; font-weight: bold; color: {color}; font-family: 'Orbitron', sans-serif; text-shadow: 0 0 10px {color}50;">
-            {value}
-        </div>
-        <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-top: 5px;">
-            {label}
-        </div>
-    </div>
-    """
+@st.cache_data(ttl=60)
+def cached_get_backfill_status():
+    return get_backfill_status_all()
 
 
-def render_animated_progress_bar(percentage: float, label: str, color: str = "#00ff88") -> str:
-    """Create a beautiful animated progress bar"""
-    pct = max(0, min(100, percentage))
-    
-    return f"""
-    <div style="margin: 15px 0;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <span style="color: #fff; font-size: 14px; font-weight: 500;">{label}</span>
-            <span style="color: {color}; font-size: 14px; font-weight: bold; font-family: 'Orbitron', sans-serif;">{pct:.1f}%</span>
-        </div>
-        <div style="
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            height: 12px;
-            overflow: hidden;
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
-        ">
-            <div style="
-                width: {pct}%;
-                height: 100%;
-                background: linear-gradient(90deg, {color}80, {color});
-                border-radius: 10px;
-                box-shadow: 0 0 10px {color}60, 0 0 20px {color}40;
-                transition: width 0.5s ease;
-                position: relative;
-                overflow: hidden;
-            ">
-                <div style="
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-                    animation: shimmer 2s infinite;
-                "></div>
-            </div>
-        </div>
-    </div>
-    <style>
-        @keyframes shimmer {{
-            0% {{ transform: translateX(-100%); }}
-            100% {{ transform: translateX(100%); }}
-        }}
-    </style>
-    """
+@st.cache_data(ttl=300)
+def cached_get_inventory():
+    return get_historical_inventory()
+
+
+@st.cache_data(ttl=300)
+def cached_get_symbols():
+    return get_historical_symbols_by_volume()
+
+
+@st.cache_data(ttl=300)
+def cached_get_ohlcv(symbol, timeframe, limit):
+    return get_historical_ohlcv(symbol, timeframe, limit)
 
 
 def render_historical_data_tab():
     """Render the Historical Data monitoring tab"""
     
-    # Custom CSS for the page
-    st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
+    # Header with actions
+    col1, col2 = st.columns([3, 2])
     
-    .historical-header {
-        text-align: center;
-        padding: 20px 0;
-        margin-bottom: 20px;
-    }
+    with col1:
+        st.markdown("## 📊 Historical Data")
+        st.caption("ML Training Data • 12 months OHLCV • 100 coins")
     
-    .historical-header h1 {
-        font-family: 'Orbitron', sans-serif;
-        font-size: 2.5rem;
-        background: linear-gradient(135deg, #00ffff, #00ff88);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        margin-bottom: 10px;
-    }
+    with col2:
+        b1, b2, b3 = st.columns(3)
+        is_running = check_backfill_running()
+        
+        with b1:
+            if is_running:
+                st.button("⏳ Running...", disabled=True, use_container_width=True)
+            else:
+                if st.button("🚀 Start", type="primary", use_container_width=True):
+                    if trigger_backfill():
+                        st.toast("✅ Backfill started!")
+                        st.cache_data.clear()
+                        st.rerun()
+        with b2:
+            if st.button("🔄 Refresh", type="secondary", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+        with b3:
+            if st.button("🗑️ Clear", type="secondary", use_container_width=True):
+                st.session_state['confirm_clear'] = True
     
-    .historical-header p {
-        color: #888;
-        font-size: 14px;
-    }
-    
-    .section-title {
-        font-size: 1.2rem;
-        font-weight: 600;
-        color: #fff;
-        margin: 20px 0 15px 0;
-        padding-bottom: 10px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    
-    .glass-card {
-        background: linear-gradient(135deg, rgba(26, 26, 46, 0.8) 0%, rgba(22, 33, 62, 0.8) 100%);
-        border: 1px solid rgba(0, 255, 255, 0.15);
-        border-radius: 16px;
-        padding: 20px;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    }
-    
-    .status-badge {
-        display: inline-block;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    
-    .status-complete {
-        background: rgba(0, 255, 136, 0.2);
-        color: #00ff88;
-        border: 1px solid #00ff8840;
-    }
-    
-    .status-progress {
-        background: rgba(0, 255, 255, 0.2);
-        color: #00ffff;
-        border: 1px solid #00ffff40;
-    }
-    
-    .status-pending {
-        background: rgba(255, 255, 255, 0.1);
-        color: #888;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Header
-    st.markdown("""
-    <div class="historical-header">
-        <h1>📊 Historical Data</h1>
-        <p>ML Training Data Monitor • Real-time Backfill Progress</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Get overall stats
-    stats = get_historical_stats()
-    
-    if not stats.get('exists', False):
-        st.markdown("""
-        <div class="glass-card" style="text-align: center; padding: 40px;">
-            <div style="font-size: 64px; margin-bottom: 20px;">⏳</div>
-            <h2 style="color: #fff; margin-bottom: 15px;">Historical Data Not Available</h2>
-            <p style="color: #888; max-width: 500px; margin: 0 auto 20px;">
-                The historical-data agent needs to run first to download training data.
-            </p>
-            <div style="background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 15px; display: inline-block; text-align: left;">
-                <code style="color: #00ff88;">docker-compose up -d historical-data</code>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    # Clear confirmation
+    if st.session_state.get('confirm_clear'):
+        st.error("⚠️ DELETE ALL HISTORICAL DATA?")
+        c1, c2 = st.columns(2)
+        if c1.button("✅ Yes, Delete", type="primary"):
+            clear_historical_data()
+            st.session_state['confirm_clear'] = False
+            st.cache_data.clear()
+            st.rerun()
+        if c2.button("❌ Cancel"):
+            st.session_state['confirm_clear'] = False
+            st.rerun()
         return
     
-    # === TOP METRICS CARDS ===
-    cards_html = f"""
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 30px;">
-        {render_stat_card("📈", str(stats.get('symbols', 0)), "Symbols", "#00ffff")}
-        {render_stat_card("🕯️", f"{stats.get('total_candles', 0):,}", "Total Candles", "#00ff88")}
-        {render_stat_card("💾", f"{stats.get('db_size_mb', 0):.1f} MB", "Database Size", "#a855f7")}
-        {render_stat_card("🔄", f"{stats.get('interpolated_count', 0):,}", "Interpolated", "#ffa502")}
-    </div>
-    """
-    components.html(cards_html, height=180)
+    # Get stats
+    stats = cached_get_stats()
     
-    # Date range info
-    if stats.get('min_date') and stats.get('max_date'):
-        st.markdown(f"""
-        <div style="
-            background: rgba(0, 255, 255, 0.05);
-            border: 1px solid rgba(0, 255, 255, 0.2);
-            border-radius: 10px;
-            padding: 12px 20px;
-            text-align: center;
-            margin-bottom: 20px;
-        ">
-            <span style="color: #888;">📅 Data Range:</span>
-            <span style="color: #00ffff; font-weight: 600; margin-left: 10px;">
-                {stats['min_date'][:10]}
-            </span>
-            <span style="color: #888; margin: 0 10px;">→</span>
-            <span style="color: #00ff88; font-weight: 600;">
-                {stats['max_date'][:10]}
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Backfill Status",
-        "📊 Data Quality",
-        "📈 Price Verify",
-        "⚠️ Gap Detector"
-    ])
-    
-    with tab1:
-        render_backfill_status()
-    
-    with tab2:
-        render_data_quality()
-    
-    with tab3:
-        render_price_verification()
-    
-    with tab4:
-        render_gap_detector()
-
-
-def render_backfill_status():
-    """Render backfill progress for all symbols"""
-    
-    # Get all status data
-    all_status = get_backfill_status_all()
-    
-    if not all_status:
-        st.info("⏳ Waiting for backfill to start...")
+    if not stats.get('exists'):
+        st.warning("⚠️ No historical data available")
+        st.info("Click **🚀 Start** to download 12 months of data for 100 coins")
         return
     
-    df_all = pd.DataFrame(all_status)
+    # === OVERVIEW METRICS ===
+    st.divider()
+    
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("📈 Symbols", stats.get('symbols', 0))
+    m2.metric("🕯️ Total Candles", f"{stats.get('total_candles', 0):,}")
+    m3.metric("💾 Database Size", f"{stats.get('db_size_mb', 0):.1f} MB")
+    m4.metric("🔄 Interpolated", f"{stats.get('interpolated_count', 0):,}")
+    
+    # Date range
+    min_d = stats.get('min_date', '')[:10] if stats.get('min_date') else '—'
+    max_d = stats.get('max_date', '')[:10] if stats.get('max_date') else '—'
+    st.caption(f"📅 Data range: **{min_d}** → **{max_d}**")
+    
+    # === DOWNLOAD PROGRESS (15m & 1h separate) ===
+    st.divider()
+    st.markdown("### 📥 Download Progress")
+    
+    render_download_progress()
+    
+    # === COIN INVENTORY ===
+    st.divider()
+    st.markdown("### 📋 Data Inventory by Coin")
+    
+    render_coin_inventory()
+    
+    # === CHART PREVIEW ===
+    st.divider()
+    st.markdown("### 📊 Data Preview")
+    
+    render_chart_preview()
+
+
+@st.fragment(run_every="15s")
+def render_download_progress():
+    """Show download progress with clear 15m/1h separation - auto-refreshes every 15s"""
+    
+    status_list = get_backfill_status_all()  # Direct call, fragment handles refresh
+    
+    if not status_list:
+        st.info("⏳ No backfill status. Click Start to begin downloading.")
+        return
+    
+    df = pd.DataFrame(status_list)
     
     # Separate by timeframe
-    tf_15m = df_all[df_all['timeframe'] == '15m']
-    tf_1h = df_all[df_all['timeframe'] == '1h']
+    df_15m = df[df['timeframe'] == '15m']
+    df_1h = df[df['timeframe'] == '1h']
     
-    # Calculate stats
-    complete_15m = len(tf_15m[tf_15m['status'] == 'COMPLETE'])
-    complete_1h = len(tf_1h[tf_1h['status'] == 'COMPLETE'])
-    total_15m = len(tf_15m) if len(tf_15m) > 0 else 100
-    total_1h = len(tf_1h) if len(tf_1h) > 0 else 100
+    # Count statuses
+    def count_status(df_tf):
+        return {
+            'complete': len(df_tf[df_tf['status'] == 'COMPLETE']),
+            'in_progress': len(df_tf[df_tf['status'] == 'IN_PROGRESS']),
+            'pending': len(df_tf[df_tf['status'] == 'PENDING']),
+            'error': len(df_tf[df_tf['status'] == 'ERROR']),
+            'total': len(df_tf)
+        }
     
-    # Find current symbol in progress
-    in_progress = df_all[df_all['status'] == 'IN_PROGRESS']
-    current_symbol = ""
+    stats_15m = count_status(df_15m)
+    stats_1h = count_status(df_1h)
+    
+    # Total candles
+    total_candles_15m = df_15m['total_candles'].sum() if 'total_candles' in df_15m.columns else 0
+    total_candles_1h = df_1h['total_candles'].sum() if 'total_candles' in df_1h.columns else 0
+    
+    # Two columns for 15m and 1h
+    col_15m, col_1h = st.columns(2)
+    
+    with col_15m:
+        st.markdown("#### ⏱️ 15 Minutes")
+        
+        pct_15m = stats_15m['complete'] / stats_15m['total'] if stats_15m['total'] > 0 else 0
+        st.progress(pct_15m)
+        
+        # Stats row
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Complete", f"{stats_15m['complete']}/{stats_15m['total']}")
+        c2.metric("Candles", f"{total_candles_15m:,}")
+        if stats_15m['error'] > 0:
+            c3.metric("Errors", stats_15m['error'], delta=None)
+        elif stats_15m['in_progress'] > 0:
+            c3.metric("Status", "🔄 Downloading")
+        else:
+            c3.metric("Status", "✅ Done" if pct_15m == 1 else "⏳ Pending")
+    
+    with col_1h:
+        st.markdown("#### ⏱️ 1 Hour")
+        
+        pct_1h = stats_1h['complete'] / stats_1h['total'] if stats_1h['total'] > 0 else 0
+        st.progress(pct_1h)
+        
+        # Stats row
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Complete", f"{stats_1h['complete']}/{stats_1h['total']}")
+        c2.metric("Candles", f"{total_candles_1h:,}")
+        if stats_1h['error'] > 0:
+            c3.metric("Errors", stats_1h['error'])
+        elif stats_1h['in_progress'] > 0:
+            c3.metric("Status", "🔄 Downloading")
+        else:
+            c3.metric("Status", "✅ Done" if pct_1h == 1 else "⏳ Pending")
+    
+    # Current download info
+    in_progress = df[df['status'] == 'IN_PROGRESS']
     if not in_progress.empty:
         row = in_progress.iloc[0]
-        current_symbol = row['symbol'].replace('/USDT:USDT', '')
+        sym = row['symbol'].replace('/USDT:USDT', '')
+        tf = row['timeframe']
+        candles = row.get('total_candles', 0)
+        st.info(f"🔄 **Currently downloading:** {sym} [{tf}] — {candles:,} candles")
     
-    # Calculate overall progress
-    total_complete = complete_15m + complete_1h
-    total_all = total_15m + total_1h
-    overall_pct = (total_complete / total_all * 100) if total_all > 0 else 0
-    pct_15m = (complete_15m / total_15m * 100) if total_15m > 0 else 0
-    pct_1h = (complete_1h / total_1h * 100) if total_1h > 0 else 0
-    
-    # === PROGRESS RINGS ===
-    progress_html = f"""
-    <div class="glass-card" style="margin-bottom: 20px;">
-        <div style="display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap;">
-            {render_progress_ring(overall_pct, "Overall Progress", 150, "#00ffff")}
-            {render_progress_ring(pct_15m, f"15min ({complete_15m}/{total_15m})", 120, "#00ff88")}
-            {render_progress_ring(pct_1h, f"1hour ({complete_1h}/{total_1h})", 120, "#a855f7")}
-        </div>
-    </div>
-    """
-    components.html(progress_html, height=200)
-    
-    # Current activity badge
-    if current_symbol:
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(90deg, rgba(0, 255, 255, 0.1), rgba(0, 255, 136, 0.1));
-            border: 1px solid rgba(0, 255, 255, 0.3);
-            border-radius: 10px;
-            padding: 15px 20px;
-            display: flex;
-            align-items: center;
-            margin-bottom: 20px;
-        ">
-            <div style="
-                width: 12px;
-                height: 12px;
-                background: #00ffff;
-                border-radius: 50%;
-                margin-right: 12px;
-                animation: pulse 1.5s infinite;
-                box-shadow: 0 0 10px #00ffff;
-            "></div>
-            <span style="color: #fff; font-weight: 500;">Currently downloading:</span>
-            <span style="color: #00ffff; font-weight: 700; margin-left: 10px; font-family: 'Orbitron', sans-serif;">
-                {current_symbol}
-            </span>
-        </div>
-        <style>
-            @keyframes pulse {{
-                0%, 100% {{ opacity: 1; transform: scale(1); }}
-                50% {{ opacity: 0.5; transform: scale(1.2); }}
-            }}
-        </style>
-        """, unsafe_allow_html=True)
-    elif overall_pct >= 100:
-        st.markdown("""
-        <div style="
-            background: linear-gradient(90deg, rgba(0, 255, 136, 0.1), rgba(0, 255, 136, 0.2));
-            border: 1px solid rgba(0, 255, 136, 0.3);
-            border-radius: 10px;
-            padding: 15px 20px;
-            text-align: center;
-            margin-bottom: 20px;
-        ">
-            <span style="font-size: 24px; margin-right: 10px;">✅</span>
-            <span style="color: #00ff88; font-weight: 700; font-size: 18px;">Backfill Complete!</span>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # === PENDING QUEUE ===
-    pending = df_all[df_all['status'] == 'PENDING'].head(5)
-    if not pending.empty:
-        st.markdown('<div class="section-title">⏳ Coming Up Next</div>', unsafe_allow_html=True)
-        
-        queue_items = []
-        for _, row in pending.iterrows():
-            symbol = row['symbol'].replace('/USDT:USDT', '')
-            tf = row['timeframe']
-            queue_items.append(f'<span style="background: rgba(255,255,255,0.1); padding: 4px 12px; border-radius: 15px; margin-right: 8px; color: #888;">{symbol} [{tf}]</span>')
-        
-        st.markdown(f"""
-        <div style="padding: 10px 0;">
-            {"".join(queue_items)}
-        </div>
-        """, unsafe_allow_html=True)
+    # Error list with retry button
+    errors = df[df['status'] == 'ERROR']
+    if len(errors) > 0:
+        with st.expander(f"❌ {len(errors)} Errors - Click to view", expanded=True):
+            # Retry button
+            if st.button("🔄 Retry Failed Downloads", type="primary", use_container_width=True):
+                count = retry_failed_downloads()
+                if count > 0:
+                    st.toast(f"✅ Reset {count} failed downloads to PENDING")
+                    # Trigger backfill to reprocess
+                    trigger_backfill()
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.warning("No errors to retry")
+            
+            st.divider()
+            
+            # Error details
+            for _, row in errors.iterrows():
+                sym = row['symbol'].replace('/USDT:USDT', '')
+                msg = row.get('error_message', 'Unknown error')
+                st.error(f"**{sym}** [{row['timeframe']}]: {msg}")
 
 
-def render_data_quality():
-    """Render data quality heatmap"""
-    st.markdown('<div class="section-title">📊 Data Quality Overview</div>', unsafe_allow_html=True)
+@st.fragment(run_every="30s")
+def render_coin_inventory():
+    """Show table with 15m and 1h data per coin - auto-refreshes every 30s"""
     
-    all_status = get_backfill_status_all()
+    # Direct call, fragment handles refresh
+    inventory = get_historical_inventory()
     
-    if not all_status:
-        st.info("No data available yet")
+    if not inventory:
+        st.warning("⚠️ No data inventory available - database may be empty")
         return
     
-    # Create heatmap data
-    df = pd.DataFrame(all_status)
+    # Process data
+    rows = []
+    complete_count = 0
+    partial_count = 0
     
-    if df.empty:
-        st.info("No data available")
-        return
+    for item in inventory:
+        sym = item['symbol'].replace('/USDT:USDT', '')
+        candles_15m = item.get('candles_15m', 0) or 0
+        candles_1h = item.get('candles_1h', 0) or 0
+        
+        # Date ranges (format: YYYY-MM-DD)
+        from_date = item.get('from_date_15m', '') or item.get('from_date_1h', '')
+        to_date = item.get('to_date_15m', '') or item.get('to_date_1h', '')
+        
+        # Format dates (short)
+        if from_date:
+            from_date = from_date[:10]  # YYYY-MM-DD
+        if to_date:
+            to_date = to_date[:10]
+        
+        # Expected candles (approx 12 months)
+        expected_15m = 35000
+        expected_1h = 8760
+        
+        pct_15m = min(100, (candles_15m / expected_15m) * 100)
+        pct_1h = min(100, (candles_1h / expected_1h) * 100)
+        
+        # Status
+        if pct_15m >= 95 and pct_1h >= 95:
+            status = "✅"
+            complete_count += 1
+        elif candles_15m > 0 or candles_1h > 0:
+            status = "🔄"
+            partial_count += 1
+        else:
+            status = "⏳"
+        
+        rows.append({
+            'Rank': item.get('rank', 999),
+            'Symbol': sym,
+            'From': from_date or '-',
+            'To': to_date or '-',
+            '15m': candles_15m,
+            '15m%': pct_15m,
+            '1h': candles_1h,
+            '1h%': pct_1h,
+            'Status': status
+        })
     
-    # Pivot for heatmap (symbols x timeframes)
-    df['symbol_short'] = df['symbol'].str.replace('/USDT:USDT', '')
+    # Summary metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Coins", len(rows))
+    c2.metric("Complete", complete_count)
+    c3.metric("Partial", partial_count)
+    c4.metric("Pending", len(rows) - complete_count - partial_count)
     
-    # Select timeframe for detailed view
-    timeframe = st.selectbox(
-        "Select Timeframe",
-        df['timeframe'].unique(),
-        key="quality_timeframe"
-    )
-    
-    tf_data = df[df['timeframe'] == timeframe].copy()
-    
-    if not tf_data.empty:
-        # Sort by completeness
-        tf_data = tf_data.sort_values('completeness_pct', ascending=False)
+    # Show coin list - simple st.table (this worked before)
+    if rows:
+        # Create dataframe
+        df = pd.DataFrame(rows)
         
-        # Create bar chart with gradient colors
-        fig = go.Figure()
+        # Sort by rank and use Rank as index to hide row numbers
+        df = df.sort_values('Rank')
+        df = df.set_index('Rank')  # This hides the row number column
         
-        # Color based on completeness
-        colors = tf_data['completeness_pct'].apply(
-            lambda x: '#00ff88' if x >= 99 else 
-                     '#ffa502' if x >= 95 else '#ff4757'
-        )
+        # Format for display
+        df['15m%'] = df['15m%'].apply(lambda x: f"{x:.0f}%")
+        df['1h%'] = df['1h%'].apply(lambda x: f"{x:.0f}%")
+        df['15m'] = df['15m'].apply(lambda x: f"{x:,}")
+        df['1h'] = df['1h'].apply(lambda x: f"{x:,}")
         
-        fig.add_trace(go.Bar(
-            x=tf_data['symbol_short'],
-            y=tf_data['completeness_pct'],
-            marker=dict(
-                color=colors,
-                line=dict(width=0)
-            ),
-            text=tf_data['completeness_pct'].apply(lambda x: f"{x:.1f}%"),
-            textposition='outside',
-            textfont=dict(color='#888', size=10)
-        ))
+        # Simple table display
+        st.markdown(f"**📋 All {len(rows)} Coins:**")
+        st.table(df)
         
-        fig.update_layout(
-            title=dict(
-                text=f"Data Completeness by Symbol [{timeframe}]",
-                font=dict(color='#fff', size=16)
-            ),
-            xaxis=dict(
-                title="Symbol",
-                tickfont=dict(color='#888'),
-                gridcolor='rgba(255,255,255,0.05)'
-            ),
-            yaxis=dict(
-                title="Completeness %",
-                range=[0, 105],
-                tickfont=dict(color='#888'),
-                gridcolor='rgba(255,255,255,0.05)'
-            ),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            height=400,
-            showlegend=False,
-            margin=dict(t=50, b=50)
-        )
-        
-        fig.add_hline(y=99, line_dash="dash", line_color="#00ff88",
-                     annotation_text="99% threshold",
-                     annotation_font_color="#00ff88")
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Summary stats in cards
-        above_99 = len(tf_data[tf_data['completeness_pct'] >= 99])
-        avg_comp = tf_data['completeness_pct'].mean()
-        total_gaps = tf_data['gap_count'].sum()
-        
-        summary_html = f"""
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 20px;">
-            {render_stat_card("🟢", f"{above_99}/{len(tf_data)}", "≥99% Complete", "#00ff88")}
-            {render_stat_card("📊", f"{avg_comp:.2f}%", "Average", "#00ffff")}
-            {render_stat_card("⚠️", str(int(total_gaps)), "Total Gaps", "#ffa502")}
-        </div>
-        """
-        components.html(summary_html, height=160)
+    else:
+        st.warning("⚠️ No coins found in inventory")
 
 
-def render_price_verification():
-    """Render price chart for visual verification"""
-    st.markdown('<div class="section-title">📈 Price Chart Verification</div>', unsafe_allow_html=True)
+def calculate_indicators(df):
+    """Calculate all technical indicators"""
+    df = df.copy()
     
-    symbols = get_historical_symbols()
+    # === Moving Averages ===
+    df['SMA_20'] = df['close'].rolling(20).mean()
+    df['SMA_50'] = df['close'].rolling(50).mean()
+    df['EMA_12'] = df['close'].ewm(span=12).mean()
+    df['EMA_26'] = df['close'].ewm(span=26).mean()
+    
+    # === Bollinger Bands ===
+    df['BB_mid'] = df['close'].rolling(20).mean()
+    bb_std = df['close'].rolling(20).std()
+    df['BB_upper'] = df['BB_mid'] + (bb_std * 2)
+    df['BB_lower'] = df['BB_mid'] - (bb_std * 2)
+    
+    # === MACD ===
+    df['MACD'] = df['EMA_12'] - df['EMA_26']
+    df['MACD_signal'] = df['MACD'].ewm(span=9).mean()
+    df['MACD_hist'] = df['MACD'] - df['MACD_signal']
+    
+    # === RSI ===
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # === Stochastic ===
+    low_14 = df['low'].rolling(14).min()
+    high_14 = df['high'].rolling(14).max()
+    df['Stoch_K'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
+    df['Stoch_D'] = df['Stoch_K'].rolling(3).mean()
+    
+    # === ATR (Average True Range) ===
+    high_low = df['high'] - df['low']
+    high_close = abs(df['high'] - df['close'].shift())
+    low_close = abs(df['low'] - df['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(14).mean()
+    
+    # === Volume indicators ===
+    df['Volume_SMA'] = df['volume'].rolling(20).mean()
+    df['OBV'] = (df['volume'] * ((df['close'] > df['close'].shift()).astype(int) * 2 - 1)).cumsum()
+    
+    return df
+
+
+# Warmup candles for indicators calculation
+WARMUP_CANDLES = 200
+
+
+def render_chart_preview():
+    """Show preview charts with ALL technical indicators"""
+    
+    symbols = cached_get_symbols()
     
     if not symbols:
-        st.info("No historical data available yet")
+        st.info("No data available for preview")
         return
     
-    # Symbol selector
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
+    # Selectors in row
+    c1, c2, c3 = st.columns([2, 1, 1])
+    
+    with c1:
         symbol = st.selectbox(
-            "Select Symbol",
+            "Select Coin",
             symbols,
             format_func=lambda x: x.replace('/USDT:USDT', ''),
-            key="verify_symbol"
+            key="hist_preview_symbol"
         )
-    with col2:
-        timeframe = st.selectbox(
-            "Timeframe",
-            ["15m", "1h"],
-            key="verify_tf"
-        )
-    with col3:
-        limit = st.selectbox(
-            "Candles",
-            [500, 1000, 2500, 5000],
-            index=1,
-            key="verify_limit"
-        )
+    with c2:
+        timeframe = st.selectbox("Timeframe", ["15m", "1h"], key="hist_preview_tf")
+    with c3:
+        limit = st.selectbox("Last N candles", [500, 1000, 2000], key="hist_preview_limit")
     
-    if symbol:
-        df = get_historical_ohlcv(symbol, timeframe, limit)
-        
-        if df is not None and len(df) > 0:
-            # Create candlestick chart
-            fig = go.Figure()
-            
-            # Candlestick with custom colors
-            fig.add_trace(go.Candlestick(
-                x=df.index,
-                open=df['open'],
-                high=df['high'],
-                low=df['low'],
-                close=df['close'],
-                name="OHLC",
-                increasing_line_color='#00ff88',
-                decreasing_line_color='#ff4757',
-                increasing_fillcolor='#00ff88',
-                decreasing_fillcolor='#ff4757'
-            ))
-            
-            # Highlight interpolated candles if any
-            if 'interpolated' in df.columns:
-                interp_df = df[df['interpolated'] == 1]
-                if len(interp_df) > 0:
-                    fig.add_trace(go.Scatter(
-                        x=interp_df.index,
-                        y=interp_df['high'],
-                        mode='markers',
-                        marker=dict(
-                            symbol='triangle-down',
-                            size=10,
-                            color='#ffa502'
-                        ),
-                        name="Interpolated"
-                    ))
-            
-            symbol_short = symbol.replace('/USDT:USDT', '')
-            fig.update_layout(
-                title=dict(
-                    text=f"{symbol_short} Historical Data [{timeframe}]",
-                    font=dict(color='#fff', size=16)
-                ),
-                xaxis=dict(
-                    title="Date",
-                    tickfont=dict(color='#888'),
-                    gridcolor='rgba(255,255,255,0.05)',
-                    rangeslider=dict(visible=False)
-                ),
-                yaxis=dict(
-                    title="Price (USDT)",
-                    tickfont=dict(color='#888'),
-                    gridcolor='rgba(255,255,255,0.05)'
-                ),
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                height=500,
-                margin=dict(t=50, b=50)
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Stats cards
-            interp_count = df['interpolated'].sum() if 'interpolated' in df.columns else 0
-            
-            stats_html = f"""
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 20px;">
-                {render_stat_card("🕯️", f"{len(df):,}", "Candles", "#00ffff")}
-                {render_stat_card("📅", df.index.min().strftime('%Y-%m-%d'), "From", "#00ff88")}
-                {render_stat_card("📅", df.index.max().strftime('%Y-%m-%d'), "To", "#a855f7")}
-                {render_stat_card("🔄", str(int(interp_count)), "Interpolated", "#ffa502")}
-            </div>
-            """
-            components.html(stats_html, height=160)
-        else:
-            st.warning(f"No data available for {symbol} [{timeframe}]")
-
-
-def render_gap_detector():
-    """Render gap detection view"""
-    st.markdown('<div class="section-title">⚠️ Gap Detector</div>', unsafe_allow_html=True)
-    
-    all_status = get_backfill_status_all()
-    
-    if not all_status:
-        st.info("No data available yet")
+    if not symbol:
         return
     
-    # Filter to only show items with gaps
-    gaps_data = [s for s in all_status if s['gap_count'] > 0]
+    # Get data WITH extra warmup candles for indicator calculation
+    total_candles = limit + WARMUP_CANDLES
+    df_full = cached_get_ohlcv(symbol, timeframe, total_candles)
     
-    if not gaps_data:
-        st.markdown("""
-        <div style="
-            background: linear-gradient(90deg, rgba(0, 255, 136, 0.1), rgba(0, 255, 136, 0.2));
-            border: 1px solid rgba(0, 255, 136, 0.3);
-            border-radius: 16px;
-            padding: 40px;
-            text-align: center;
-        ">
-            <div style="font-size: 48px; margin-bottom: 15px;">✅</div>
-            <h3 style="color: #00ff88; margin-bottom: 10px;">No Gaps Detected!</h3>
-            <p style="color: #888;">All historical data is complete and continuous.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    if df_full is None or len(df_full) == 0:
+        st.warning(f"No data available for {symbol}")
         return
     
+    # Calculate indicators on FULL dataset (includes warmup)
+    df_full = calculate_indicators(df_full)
+    
+    # Now trim to show only the requested candles (with calculated indicators)
+    df = df_full.tail(limit)
+    
+    # Info row
+    sym_short = symbol.replace('/USDT:USDT', '')
+    
+    # Data stats
+    st.markdown(f"### 📊 {sym_short} [{timeframe}] — {len(df):,} candles")
+    
+    # Date range and stats
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("📅 From", str(df.index.min())[:10])
+    c2.metric("📅 To", str(df.index.max())[:10])
+    c3.metric("💰 Last Price", f"${df['close'].iloc[-1]:,.2f}")
+    c4.metric("📊 Avg Volume", f"{df['volume'].mean():,.0f}")
+    c5.metric("📈 ATR", f"{df['ATR'].iloc[-1]:.2f}" if not pd.isna(df['ATR'].iloc[-1]) else "N/A")
+    
+    # === CHART 1: Candlestick with Bollinger Bands and MAs ===
+    st.markdown("#### 🕯️ Price + Bollinger Bands + Moving Averages")
+    
+    fig1 = go.Figure()
+    
+    # Candlestick
+    fig1.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='OHLC',
+        increasing_line_color='#26a69a',
+        decreasing_line_color='#ef5350'
+    ))
+    
+    # Bollinger Bands
+    fig1.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], name='BB Upper', line=dict(color='rgba(173,216,230,0.5)', width=1)))
+    fig1.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], name='BB Lower', line=dict(color='rgba(173,216,230,0.5)', width=1), fill='tonexty', fillcolor='rgba(173,216,230,0.1)'))
+    
+    # Moving Averages
+    fig1.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', line=dict(color='orange', width=1)))
+    fig1.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], name='SMA 50', line=dict(color='purple', width=1)))
+    
+    fig1.update_layout(
+        height=400,
+        xaxis_rangeslider_visible=False,
+        margin=dict(t=10, b=30, l=50, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(gridcolor='rgba(128,128,128,0.2)', title='Price'),
+        legend=dict(orientation='h', y=1.02, x=0.5, xanchor='center')
+    )
+    
+    st.plotly_chart(fig1, use_container_width=True)
+    
+    # === CHART 2: Volume ===
+    st.markdown("#### 📊 Volume")
+    
+    colors = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(df['close'], df['open'])]
+    
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume', marker_color=colors))
+    fig2.add_trace(go.Scatter(x=df.index, y=df['Volume_SMA'], name='Vol SMA 20', line=dict(color='yellow', width=1)))
+    
+    fig2.update_layout(
+        height=200,
+        margin=dict(t=10, b=30, l=50, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(gridcolor='rgba(128,128,128,0.2)', title='Volume'),
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig2, use_container_width=True)
+    
+    # === CHART 3: RSI ===
+    st.markdown("#### 📈 RSI (Relative Strength Index)")
+    
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI', line=dict(color='cyan', width=1)))
+    fig3.add_hline(y=70, line_dash='dash', line_color='red', annotation_text='Overbought')
+    fig3.add_hline(y=30, line_dash='dash', line_color='green', annotation_text='Oversold')
+    fig3.add_hrect(y0=30, y1=70, fillcolor='rgba(128,128,128,0.1)', line_width=0)
+    
+    fig3.update_layout(
+        height=200,
+        margin=dict(t=10, b=30, l=50, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(gridcolor='rgba(128,128,128,0.2)', title='RSI', range=[0, 100]),
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig3, use_container_width=True)
+    
+    # === CHART 4: MACD ===
+    st.markdown("#### 📉 MACD")
+    
+    macd_colors = ['#26a69a' if v >= 0 else '#ef5350' for v in df['MACD_hist']]
+    
+    fig4 = go.Figure()
+    fig4.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], name='MACD Histogram', marker_color=macd_colors))
+    fig4.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD', line=dict(color='blue', width=1)))
+    fig4.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'], name='Signal', line=dict(color='orange', width=1)))
+    
+    fig4.update_layout(
+        height=200,
+        margin=dict(t=10, b=30, l=50, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(gridcolor='rgba(128,128,128,0.2)', title='MACD'),
+        legend=dict(orientation='h', y=1.02, x=0.5, xanchor='center')
+    )
+    
+    st.plotly_chart(fig4, use_container_width=True)
+    
+    # === CHART 5: Stochastic ===
+    st.markdown("#### 🔄 Stochastic Oscillator")
+    
+    fig5 = go.Figure()
+    fig5.add_trace(go.Scatter(x=df.index, y=df['Stoch_K'], name='%K', line=dict(color='cyan', width=1)))
+    fig5.add_trace(go.Scatter(x=df.index, y=df['Stoch_D'], name='%D', line=dict(color='orange', width=1)))
+    fig5.add_hline(y=80, line_dash='dash', line_color='red')
+    fig5.add_hline(y=20, line_dash='dash', line_color='green')
+    
+    fig5.update_layout(
+        height=200,
+        margin=dict(t=10, b=30, l=50, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(gridcolor='rgba(128,128,128,0.2)', title='Stochastic', range=[0, 100]),
+        legend=dict(orientation='h', y=1.02, x=0.5, xanchor='center')
+    )
+    
+    st.plotly_chart(fig5, use_container_width=True)
+    
+    # === CHART 6: ATR ===
+    st.markdown("#### 📐 ATR (Average True Range - Volatility)")
+    
+    fig6 = go.Figure()
+    fig6.add_trace(go.Scatter(x=df.index, y=df['ATR'], name='ATR', line=dict(color='magenta', width=1), fill='tozeroy', fillcolor='rgba(255,0,255,0.1)'))
+    
+    fig6.update_layout(
+        height=200,
+        margin=dict(t=10, b=30, l=50, r=30),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(128,128,128,0.2)'),
+        yaxis=dict(gridcolor='rgba(128,128,128,0.2)', title='ATR'),
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig6, use_container_width=True)
+    
+    # === DATA TABLE (raw sample) ===
+    st.markdown("#### 📋 Raw Data Sample - ALL Indicators")
+    
+    # Summary stats first
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Total Candles", f"{len(df):,}")
+    sc2.metric("Date Range", f"{(df.index.max() - df.index.min()).days} days")
+    sc3.metric("Price Range", f"${df['low'].min():,.2f} - ${df['high'].max():,.2f}")
+    sc4.metric("Total Indicators", "16")
+    
+    # All available columns
+    all_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
+                'BB_upper', 'BB_mid', 'BB_lower',
+                'RSI', 'MACD', 'MACD_signal', 'MACD_hist',
+                'Stoch_K', 'Stoch_D', 'ATR', 'Volume_SMA', 'OBV']
+    
+    st.divider()
+    
+    # First 10 candles - HTML table with scroll
+    st.markdown("**🔼 First 10 Candles (oldest data) - ALL COLUMNS**")
+    first_df = df.head(10).copy()
+    first_df = first_df.reset_index()
+    first_df['timestamp'] = first_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+    available_cols = [c for c in all_cols if c in first_df.columns]
+    first_df = first_df[available_cols].round(4)
+    
+    # Convert to HTML with horizontal scroll
+    html_first = first_df.to_html(index=False, classes='dataframe')
     st.markdown(f"""
-    <div style="
-        background: rgba(255, 165, 2, 0.1);
-        border: 1px solid rgba(255, 165, 2, 0.3);
-        border-radius: 10px;
-        padding: 15px 20px;
-        margin-bottom: 20px;
-    ">
-        <span style="font-size: 20px; margin-right: 10px;">⚠️</span>
-        <span style="color: #ffa502; font-weight: 600;">{len(gaps_data)} symbol/timeframe pairs have gaps</span>
+    <div style="overflow-x: auto; max-width: 100%;">
+        <style>
+            .dataframe {{ font-size: 12px; border-collapse: collapse; width: 100%; }}
+            .dataframe th {{ background-color: #1e1e1e; color: #00ff88; padding: 8px; text-align: left; border: 1px solid #333; }}
+            .dataframe td {{ padding: 6px; border: 1px solid #333; color: #ffffff; background-color: #0e1117; }}
+        </style>
+        {html_first}
     </div>
     """, unsafe_allow_html=True)
     
-    # Create table
-    df = pd.DataFrame(gaps_data)
-    df['symbol_short'] = df['symbol'].str.replace('/USDT:USDT', '')
+    st.divider()
     
-    # Sort by gap count
-    df = df.sort_values('gap_count', ascending=False)
+    # Last 10 candles - HTML table with scroll
+    st.markdown("**🔽 Last 10 Candles (newest data) - ALL COLUMNS**")
+    last_df = df.tail(10).copy()
+    last_df = last_df.reset_index()
+    last_df['timestamp'] = last_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+    last_df = last_df[available_cols].round(4)
     
-    # Display
-    st.dataframe(
-        df[['symbol_short', 'timeframe', 'gap_count', 'completeness_pct', 
-            'total_candles', 'error_message']].rename(columns={
-            'symbol_short': 'Symbol',
-            'timeframe': 'TF',
-            'gap_count': 'Gaps',
-            'completeness_pct': 'Complete %',
-            'total_candles': 'Candles',
-            'error_message': 'Error'
-        }),
-        hide_index=True,
-        use_container_width=True
-    )
+    html_last = last_df.to_html(index=False, classes='dataframe')
+    st.markdown(f"""
+    <div style="overflow-x: auto; max-width: 100%;">
+        {html_last}
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Summary chart
-    if len(df) > 0:
-        fig = px.bar(
-            df.head(20),
-            x='symbol_short',
-            y='gap_count',
-            color='timeframe',
-            title="Top 20 Symbols with Most Gaps",
-            color_discrete_map={'15m': '#00ffff', '1h': '#a855f7'}
-        )
-        fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            height=400,
-            xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
-            yaxis=dict(gridcolor='rgba(255,255,255,0.05)')
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    # Show indicator count
+    st.caption(f"📊 **{len(available_cols)} columns**: {', '.join(available_cols)}")
 
 
 # Export

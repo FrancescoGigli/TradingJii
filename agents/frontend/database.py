@@ -383,3 +383,289 @@ def get_backfill_summary():
         return {}
     finally:
         conn.close()
+
+
+def get_historical_inventory():
+    """
+    Get per-symbol inventory with date ranges, ordered by volume rank.
+    Returns detailed info for each coin including both timeframes.
+    """
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        
+        # Check if tables exist
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='historical_ohlcv'")
+        if not cur.fetchone():
+            return []
+        
+        # Get all symbols with their data ranges, joined with top_symbols for ranking
+        query = '''
+            WITH symbol_stats AS (
+                SELECT 
+                    symbol,
+                    timeframe,
+                    MIN(timestamp) as from_date,
+                    MAX(timestamp) as to_date,
+                    COUNT(*) as candles,
+                    SUM(CASE WHEN interpolated = 1 THEN 1 ELSE 0 END) as interpolated
+                FROM historical_ohlcv
+                GROUP BY symbol, timeframe
+            ),
+            symbol_summary AS (
+                SELECT 
+                    s.symbol,
+                    MAX(CASE WHEN s.timeframe = '15m' THEN s.from_date END) as from_date_15m,
+                    MAX(CASE WHEN s.timeframe = '15m' THEN s.to_date END) as to_date_15m,
+                    MAX(CASE WHEN s.timeframe = '15m' THEN s.candles ELSE 0 END) as candles_15m,
+                    MAX(CASE WHEN s.timeframe = '15m' THEN s.interpolated ELSE 0 END) as interp_15m,
+                    MAX(CASE WHEN s.timeframe = '1h' THEN s.from_date END) as from_date_1h,
+                    MAX(CASE WHEN s.timeframe = '1h' THEN s.to_date END) as to_date_1h,
+                    MAX(CASE WHEN s.timeframe = '1h' THEN s.candles ELSE 0 END) as candles_1h,
+                    MAX(CASE WHEN s.timeframe = '1h' THEN s.interpolated ELSE 0 END) as interp_1h
+                FROM symbol_stats s
+                GROUP BY s.symbol
+            )
+            SELECT 
+                COALESCE(ts.rank, 999) as rank,
+                ss.symbol,
+                ss.from_date_15m,
+                ss.to_date_15m,
+                ss.candles_15m,
+                ss.interp_15m,
+                ss.from_date_1h,
+                ss.to_date_1h,
+                ss.candles_1h,
+                ss.interp_1h,
+                COALESCE(ts.volume_24h, 0) as volume_24h
+            FROM symbol_summary ss
+            LEFT JOIN top_symbols ts ON ss.symbol = ts.symbol
+            ORDER BY COALESCE(ts.rank, 999) ASC
+        '''
+        
+        cur.execute(query)
+        
+        results = []
+        for row in cur.fetchall():
+            results.append({
+                'rank': row[0],
+                'symbol': row[1],
+                'from_date_15m': row[2],
+                'to_date_15m': row[3],
+                'candles_15m': row[4] or 0,
+                'interp_15m': row[5] or 0,
+                'from_date_1h': row[6],
+                'to_date_1h': row[7],
+                'candles_1h': row[8] or 0,
+                'interp_1h': row[9] or 0,
+                'volume_24h': row[10] or 0
+            })
+        return results
+    except Exception as e:
+        print(f"Error in get_historical_inventory: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_historical_symbols_by_volume():
+    """Get list of symbols with historical data, ordered by volume rank"""
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        
+        # Check if table exists
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='historical_ohlcv'")
+        if not cur.fetchone():
+            return []
+        
+        # Get symbols ordered by volume rank
+        query = '''
+            SELECT DISTINCT h.symbol
+            FROM historical_ohlcv h
+            LEFT JOIN top_symbols ts ON h.symbol = ts.symbol
+            ORDER BY COALESCE(ts.rank, 999) ASC
+        '''
+        cur.execute(query)
+        return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def get_symbol_data_quality(symbol: str, timeframe: str):
+    """Get detailed data quality metrics for a specific symbol/timeframe"""
+    conn = get_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        
+        # Get basic stats
+        cur.execute('''
+            SELECT 
+                MIN(timestamp) as from_date,
+                MAX(timestamp) as to_date,
+                COUNT(*) as total_candles,
+                SUM(CASE WHEN interpolated = 1 THEN 1 ELSE 0 END) as interpolated,
+                AVG(volume) as avg_volume,
+                MIN(close) as min_price,
+                MAX(close) as max_price
+            FROM historical_ohlcv
+            WHERE symbol = ? AND timeframe = ?
+        ''', (symbol, timeframe))
+        
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        
+        # Get backfill status
+        cur.execute('''
+            SELECT completeness_pct, gap_count, status
+            FROM backfill_status
+            WHERE symbol = ? AND timeframe = ?
+        ''', (symbol, timeframe))
+        
+        bf_row = cur.fetchone()
+        
+        return {
+            'from_date': row[0],
+            'to_date': row[1],
+            'total_candles': row[2],
+            'interpolated': row[3] or 0,
+            'avg_volume': row[4] or 0,
+            'min_price': row[5] or 0,
+            'max_price': row[6] or 0,
+            'completeness_pct': bf_row[0] if bf_row else 0,
+            'gap_count': bf_row[1] if bf_row else 0,
+            'status': bf_row[2] if bf_row else 'UNKNOWN'
+        }
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def trigger_backfill():
+    """Create trigger file to start backfill process"""
+    from pathlib import Path
+    import os
+    
+    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
+    trigger_file = Path(shared_path) / 'start_backfill.txt'
+    
+    try:
+        trigger_file.parent.mkdir(parents=True, exist_ok=True)
+        trigger_file.write_text(f'Triggered at {pd.Timestamp.now()}')
+        return True
+    except Exception:
+        return False
+
+
+def check_backfill_running():
+    """Check if backfill is currently running"""
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='backfill_status'")
+        if not cur.fetchone():
+            return False
+        
+        cur.execute("SELECT COUNT(*) FROM backfill_status WHERE status = 'IN_PROGRESS'")
+        return cur.fetchone()[0] > 0
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_backfill_errors():
+    """Get list of symbols with errors and their error messages"""
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='backfill_status'")
+        if not cur.fetchone():
+            return []
+        
+        cur.execute('''
+            SELECT symbol, timeframe, error_message, last_update
+            FROM backfill_status
+            WHERE status = 'ERROR'
+            ORDER BY last_update DESC
+        ''')
+        
+        results = []
+        for row in cur.fetchall():
+            results.append({
+                'symbol': row[0],
+                'timeframe': row[1],
+                'error_message': row[2] or 'Unknown error',
+                'last_update': row[3]
+            })
+        return results
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def clear_historical_data():
+    """Clear all historical data and backfill status to start fresh"""
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        
+        # Drop historical tables if they exist
+        cur.execute("DROP TABLE IF EXISTS historical_ohlcv")
+        cur.execute("DROP TABLE IF EXISTS backfill_status")
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error clearing historical data: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def retry_failed_downloads():
+    """Reset ERROR status to PENDING so backfill will retry them"""
+    conn = get_connection()
+    if not conn:
+        return 0
+    try:
+        cur = conn.cursor()
+        
+        # Check if table exists
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='backfill_status'")
+        if not cur.fetchone():
+            return 0
+        
+        # Reset ERROR to PENDING
+        cur.execute('''
+            UPDATE backfill_status 
+            SET status = 'PENDING', error_message = NULL, last_update = datetime('now')
+            WHERE status = 'ERROR'
+        ''')
+        
+        count = cur.rowcount
+        conn.commit()
+        return count
+    except Exception as e:
+        print(f"Error retrying failed downloads: {e}")
+        return 0
+    finally:
+        conn.close()

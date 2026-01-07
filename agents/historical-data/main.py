@@ -163,13 +163,21 @@ class HistoricalDataAgent:
                         warmup_candles = len(df[df.index < warmup_end])
                         training_candles = len(df) - warmup_candles
                         
+                        # Calculate training_start safely (avoid index out of bounds)
+                        if warmup_candles >= len(df):
+                            training_start_ts = df.index.max().to_pydatetime()
+                        elif warmup_end in df.index:
+                            training_start_ts = warmup_end.to_pydatetime()
+                        else:
+                            training_start_ts = df.index[min(warmup_candles, len(df)-1)].to_pydatetime()
+                        
                         # Update status
                         self.db.update_backfill_status(
                             symbol, tf,
                             status=BackfillStatus.COMPLETE,
                             oldest_timestamp=df.index.min().to_pydatetime(),
                             warmup_start=df.index.min().to_pydatetime(),
-                            training_start=warmup_end.to_pydatetime() if warmup_end in df.index else df.index[warmup_candles].to_pydatetime(),
+                            training_start=training_start_ts,
                             newest_timestamp=df.index.max().to_pydatetime(),
                             total_candles=len(df),
                             warmup_candles=warmup_candles,
