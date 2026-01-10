@@ -106,11 +106,10 @@ def render_historical_data_tab():
     # === OVERVIEW METRICS ===
     st.divider()
     
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("📈 Symbols", stats.get('symbols', 0))
     m2.metric("🕯️ Total Candles", f"{stats.get('total_candles', 0):,}")
     m3.metric("💾 Database Size", f"{stats.get('db_size_mb', 0):.1f} MB")
-    m4.metric("🔄 Interpolated", f"{stats.get('interpolated_count', 0):,}")
     
     # Date range
     min_d = stats.get('min_date', '')[:10] if stats.get('min_date') else '—'
@@ -330,60 +329,21 @@ def render_coin_inventory():
         st.warning("⚠️ No coins found in inventory")
 
 
-def calculate_indicators(df):
-    """Calculate all technical indicators"""
-    df = df.copy()
+def check_indicators_in_db(df):
+    """Check if DataFrame has pre-computed indicators from database"""
+    required_indicators = ['SMA_20', 'RSI', 'MACD', 'ATR']
+    has_indicators = all(col in df.columns for col in required_indicators)
     
-    # === Moving Averages ===
-    df['SMA_20'] = df['close'].rolling(20).mean()
-    df['SMA_50'] = df['close'].rolling(50).mean()
-    df['EMA_12'] = df['close'].ewm(span=12).mean()
-    df['EMA_26'] = df['close'].ewm(span=26).mean()
-    
-    # === Bollinger Bands ===
-    df['BB_mid'] = df['close'].rolling(20).mean()
-    bb_std = df['close'].rolling(20).std()
-    df['BB_upper'] = df['BB_mid'] + (bb_std * 2)
-    df['BB_lower'] = df['BB_mid'] - (bb_std * 2)
-    
-    # === MACD ===
-    df['MACD'] = df['EMA_12'] - df['EMA_26']
-    df['MACD_signal'] = df['MACD'].ewm(span=9).mean()
-    df['MACD_hist'] = df['MACD'] - df['MACD_signal']
-    
-    # === RSI ===
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # === Stochastic ===
-    low_14 = df['low'].rolling(14).min()
-    high_14 = df['high'].rolling(14).max()
-    df['Stoch_K'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
-    df['Stoch_D'] = df['Stoch_K'].rolling(3).mean()
-    
-    # === ATR (Average True Range) ===
-    high_low = df['high'] - df['low']
-    high_close = abs(df['high'] - df['close'].shift())
-    low_close = abs(df['low'] - df['close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['ATR'] = tr.rolling(14).mean()
-    
-    # === Volume indicators ===
-    df['Volume_SMA'] = df['volume'].rolling(20).mean()
-    df['OBV'] = (df['volume'] * ((df['close'] > df['close'].shift()).astype(int) * 2 - 1)).cumsum()
-    
-    return df
-
-
-# Warmup candles for indicators calculation
-WARMUP_CANDLES = 200
+    # Also check if values are not all null
+    if has_indicators:
+        for col in required_indicators:
+            if df[col].notna().sum() > 0:
+                return True
+    return False
 
 
 def render_chart_preview():
-    """Show preview charts with ALL technical indicators"""
+    """Show preview charts with ALL technical indicators (pre-computed from database)"""
     
     symbols = cached_get_symbols()
     
@@ -409,19 +369,20 @@ def render_chart_preview():
     if not symbol:
         return
     
-    # Get data WITH extra warmup candles for indicator calculation
-    total_candles = limit + WARMUP_CANDLES
-    df_full = cached_get_ohlcv(symbol, timeframe, total_candles)
+    # Get data directly from DB (includes pre-computed indicators)
+    df = cached_get_ohlcv(symbol, timeframe, limit)
     
-    if df_full is None or len(df_full) == 0:
+    if df is None or len(df) == 0:
         st.warning(f"No data available for {symbol}")
         return
     
-    # Calculate indicators on FULL dataset (includes warmup)
-    df_full = calculate_indicators(df_full)
+    # Check if indicators are available in database
+    has_db_indicators = check_indicators_in_db(df)
     
-    # Now trim to show only the requested candles (with calculated indicators)
-    df = df_full.tail(limit)
+    if has_db_indicators:
+        st.success("📊 Using **pre-computed indicators** from database (faster)")
+    else:
+        st.warning("⚠️ Indicators not yet saved in database. Re-run backfill with --force to compute.")
     
     # Info row
     sym_short = symbol.replace('/USDT:USDT', '')
@@ -581,38 +542,40 @@ def render_chart_preview():
     # === DATA TABLE (raw sample) ===
     st.markdown("#### 📋 Raw Data Sample - ALL Indicators")
     
+    # Get ALL columns dynamically from dataframe (excluding index)
+    all_available_cols = list(df.columns)
+    
+    # Count indicators (exclude OHLCV base columns)
+    base_cols = {'open', 'high', 'low', 'close', 'volume'}
+    indicator_count = len([c for c in all_available_cols if c.lower() not in base_cols])
+    
     # Summary stats first
     sc1, sc2, sc3, sc4 = st.columns(4)
     sc1.metric("Total Candles", f"{len(df):,}")
     sc2.metric("Date Range", f"{(df.index.max() - df.index.min()).days} days")
     sc3.metric("Price Range", f"${df['low'].min():,.2f} - ${df['high'].max():,.2f}")
-    sc4.metric("Total Indicators", "16")
-    
-    # All available columns
-    all_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26',
-                'BB_upper', 'BB_mid', 'BB_lower',
-                'RSI', 'MACD', 'MACD_signal', 'MACD_hist',
-                'Stoch_K', 'Stoch_D', 'ATR', 'Volume_SMA', 'OBV']
+    sc4.metric("Total Indicators", f"{indicator_count}")
     
     st.divider()
     
-    # First 10 candles - HTML table with scroll
+    # First 10 candles - HTML table with scroll (ALL columns)
     st.markdown("**🔼 First 10 Candles (oldest data) - ALL COLUMNS**")
     first_df = df.head(10).copy()
     first_df = first_df.reset_index()
     first_df['timestamp'] = first_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-    available_cols = [c for c in all_cols if c in first_df.columns]
-    first_df = first_df[available_cols].round(4)
+    
+    # Use all columns
+    display_cols = ['timestamp'] + [c for c in all_available_cols if c in first_df.columns]
+    first_df = first_df[display_cols].round(4)
     
     # Convert to HTML with horizontal scroll
     html_first = first_df.to_html(index=False, classes='dataframe')
     st.markdown(f"""
     <div style="overflow-x: auto; max-width: 100%;">
         <style>
-            .dataframe {{ font-size: 12px; border-collapse: collapse; width: 100%; }}
-            .dataframe th {{ background-color: #1e1e1e; color: #00ff88; padding: 8px; text-align: left; border: 1px solid #333; }}
-            .dataframe td {{ padding: 6px; border: 1px solid #333; color: #ffffff; background-color: #0e1117; }}
+            .dataframe {{ font-size: 11px; border-collapse: collapse; width: 100%; }}
+            .dataframe th {{ background-color: #1e1e1e; color: #00ff88; padding: 6px; text-align: left; border: 1px solid #333; white-space: nowrap; }}
+            .dataframe td {{ padding: 4px; border: 1px solid #333; color: #ffffff; background-color: #0e1117; white-space: nowrap; }}
         </style>
         {html_first}
     </div>
@@ -625,7 +588,7 @@ def render_chart_preview():
     last_df = df.tail(10).copy()
     last_df = last_df.reset_index()
     last_df['timestamp'] = last_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
-    last_df = last_df[available_cols].round(4)
+    last_df = last_df[display_cols].round(4)
     
     html_last = last_df.to_html(index=False, classes='dataframe')
     st.markdown(f"""
@@ -634,8 +597,8 @@ def render_chart_preview():
     </div>
     """, unsafe_allow_html=True)
     
-    # Show indicator count
-    st.caption(f"📊 **{len(available_cols)} columns**: {', '.join(available_cols)}")
+    # Show total column count
+    st.success(f"📊 **{len(display_cols)} total columns** ({indicator_count} indicators + OHLCV)")
 
 
 # Export

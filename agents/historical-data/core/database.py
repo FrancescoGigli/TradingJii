@@ -79,7 +79,7 @@ class HistoricalDatabase:
         conn = self._get_connection()
         cur = conn.cursor()
         
-        # Historical OHLCV table (main data store for ML)
+        # Historical OHLCV table (main data store for ML) with indicators
         cur.execute('''
             CREATE TABLE IF NOT EXISTS historical_ohlcv (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,11 +92,43 @@ class HistoricalDatabase:
                 close REAL NOT NULL,
                 volume REAL NOT NULL,
                 fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                interpolated INTEGER DEFAULT 0,
+                
+                -- Technical Indicators (pre-computed)
+                sma_20 REAL,
+                sma_50 REAL,
+                ema_12 REAL,
+                ema_26 REAL,
+                bb_upper REAL,
+                bb_mid REAL,
+                bb_lower REAL,
+                macd REAL,
+                macd_signal REAL,
+                macd_hist REAL,
+                rsi REAL,
+                stoch_k REAL,
+                stoch_d REAL,
+                atr REAL,
+                volume_sma REAL,
+                obv REAL,
                 
                 UNIQUE(symbol, timeframe, timestamp)
             )
         ''')
+        
+        # Add indicator columns if they don't exist (for existing databases)
+        indicator_cols = [
+            'sma_20', 'sma_50', 'ema_12', 'ema_26',
+            'bb_upper', 'bb_mid', 'bb_lower',
+            'macd', 'macd_signal', 'macd_hist',
+            'rsi', 'stoch_k', 'stoch_d', 'atr',
+            'volume_sma', 'obv'
+        ]
+        
+        for col in indicator_cols:
+            try:
+                cur.execute(f'ALTER TABLE historical_ohlcv ADD COLUMN {col} REAL')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         
         # Indexes for fast queries
         cur.execute('CREATE INDEX IF NOT EXISTS idx_hist_symbol_tf ON historical_ohlcv(symbol, timeframe)')
@@ -146,18 +178,16 @@ class HistoricalDatabase:
         self, 
         symbol: str, 
         timeframe: str, 
-        df: pd.DataFrame,
-        interpolated: bool = False
+        df: pd.DataFrame
     ) -> int:
         """
-        Save OHLCV candles to historical_ohlcv table.
+        Save OHLCV candles with indicators to historical_ohlcv table.
         Uses INSERT OR REPLACE for upsert behavior.
         
         Args:
             symbol: Trading pair symbol
             timeframe: Candle timeframe (e.g., '15m')
-            df: DataFrame with OHLCV data (must have datetime index)
-            interpolated: Mark candles as interpolated
+            df: DataFrame with OHLCV data and indicators (must have datetime index)
             
         Returns:
             Number of candles saved
@@ -179,21 +209,57 @@ class HistoricalDatabase:
                 data['timestamp'] = data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        interp_flag = 1 if interpolated else 0
+        
+        # Indicator columns
+        indicator_cols = [
+            'sma_20', 'sma_50', 'ema_12', 'ema_26',
+            'bb_upper', 'bb_mid', 'bb_lower',
+            'macd', 'macd_signal', 'macd_hist',
+            'rsi', 'stoch_k', 'stoch_d', 'atr',
+            'volume_sma', 'obv'
+        ]
+        
+        # Check which indicator columns exist in dataframe
+        available_indicators = [col for col in indicator_cols if col in data.columns]
+        has_indicators = len(available_indicators) > 0
         
         count = 0
         for _, row in data.iterrows():
             try:
-                cur.execute('''
-                    INSERT OR REPLACE INTO historical_ohlcv 
-                    (symbol, timeframe, timestamp, open, high, low, close, volume, fetched_at, interpolated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    symbol, timeframe, row['timestamp'],
-                    float(row['open']), float(row['high']), 
-                    float(row['low']), float(row['close']), 
-                    float(row['volume']), now, interp_flag
-                ))
+                if has_indicators:
+                    # Build dynamic query with indicators
+                    cols = 'symbol, timeframe, timestamp, open, high, low, close, volume, fetched_at'
+                    placeholders = '?, ?, ?, ?, ?, ?, ?, ?, ?'
+                    values = [
+                        symbol, timeframe, row['timestamp'],
+                        float(row['open']), float(row['high']), 
+                        float(row['low']), float(row['close']), 
+                        float(row['volume']), now
+                    ]
+                    
+                    for col in available_indicators:
+                        cols += f', {col}'
+                        placeholders += ', ?'
+                        val = row[col]
+                        values.append(None if pd.isna(val) else float(val))
+                    
+                    cur.execute(f'''
+                        INSERT OR REPLACE INTO historical_ohlcv 
+                        ({cols})
+                        VALUES ({placeholders})
+                    ''', values)
+                else:
+                    # Original query without indicators
+                    cur.execute('''
+                        INSERT OR REPLACE INTO historical_ohlcv 
+                        (symbol, timeframe, timestamp, open, high, low, close, volume, fetched_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        symbol, timeframe, row['timestamp'],
+                        float(row['open']), float(row['high']), 
+                        float(row['low']), float(row['close']), 
+                        float(row['volume']), now
+                    ))
                 count += 1
             except Exception as e:
                 logger.warning(f"Error saving candle {symbol}[{timeframe}] {row.get('timestamp', 'N/A')}: {e}")
@@ -209,10 +275,11 @@ class HistoricalDatabase:
         timeframe: str, 
         start_date: datetime = None,
         end_date: datetime = None,
-        limit: int = None
+        limit: int = None,
+        include_indicators: bool = True
     ) -> pd.DataFrame:
         """
-        Get historical OHLCV data from database.
+        Get historical OHLCV data with indicators from database.
         
         Args:
             symbol: Trading pair symbol
@@ -220,14 +287,29 @@ class HistoricalDatabase:
             start_date: Start of date range (optional)
             end_date: End of date range (optional)
             limit: Maximum rows to return (optional)
+            include_indicators: Include pre-computed indicators (default True)
             
         Returns:
-            DataFrame with OHLCV data, datetime index
+            DataFrame with OHLCV data and indicators, datetime index
         """
         conn = self._get_connection()
         
-        query = '''
-            SELECT timestamp, open, high, low, close, volume, interpolated
+        # Base columns
+        columns = 'timestamp, open, high, low, close, volume'
+        
+        # Add indicator columns if requested
+        if include_indicators:
+            indicator_cols = [
+                'sma_20', 'sma_50', 'ema_12', 'ema_26',
+                'bb_upper', 'bb_mid', 'bb_lower',
+                'macd', 'macd_signal', 'macd_hist',
+                'rsi', 'stoch_k', 'stoch_d', 'atr',
+                'volume_sma', 'obv'
+            ]
+            columns += ', ' + ', '.join(indicator_cols)
+        
+        query = f'''
+            SELECT {columns}
             FROM historical_ohlcv
             WHERE symbol = ? AND timeframe = ?
         '''
@@ -534,9 +616,6 @@ class HistoricalDatabase:
         cur.execute('SELECT MIN(timestamp), MAX(timestamp) FROM historical_ohlcv')
         time_range = cur.fetchone()
         
-        cur.execute('SELECT COUNT(*) FROM historical_ohlcv WHERE interpolated = 1')
-        interpolated_count = cur.fetchone()[0]
-        
         # Backfill status stats
         cur.execute('''
             SELECT status, COUNT(*) as count 
@@ -554,7 +633,6 @@ class HistoricalDatabase:
             'symbols': symbols_count,
             'timeframes': tf_count,
             'total_candles': candles_count,
-            'interpolated_candles': interpolated_count,
             'min_date': time_range[0],
             'max_date': time_range[1],
             'db_size_mb': db_size / (1024 * 1024),
@@ -571,7 +649,6 @@ class HistoricalDatabase:
         print(colored(f"  📈 Unique symbols: {stats['symbols']}", "white"))
         print(colored(f"  ⏰ Timeframes: {stats['timeframes']}", "white"))
         print(colored(f"  🕯️ Total candles: {stats['total_candles']:,}", "white"))
-        print(colored(f"  🔄 Interpolated: {stats['interpolated_candles']:,}", "yellow"))
         print(colored(f"  💾 DB Size: {stats['db_size_mb']:.2f} MB", "white"))
         if stats['min_date'] and stats['max_date']:
             print(colored(f"  📅 Date range: {stats['min_date'][:10]} → {stats['max_date'][:10]}", "white"))

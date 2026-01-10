@@ -98,8 +98,6 @@ class FeatureCalculator:
             rsi = 100 - (100 / (1 + rs))
             
             features[f'rsi_{period}'] = rsi
-            # Normalized RSI (0-centered)
-            features[f'rsi_norm_{period}'] = (rsi - 50) / 50
         
         return features
     
@@ -340,21 +338,16 @@ class FeatureCalculator:
         volatility = log_returns.rolling(20).std()
         
         for w in windows:
-            # Volatility percentile
-            features[f'vol_percentile_{w}'] = self.compute_percentile_rank(volatility, w)
+            # Volatility percentile (internal use only)
+            vol_pct = self.compute_percentile_rank(volatility, w)
             
             # Volatility regime (categorical encoded)
-            vol_pct = features[f'vol_percentile_{w}']
             features[f'vol_regime_{w}'] = pd.cut(
                 vol_pct, 
                 bins=[0, 0.33, 0.66, 1.0], 
                 labels=[0, 1, 2],  # Low, Medium, High
                 include_lowest=True
             ).astype(float)
-            
-            # Momentum percentile
-            ret_w = log_returns.rolling(20).mean()
-            features[f'momentum_percentile_{w}'] = self.compute_percentile_rank(ret_w, w)
         
         return features
     
@@ -443,12 +436,9 @@ class FeatureCalculator:
         if 'price_action' in feature_config:
             all_features.append(self.compute_candle_features(df))
         
-        # Context features
-        regime_windows = CONTEXT_FEATURES.get('vol_percentile', [100])
+        # Context features - vol_regime only
+        regime_windows = CONTEXT_FEATURES.get('vol_regime', [100])
         all_features.append(self.compute_regime_features(df, regime_windows))
-        
-        speed_windows = CONTEXT_FEATURES.get('speed', [5, 20])
-        all_features.append(self.compute_speed_acceleration(df, speed_windows))
         
         # Combine all features
         features_df = pd.concat(all_features, axis=1)

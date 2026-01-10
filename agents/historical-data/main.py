@@ -29,6 +29,7 @@ from termcolor import colored
 import config
 from core.database import HistoricalDatabase, BackfillStatus
 from core.validation import DataValidator, validate_and_fill_gaps
+from core.indicators import calculate_all_indicators, INDICATOR_COLUMNS
 from fetcher.bybit_historical import BybitHistoricalFetcher, print_download_progress
 
 # Configure logging
@@ -153,7 +154,11 @@ class HistoricalDataAgent:
                         # Validate and fill gaps
                         df, validation = validate_and_fill_gaps(df, tf)
                         
-                        # Save to database
+                        # Calculate technical indicators
+                        print(colored(f"   📊 Calculating {len(INDICATOR_COLUMNS)} indicators...", "cyan"))
+                        df = calculate_all_indicators(df)
+                        
+                        # Save to database (with indicators)
                         saved = self.db.save_candles(symbol, tf, df)
                         
                         # Calculate warmup/training split

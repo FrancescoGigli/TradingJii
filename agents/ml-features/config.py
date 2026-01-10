@@ -82,17 +82,10 @@ ASSET_FEATURES = {
 # ═══════════════════════════════════════════════════════════════════════════════
 CONTEXT_FEATURES = {
     # Volatility regime
-    'vol_percentile': [100],               # Current vol percentile over N bars
     'vol_regime': [100],                   # High/Medium/Low classification
-    
-    # Momentum regime
-    'momentum_percentile': [100],          # Return percentile
-    'speed': [5, 20],                      # Rate of change of returns
-    'acceleration': [5, 20],               # Rate of change of speed
     
     # Liquidity proxy
     'spread_estimate': [20],               # (High-Low)/Volume proxy
-    'volume_stability': [50],              # Vol std / Vol mean
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,7 +114,6 @@ MARKET_FEATURES = {
 MTF_FEATURES = {
     # 1h timeframe features to include
     '1h': {
-        'trend_direction': True,           # 1h EMA trend direction
         'rsi': True,                        # 1h RSI
         'volume_ratio': True,              # 1h volume vs average
     }

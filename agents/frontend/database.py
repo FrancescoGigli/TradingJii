@@ -210,8 +210,7 @@ def get_historical_stats():
         
         cur.execute('''
             SELECT COUNT(DISTINCT symbol), COUNT(DISTINCT timeframe), 
-                   COUNT(*), MIN(timestamp), MAX(timestamp),
-                   SUM(CASE WHEN interpolated = 1 THEN 1 ELSE 0 END)
+                   COUNT(*), MIN(timestamp), MAX(timestamp)
             FROM historical_ohlcv
         ''')
         r = cur.fetchone()
@@ -226,7 +225,6 @@ def get_historical_stats():
             'total_candles': r[2] or 0,
             'min_date': r[3],
             'max_date': r[4],
-            'interpolated_count': r[5] or 0,
             'db_size_mb': db_size / (1024 * 1024)
         }
     except Exception as e:
@@ -279,8 +277,19 @@ def get_backfill_status_all():
         conn.close()
 
 
-def get_historical_ohlcv(symbol, timeframe, limit=1000):
-    """Get historical OHLCV data for visualization"""
+def get_historical_ohlcv(symbol, timeframe, limit=1000, include_indicators=True):
+    """
+    Get historical OHLCV data with pre-computed indicators from database.
+    
+    Args:
+        symbol: Trading pair symbol
+        timeframe: Candle timeframe
+        limit: Max number of candles to return
+        include_indicators: Include pre-computed indicators (default True)
+    
+    Returns:
+        DataFrame with OHLCV and selected indicators
+    """
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
@@ -291,8 +300,39 @@ def get_historical_ohlcv(symbol, timeframe, limit=1000):
         if not cur.fetchone():
             return pd.DataFrame()
         
-        query = '''
-            SELECT timestamp, open, high, low, close, volume, interpolated
+        if include_indicators:
+            # Get ALL columns from the table dynamically
+            cur.execute("PRAGMA table_info(historical_ohlcv)")
+            all_cols = [row[1] for row in cur.fetchall()]
+            
+            # Columns to EXCLUDE (unwanted indicators + metadata)
+            exclude_cols = {
+                'id', 'symbol', 'timeframe', 'fetched_at',
+                # Unwanted indicators to remove
+                'interpolated',
+                'rsi_14_norm', 'macd_hist_norm', 'adx_14_norm',
+                'trend_direction',
+                'momentum_10', 'momentum_20',
+                'speed_5', 'speed_20', 'accel_5', 'accel_20',
+                'vol_5', 'vol_10', 'vol_20',
+                'range_pct_5', 'range_pct_10', 'range_pct_20',
+                'ret_percentile_50', 'ret_percentile_100',
+                'price_position_20', 'price_position_50', 'price_position_100',
+                'vol_percentile', 'vol_stability', 'vol_ratio', 'vol_change',
+                'dist_from_high_20', 'dist_from_low_20',
+                'consecutive_up', 'consecutive_down',
+                'ret_5', 'ret_10', 'ret_20',
+                'ema_20_dist', 'ema_50_dist', 'ema_200_dist',
+                'ema_20_50_cross', 'ema_50_200_cross',
+                'obv_slope', 'vwap_dist',
+                'body_pct', 'candle_direction', 'upper_shadow_pct', 'lower_shadow_pct', 'gap_pct'
+            }
+            columns = ', '.join([c for c in all_cols if c not in exclude_cols])
+        else:
+            columns = 'timestamp, open, high, low, close, volume'
+        
+        query = f'''
+            SELECT {columns}
             FROM historical_ohlcv 
             WHERE symbol=? AND timeframe=?
             ORDER BY timestamp DESC LIMIT ?
@@ -302,8 +342,23 @@ def get_historical_ohlcv(symbol, timeframe, limit=1000):
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df.sort_values('timestamp')
             df.set_index('timestamp', inplace=True)
+            
+            # Rename main indicator columns to match frontend expected names (uppercase for charts)
+            if include_indicators:
+                rename_map = {
+                    'sma_20': 'SMA_20', 'sma_50': 'SMA_50',
+                    'ema_12': 'EMA_12', 'ema_26': 'EMA_26',
+                    'bb_upper': 'BB_upper', 'bb_mid': 'BB_mid', 'bb_lower': 'BB_lower',
+                    'macd': 'MACD', 'macd_signal': 'MACD_signal', 'macd_hist': 'MACD_hist',
+                    'rsi': 'RSI',
+                    'stoch_k': 'Stoch_K', 'stoch_d': 'Stoch_D',
+                    'atr': 'ATR',
+                    'volume_sma': 'Volume_SMA', 'obv': 'OBV'
+                }
+                df.rename(columns=rename_map, inplace=True)
         return df
-    except Exception:
+    except Exception as e:
+        print(f"Error in get_historical_ohlcv: {e}")
         return pd.DataFrame()
     finally:
         conn.close()
@@ -409,8 +464,7 @@ def get_historical_inventory():
                     timeframe,
                     MIN(timestamp) as from_date,
                     MAX(timestamp) as to_date,
-                    COUNT(*) as candles,
-                    SUM(CASE WHEN interpolated = 1 THEN 1 ELSE 0 END) as interpolated
+                    COUNT(*) as candles
                 FROM historical_ohlcv
                 GROUP BY symbol, timeframe
             ),
@@ -420,11 +474,9 @@ def get_historical_inventory():
                     MAX(CASE WHEN s.timeframe = '15m' THEN s.from_date END) as from_date_15m,
                     MAX(CASE WHEN s.timeframe = '15m' THEN s.to_date END) as to_date_15m,
                     MAX(CASE WHEN s.timeframe = '15m' THEN s.candles ELSE 0 END) as candles_15m,
-                    MAX(CASE WHEN s.timeframe = '15m' THEN s.interpolated ELSE 0 END) as interp_15m,
                     MAX(CASE WHEN s.timeframe = '1h' THEN s.from_date END) as from_date_1h,
                     MAX(CASE WHEN s.timeframe = '1h' THEN s.to_date END) as to_date_1h,
-                    MAX(CASE WHEN s.timeframe = '1h' THEN s.candles ELSE 0 END) as candles_1h,
-                    MAX(CASE WHEN s.timeframe = '1h' THEN s.interpolated ELSE 0 END) as interp_1h
+                    MAX(CASE WHEN s.timeframe = '1h' THEN s.candles ELSE 0 END) as candles_1h
                 FROM symbol_stats s
                 GROUP BY s.symbol
             )
@@ -434,11 +486,9 @@ def get_historical_inventory():
                 ss.from_date_15m,
                 ss.to_date_15m,
                 ss.candles_15m,
-                ss.interp_15m,
                 ss.from_date_1h,
                 ss.to_date_1h,
                 ss.candles_1h,
-                ss.interp_1h,
                 COALESCE(ts.volume_24h, 0) as volume_24h
             FROM symbol_summary ss
             LEFT JOIN top_symbols ts ON ss.symbol = ts.symbol
@@ -455,12 +505,10 @@ def get_historical_inventory():
                 'from_date_15m': row[2],
                 'to_date_15m': row[3],
                 'candles_15m': row[4] or 0,
-                'interp_15m': row[5] or 0,
-                'from_date_1h': row[6],
-                'to_date_1h': row[7],
-                'candles_1h': row[8] or 0,
-                'interp_1h': row[9] or 0,
-                'volume_24h': row[10] or 0
+                'from_date_1h': row[5],
+                'to_date_1h': row[6],
+                'candles_1h': row[7] or 0,
+                'volume_24h': row[8] or 0
             })
         return results
     except Exception as e:
@@ -512,7 +560,6 @@ def get_symbol_data_quality(symbol: str, timeframe: str):
                 MIN(timestamp) as from_date,
                 MAX(timestamp) as to_date,
                 COUNT(*) as total_candles,
-                SUM(CASE WHEN interpolated = 1 THEN 1 ELSE 0 END) as interpolated,
                 AVG(volume) as avg_volume,
                 MIN(close) as min_price,
                 MAX(close) as max_price
@@ -537,10 +584,9 @@ def get_symbol_data_quality(symbol: str, timeframe: str):
             'from_date': row[0],
             'to_date': row[1],
             'total_candles': row[2],
-            'interpolated': row[3] or 0,
-            'avg_volume': row[4] or 0,
-            'min_price': row[5] or 0,
-            'max_price': row[6] or 0,
+            'avg_volume': row[3] or 0,
+            'min_price': row[4] or 0,
+            'max_price': row[5] or 0,
             'completeness_pct': bf_row[0] if bf_row else 0,
             'gap_count': bf_row[1] if bf_row else 0,
             'status': bf_row[2] if bf_row else 'UNKNOWN'
