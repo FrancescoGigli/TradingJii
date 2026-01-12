@@ -76,13 +76,73 @@ def render_database_explorer():
         sm2.metric("🕒 Symbols with 15m", symbols_with_15m)
         sm3.metric("⏰ Symbols with 1h", symbols_with_1h)
         
-        # Display table
-        st.dataframe(
-            display_df,
-            use_container_width=True,
-            hide_index=True,
-            height=400
-        )
+        # Apply styled visualization - Split into 2 columns
+        def style_inventory_table(df):
+            def style_number_cell(val):
+                if isinstance(val, str) and val != '-':
+                    return 'color: #00ccff'
+                return 'color: #666666'
+            
+            def style_score_cell(val):
+                if isinstance(val, str) and val != '-':
+                    # Parse the value to check if positive or negative
+                    try:
+                        num = float(val.replace('%', ''))
+                        if num > 0:
+                            return 'color: #00ff88; font-weight: bold'
+                        elif num < 0:
+                            return 'color: #ff4444; font-weight: bold'
+                    except:
+                        pass
+                    return 'color: #00ccff'
+                return 'color: #666666'
+            
+            return df.style.applymap(
+                style_number_cell,
+                subset=['15m Labels', '1h Labels']
+            ).applymap(
+                style_score_cell,
+                subset=['Avg Score 15m', 'Avg Score 1h', '% Positive 15m', '% Positive 1h']
+            ).set_properties(**{
+                'background-color': '#1a1a2e',
+                'color': '#ffffff',
+                'border-color': '#333355',
+                'font-size': '12px'
+            }).set_table_styles([
+                {'selector': '', 'props': [
+                    ('width', '100%'),
+                    ('table-layout', 'fixed')
+                ]},
+                {'selector': 'th', 'props': [
+                    ('background-color', '#252540'),
+                    ('color', '#ffffff'),
+                    ('font-weight', 'bold'),
+                    ('padding', '6px 8px'),
+                    ('border-bottom', '2px solid #00ff88'),
+                    ('font-size', '12px'),
+                    ('text-align', 'center')
+                ]},
+                {'selector': 'td', 'props': [
+                    ('padding', '5px 8px'),
+                    ('border-bottom', '1px solid #333355'),
+                    ('text-align', 'center')
+                ]}
+            ])
+        
+        # Split into 2 columns of 50 rows each
+        half = len(display_df) // 2
+        df_left = display_df.iloc[:half].reset_index(drop=True)
+        df_right = display_df.iloc[half:].reset_index(drop=True)
+        
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.markdown(f"**Coins 1-{half}**")
+            st.markdown(style_inventory_table(df_left).to_html(escape=False), unsafe_allow_html=True)
+        
+        with col_right:
+            st.markdown(f"**Coins {half+1}-{len(display_df)}**")
+            st.markdown(style_inventory_table(df_right).to_html(escape=False), unsafe_allow_html=True)
         
         # Download inventory
         csv_buffer = BytesIO()
@@ -107,11 +167,54 @@ def render_database_explorer():
         
         if schema:
             schema_df = pd.DataFrame(schema)
-            st.dataframe(
-                schema_df[['name', 'type', 'notnull']],
-                use_container_width=True,
-                hide_index=True
-            )
+            display_schema = schema_df[['name', 'type', 'notnull']].copy()
+            display_schema['notnull'] = display_schema['notnull'].apply(lambda x: '✅' if x else '❌')
+            display_schema.columns = ['Column Name', 'Data Type', 'Required']
+            
+            # Style schema table
+            def style_schema(df):
+                def style_type(val):
+                    if 'REAL' in str(val):
+                        return 'color: #00ccff'
+                    elif 'INTEGER' in str(val):
+                        return 'color: #ffaa00'
+                    elif 'TEXT' in str(val):
+                        return 'color: #00ff88'
+                    return 'color: #ffffff'
+                
+                return df.style.applymap(
+                    style_type,
+                    subset=['Data Type']
+                ).set_properties(**{
+                    'background-color': '#1a1a2e',
+                    'color': '#ffffff',
+                    'border-color': '#333355',
+                    'font-size': '12px'
+                }).set_table_styles([
+                    {'selector': '', 'props': [('width', '100%')]},
+                    {'selector': 'th', 'props': [
+                        ('background-color', '#252540'),
+                        ('color', '#ffffff'),
+                        ('font-weight', 'bold'),
+                        ('padding', '8px'),
+                        ('border-bottom', '2px solid #00ff88')
+                    ]},
+                    {'selector': 'td', 'props': [
+                        ('padding', '6px 10px'),
+                        ('border-bottom', '1px solid #333355')
+                    ]}
+                ])
+            
+            st.markdown(style_schema(display_schema).to_html(escape=False), unsafe_allow_html=True)
+            
+            # Quick summary
+            st.markdown(f"""
+            **📊 Schema Summary:**
+            - Total columns: **{len(schema_df)}**
+            - REAL (numeric): **{len(schema_df[schema_df['type'] == 'REAL'])}**
+            - INTEGER: **{len(schema_df[schema_df['type'] == 'INTEGER'])}**
+            - TEXT: **{len(schema_df[schema_df['type'] == 'TEXT'])}**
+            """)
         else:
             st.info("Schema not available")
     
