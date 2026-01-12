@@ -2,6 +2,7 @@
 OHLCV data access functions
 """
 
+import streamlit as st
 import pandas as pd
 from .connection import get_connection
 
@@ -12,8 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import CANDLES_LIMIT
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_top_symbols():
-    """Get list of top symbols with volume"""
+    """Get list of top symbols with volume (cached 5min)"""
     conn = get_connection()
     if not conn:
         return []
@@ -39,8 +41,9 @@ def get_top_symbols():
         conn.close()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_symbols():
-    """Get list of distinct symbols ordered by volume (from top_symbols table)"""
+    """Get list of distinct symbols ordered by volume (cached 5min)"""
     conn = get_connection()
     if not conn:
         return []
@@ -67,8 +70,9 @@ def get_symbols():
         conn.close()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_timeframes(symbol):
-    """Get available timeframes for a symbol"""
+    """Get available timeframes for a symbol (cached 5min)"""
     conn = get_connection()
     if not conn:
         return []
@@ -108,8 +112,9 @@ def get_ohlcv(symbol, timeframe, limit=CANDLES_LIMIT):
         conn.close()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def get_stats():
-    """Get database statistics"""
+    """Get database statistics (cached 30s)"""
     conn = get_connection()
     if not conn:
         return {}
@@ -140,8 +145,9 @@ def get_stats():
         conn.close()
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def get_update_status():
-    """Get current update status from data-fetcher"""
+    """Get current update status from data-fetcher (cached 10s)"""
     conn = get_connection()
     if not conn:
         return {

@@ -2,6 +2,7 @@
 ML Training Labels functions
 """
 
+import streamlit as st
 import pandas as pd
 from .connection import get_connection
 
@@ -211,8 +212,9 @@ def save_ml_labels_to_db(symbol: str, timeframe: str, ohlcv_df: pd.DataFrame,
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_ml_labels_stats():
-    """Get statistics for saved ML training labels"""
+    """Get statistics for saved ML training labels (cached 60s)"""
     conn = get_connection()
     if not conn:
         return {}
@@ -261,8 +263,9 @@ def get_ml_labels_stats():
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_ml_labels_by_symbol():
-    """Get ML labels info grouped by symbol"""
+    """Get ML labels info grouped by symbol (cached 60s)"""
     conn = get_connection()
     if not conn:
         return []
@@ -473,6 +476,65 @@ def get_ml_training_dataset(symbol: str = None, timeframe: str = None,
         # Convert timestamp
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
+        # === FILTER OUT NaN ROWS (warm-up period for indicators) ===
+        rows_before = len(df)
+        
+        # Find columns with nulls before filtering
+        null_counts_before = df.isnull().sum()
+        cols_with_nulls_before = null_counts_before[null_counts_before > 0].index.tolist()
+        
+        # For each symbol/timeframe group, find the first row with NO nulls
+        # and keep only from that row onwards (ensures consecutive clean data)
+        clean_dfs = []
+        
+        for (sym, tf), group in df.groupby(['symbol', 'timeframe']):
+            group = group.sort_values('timestamp').reset_index(drop=True)
+            
+            # Find first row where ALL columns are non-null
+            first_complete_idx = None
+            for idx in range(len(group)):
+                if not group.iloc[idx].isnull().any():
+                    first_complete_idx = idx
+                    break
+            
+            if first_complete_idx is not None:
+                # Keep from first complete row onwards
+                clean_group = group.iloc[first_complete_idx:].copy()
+                clean_dfs.append(clean_group)
+        
+        if clean_dfs:
+            df = pd.concat(clean_dfs, ignore_index=True)
+        else:
+            df = pd.DataFrame()
+        
+        rows_removed = rows_before - len(df)
+        
+        if rows_removed > 0:
+            errors.append(f"Filtered {rows_removed:,} warm-up rows (first rows with NaN in: {', '.join(cols_with_nulls_before[:5])}{'...' if len(cols_with_nulls_before) > 5 else ''})")
+        
+        # === VERIFY TIMESTAMP CONSECUTIVITY ===
+        gaps_found = []
+        timeframe_minutes = {'15m': 15, '1h': 60, '4h': 240, '1d': 1440}
+        
+        for (sym, tf), group in df.groupby(['symbol', 'timeframe']):
+            group = group.sort_values('timestamp')
+            expected_delta = pd.Timedelta(minutes=timeframe_minutes.get(tf, 15))
+            
+            # Calculate time differences
+            time_diffs = group['timestamp'].diff()
+            
+            # Find gaps (where diff != expected)
+            gap_mask = (time_diffs.notna()) & (time_diffs != expected_delta)
+            gap_rows = group[gap_mask]
+            
+            for _, row in gap_rows.iterrows():
+                gaps_found.append({
+                    'symbol': sym,
+                    'timeframe': tf,
+                    'timestamp': row['timestamp'],
+                    'actual_gap': time_diffs.loc[row.name]
+                })
+        
         # Calculate statistics
         stats = {
             'total_rows': len(df),
@@ -510,6 +572,17 @@ def get_ml_training_dataset(symbol: str = None, timeframe: str = None,
         # Per-symbol stats
         symbol_counts = df.groupby('symbol').size().to_dict()
         stats['rows_per_symbol'] = symbol_counts
+        
+        # Add gap stats
+        stats['gaps_count'] = len(gaps_found)
+        stats['is_consecutive'] = len(gaps_found) == 0
+        
+        if gaps_found:
+            # Show first 3 gaps as warning
+            gap_msgs = []
+            for gap in gaps_found[:3]:
+                gap_msgs.append(f"{gap['symbol']} {gap['timeframe']}: gap of {gap['actual_gap']} at {gap['timestamp']}")
+            errors.append(f"⚠️ {len(gaps_found)} gaps in timeline: {'; '.join(gap_msgs)}")
         
         return df, stats, errors
         
@@ -659,8 +732,9 @@ def clear_ml_labels(symbol: str = None, timeframe: str = None):
         conn.close()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_ml_labels_table_schema():
-    """Get the schema of ml_training_labels table"""
+    """Get the schema of ml_training_labels table (cached 5min)"""
     conn = get_connection()
     if not conn:
         return []
@@ -689,8 +763,9 @@ def get_ml_labels_table_schema():
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_available_symbols_for_labels():
-    """Get list of symbols that have ML labels in database"""
+    """Get list of symbols that have ML labels in database (cached 60s)"""
     conn = get_connection()
     if not conn:
         return []
@@ -709,10 +784,11 @@ def get_available_symbols_for_labels():
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_ml_labels_inventory():
     """
     Get per-symbol inventory with label counts and scores, ordered by volume rank.
-    Similar to get_historical_inventory but for ML labels.
+    Similar to get_historical_inventory but for ML labels. (cached 60s)
     """
     conn = get_connection()
     if not conn:

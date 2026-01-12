@@ -2,6 +2,7 @@
 Historical data functions (ML Training data)
 """
 
+import streamlit as st
 import pandas as pd
 from pathlib import Path
 import os
@@ -13,8 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import DB_PATH
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_historical_stats():
-    """Get statistics for historical data (ML training data)"""
+    """Get statistics for historical data (ML training data) (cached 60s)"""
     conn = get_connection()
     if not conn:
         return {}
@@ -182,8 +184,9 @@ def get_historical_ohlcv(symbol, timeframe, limit=1000, include_indicators=True)
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_historical_symbols():
-    """Get list of symbols with historical data"""
+    """Get list of symbols with historical data (cached 60s)"""
     conn = get_connection()
     if not conn:
         return []
@@ -223,8 +226,9 @@ def get_historical_date_range(symbol, timeframe):
         conn.close()
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def get_backfill_summary():
-    """Get summary of backfill status grouped by status"""
+    """Get summary of backfill status grouped by status (cached 30s)"""
     conn = get_connection()
     if not conn:
         return {}
@@ -258,10 +262,11 @@ def get_backfill_summary():
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_historical_inventory():
     """
     Get per-symbol inventory with date ranges, ordered by volume rank.
-    Returns detailed info for each coin including both timeframes.
+    Returns detailed info for each coin including both timeframes. (cached 60s)
     """
     conn = get_connection()
     if not conn:
@@ -336,8 +341,9 @@ def get_historical_inventory():
         conn.close()
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_historical_symbols_by_volume():
-    """Get list of symbols with historical data, ordered by volume rank"""
+    """Get list of symbols with historical data, ordered by volume rank (cached 60s)"""
     conn = get_connection()
     if not conn:
         return []

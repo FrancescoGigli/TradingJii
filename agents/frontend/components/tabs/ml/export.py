@@ -142,38 +142,179 @@ def render_export_dataset():
         else:
             checks.append(("❌", "No data", "Dataset is empty"))
         
-        if stats.get('null_percentage', 100) < 5:
-            checks.append(("✅", "Low null values", f"{stats.get('null_percentage', 0):.2f}%"))
-        elif stats.get('null_percentage', 100) < 20:
+        if stats.get('null_percentage', 100) == 0:
+            checks.append(("✅", "No null values", "Dataset 100% complete"))
+        elif stats.get('null_percentage', 100) < 5:
             checks.append(("⚠️", "Some null values", f"{stats.get('null_percentage', 0):.2f}%"))
         else:
             checks.append(("❌", "High null values", f"{stats.get('null_percentage', 0):.2f}%"))
+        
+        if stats.get('is_consecutive', False):
+            checks.append(("✅", "Timestamps consecutive", "No gaps in timeline"))
+        else:
+            gaps_count = stats.get('gaps_count', 0)
+            checks.append(("⚠️", "Gaps in timeline", f"{gaps_count} gaps found"))
         
         if stats.get('features_count', 0) > 10:
             checks.append(("✅", "Good feature count", f"{stats.get('features_count', 0)} features"))
         else:
             checks.append(("⚠️", "Low feature count", f"{stats.get('features_count', 0)} features"))
         
+        # Final ML-ready check
+        is_ml_ready = (
+            stats.get('total_rows', 0) > 0 and
+            stats.get('null_percentage', 100) == 0 and
+            stats.get('is_consecutive', False)
+        )
+        
+        if is_ml_ready:
+            st.success("🎯 **Dataset 100% ML-Ready!** No nulls, consecutive timestamps.")
+        
         for icon, check, detail in checks:
             st.write(f"{icon} **{check}**: {detail}")
         
-        # Preview data
-        st.markdown("#### 👀 Data Preview (first 100 rows)")
+        # === COMPLETE SCHEMA - Native Streamlit ===
+        st.markdown("#### 📋 Complete Dataset Schema - ALL Columns")
         
-        # Show column groups
-        feature_cols = [c for c in df.columns if c not in ['timestamp', 'symbol', 'timeframe', 
-                       'open', 'high', 'low', 'close', 'volume',
-                       'score_long', 'score_short', 'realized_return_long', 'realized_return_short',
-                       'mfe_long', 'mae_long', 'mfe_short', 'mae_short',
-                       'bars_held_long', 'bars_held_short', 'exit_type_long', 'exit_type_short',
-                       'trailing_stop_pct', 'max_bars', 'time_penalty_lambda', 'trading_cost']]
+        # Categorize columns
+        ohlcv_cols = ['timestamp', 'symbol', 'timeframe', 'open', 'high', 'low', 'close', 'volume']
+        label_cols = ['score_long', 'score_short', 'realized_return_long', 'realized_return_short',
+                      'mfe_long', 'mae_long', 'mfe_short', 'mae_short',
+                      'bars_held_long', 'bars_held_short', 'exit_type_long', 'exit_type_short',
+                      'trailing_stop_pct', 'max_bars', 'time_penalty_lambda', 'trading_cost', 'generated_at']
+        feature_cols = [c for c in df.columns if c not in ohlcv_cols + label_cols]
         
-        with st.expander(f"📊 Feature Columns ({len(feature_cols)})", expanded=False):
-            st.write(", ".join(feature_cols[:50]))
-            if len(feature_cols) > 50:
-                st.write(f"... and {len(feature_cols) - 50} more")
+        ohlcv_in_df = [c for c in ohlcv_cols if c in df.columns]
+        label_in_df = [c for c in label_cols if c in df.columns]
         
-        st.dataframe(df.head(100), use_container_width=True)
+        # 3 columns layout - with styled boxes
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown(f"**📊 OHLCV ({len(ohlcv_in_df)})**")
+            for col in ohlcv_in_df:
+                st.markdown(f"- <span style='background:#1a3a5c; padding:2px 8px; border-radius:4px; color:#00ffff; font-family:monospace;'>{col}</span> <span style='color:#8899aa;'>({str(df[col].dtype)})</span>", unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"**🎯 Labels ({len(label_in_df)})**")
+            for col in label_in_df:
+                st.markdown(f"- <span style='background:#1a3a2c; padding:2px 8px; border-radius:4px; color:#00ff88; font-family:monospace;'>{col}</span> <span style='color:#8899aa;'>({str(df[col].dtype)})</span>", unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"**📈 Features ({len(feature_cols)})**")
+            with st.expander("Click to see all features", expanded=False):
+                for col in feature_cols:
+                    st.markdown(f"<span style='background:#3a3a1c; padding:2px 8px; border-radius:4px; color:#ffc107; font-family:monospace;'>{col}</span>", unsafe_allow_html=True)
+        
+        st.divider()
+        
+        # === DATA PREVIEW - Multiple views ===
+        st.markdown("#### 👀 Data Preview")
+        st.info(f"📊 **{len(df.columns)} columns** total | **{len(df):,} rows** | This is the INNER JOIN of historical_data + ml_labels")
+        
+        preview_df = df.head(50).copy()
+        
+        # Clean symbol names
+        if 'symbol' in preview_df.columns:
+            preview_df['symbol'] = preview_df['symbol'].str.replace('/USDT:USDT', '')
+        
+        # === STYLED HTML TABLE (like historical_data.py) ===
+        # First 20 rows - ALL columns
+        st.markdown("**🔼 First 20 rows - ALL COLUMNS (Styled HTML Table)**")
+        
+        display_df = preview_df.head(20).copy().reset_index(drop=True)
+        
+        # Format timestamp if present
+        if 'timestamp' in display_df.columns:
+            display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+        
+        # Round numeric columns
+        display_df = display_df.round(4)
+        
+        # Convert to HTML with horizontal scroll
+        html_table = display_df.to_html(index=False, classes='ml_dataframe')
+        
+        st.markdown(f"""
+        <div style="overflow-x: auto; max-width: 100%; border: 1px solid rgba(0,255,255,0.3); border-radius: 8px;">
+            <style>
+                .ml_dataframe {{ font-size: 11px; border-collapse: collapse; width: max-content; }}
+                .ml_dataframe th {{ 
+                    background-color: #1e1e1e; 
+                    color: #00ff88; 
+                    padding: 8px 12px; 
+                    text-align: left; 
+                    border: 1px solid #333; 
+                    white-space: nowrap;
+                    position: sticky;
+                    top: 0;
+                }}
+                .ml_dataframe td {{ 
+                    padding: 6px 10px; 
+                    border: 1px solid #333; 
+                    color: #ffffff; 
+                    background-color: #0e1117; 
+                    white-space: nowrap; 
+                }}
+                .ml_dataframe tr:nth-child(even) td {{ background-color: #141a22; }}
+                .ml_dataframe tr:hover td {{ background-color: #1a2a3a; }}
+            </style>
+            {html_table}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.success(f"📊 Showing **first 20 of {len(df):,} rows** | **{len(df.columns)} columns** (OHLCV + Features + Labels)")
+        
+        st.divider()
+        
+        # === LAST 20 ROWS (most recent data) ===
+        st.markdown("**🔽 Last 20 rows - MOST RECENT (no NaN - warm-up filtered)**")
+        
+        # Get last 20 rows from original df
+        last_df = df.tail(20).copy().reset_index(drop=True)
+        
+        # Clean symbol names
+        if 'symbol' in last_df.columns:
+            last_df['symbol'] = last_df['symbol'].str.replace('/USDT:USDT', '')
+        
+        # Format timestamp
+        if 'timestamp' in last_df.columns:
+            last_df['timestamp'] = pd.to_datetime(last_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+        
+        # Round numeric
+        last_df = last_df.round(4)
+        
+        # Convert to HTML
+        html_table_last = last_df.to_html(index=False, classes='ml_dataframe_last')
+        
+        st.markdown(f"""
+        <div style="overflow-x: auto; max-width: 100%; border: 1px solid rgba(0,255,136,0.3); border-radius: 8px;">
+            <style>
+                .ml_dataframe_last {{ font-size: 11px; border-collapse: collapse; width: max-content; }}
+                .ml_dataframe_last th {{ 
+                    background-color: #1e1e1e; 
+                    color: #00ffff; 
+                    padding: 8px 12px; 
+                    text-align: left; 
+                    border: 1px solid #333; 
+                    white-space: nowrap;
+                    position: sticky;
+                    top: 0;
+                }}
+                .ml_dataframe_last td {{ 
+                    padding: 6px 10px; 
+                    border: 1px solid #333; 
+                    color: #ffffff; 
+                    background-color: #0e1117; 
+                    white-space: nowrap; 
+                }}
+                .ml_dataframe_last tr:nth-child(even) td {{ background-color: #141a22; }}
+                .ml_dataframe_last tr:hover td {{ background-color: #1a2a3a; }}
+            </style>
+            {html_table_last}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.success(f"📊 Showing **last 20 of {len(df):,} rows** - these are the most recent candles with complete indicators")
         
         # === DOWNLOAD BUTTONS ===
         st.markdown("#### 📥 Download")
