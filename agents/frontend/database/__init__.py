@@ -1,27 +1,25 @@
 """
-Database access functions for the Crypto Dashboard
+Database module - Modularized database access functions
 
-DEPRECATED: This file is kept for backwards compatibility.
-All functions are now in the database/ module.
-
-Import from 'database' package or use:
-    from database import get_symbols, get_ohlcv, ...
+This module provides all database functions for the Crypto Dashboard.
+All functions are re-exported for backwards compatibility.
 """
 
-# Re-export everything from the modularized database package
-from database import (
-    # Connection
-    get_connection,
-    
-    # OHLCV
+# Connection
+from .connection import get_connection
+
+# OHLCV functions
+from .ohlcv import (
     get_top_symbols,
     get_symbols,
     get_timeframes,
     get_ohlcv,
     get_stats,
     get_update_status,
-    
-    # Historical
+)
+
+# Historical data functions
+from .historical import (
     get_historical_stats,
     get_backfill_status_all,
     get_historical_ohlcv,
@@ -36,8 +34,10 @@ from database import (
     get_backfill_errors,
     clear_historical_data,
     retry_failed_downloads,
-    
-    # ML Labels
+)
+
+# ML Labels functions
+from .ml_labels import (
     create_ml_labels_table,
     save_ml_labels_to_db,
     get_ml_labels_stats,
@@ -47,20 +47,31 @@ from database import (
     get_ml_labels_table_schema,
     get_available_symbols_for_labels,
     get_ml_labels_full,
-    
-    # Explorer
+    get_ml_labels_inventory,
+    get_ml_training_dataset,
+    get_dataset_availability,
+)
+
+# Explorer functions
+from .explorer import (
     execute_custom_query,
     ML_LABELS_EXAMPLE_QUERIES,
 )
 
+# Export all
 __all__ = [
+    # Connection
     'get_connection',
+    
+    # OHLCV
     'get_top_symbols',
     'get_symbols',
     'get_timeframes',
     'get_ohlcv',
     'get_stats',
     'get_update_status',
+    
+    # Historical
     'get_historical_stats',
     'get_backfill_status_all',
     'get_historical_ohlcv',
@@ -75,6 +86,8 @@ __all__ = [
     'get_backfill_errors',
     'clear_historical_data',
     'retry_failed_downloads',
+    
+    # ML Labels
     'create_ml_labels_table',
     'save_ml_labels_to_db',
     'get_ml_labels_stats',
@@ -84,6 +97,11 @@ __all__ = [
     'get_ml_labels_table_schema',
     'get_available_symbols_for_labels',
     'get_ml_labels_full',
+    'get_ml_labels_inventory',
+    'get_ml_training_dataset',
+    'get_dataset_availability',
+    
+    # Explorer
     'execute_custom_query',
     'ML_LABELS_EXAMPLE_QUERIES',
 ]

@@ -120,6 +120,79 @@ MTF_FEATURES = {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TRAILING STOP LABEL CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# These settings control label generation for ML training.
+# Labels use FUTURE data (lookahead) - they are NOT features!
+# 
+# Formula: score = R - λ*log(1+D) - costs
+# Where:
+#   R = realized return from trailing stop exit
+#   D = bars held until exit
+#   λ = time penalty coefficient
+#   costs = trading fees
+
+TRAILING_LABEL_CONFIG = {
+    # Trailing stop percentage per timeframe
+    # (larger for higher timeframes to account for more volatility)
+    'trailing_stop_pct': {
+        '15m': 0.015,   # 1.5% trailing stop
+        '1h': 0.025,    # 2.5% trailing stop
+    },
+    
+    # Maximum bars to hold before time exit
+    'max_bars': {
+        '15m': 48,      # 12 hours (48 * 15m)
+        '1h': 24,       # 24 hours (24 * 1h)
+    },
+    
+    # Time penalty: penalty = λ * log(1 + bars_held)
+    'time_penalty_lambda': 0.001,
+    
+    # Trading costs (entry + exit fees)
+    'trading_cost': 0.001,  # 0.1% total
+    
+    # Timeframes to generate labels for
+    'timeframes': ['15m', '1h'],
+}
+
+# Label column names that will be generated
+LABEL_COLUMNS = {
+    '15m': [
+        'score_long_15m',           # Main LABEL for LONG
+        'score_short_15m',          # Main LABEL for SHORT
+        'realized_return_long_15m', # Diagnostics
+        'realized_return_short_15m',
+        'mfe_long_15m',             # Max Favorable Excursion
+        'mfe_short_15m',
+        'mae_long_15m',             # Max Adverse Excursion
+        'mae_short_15m',
+        'bars_held_long_15m',       # Duration
+        'bars_held_short_15m',
+        'exit_type_long_15m',       # 'trailing' or 'time'
+        'exit_type_short_15m',
+    ],
+    '1h': [
+        'score_long_1h',
+        'score_short_1h',
+        'realized_return_long_1h',
+        'realized_return_short_1h',
+        'mfe_long_1h',
+        'mfe_short_1h',
+        'mae_long_1h',
+        'mae_short_1h',
+        'bars_held_long_1h',
+        'bars_held_short_1h',
+        'exit_type_long_1h',
+        'exit_type_short_1h',
+    ],
+}
+
+# Primary labels for ML training (regression targets)
+PRIMARY_LABELS = ['score_long_15m', 'score_short_15m', 'score_long_1h', 'score_short_1h']
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE GENERATION SETTINGS
 # ═══════════════════════════════════════════════════════════════════════════════
 # Minimum data required (warmup)
