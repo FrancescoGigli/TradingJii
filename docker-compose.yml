@@ -59,6 +59,29 @@ services:
       - data-fetcher  # Needs top_symbols table from data-fetcher
 
   # =========================================
+  # ML INFERENCE AGENT
+  # =========================================
+  # Runs XGBoost inference every 5 minutes on all symbols
+  # Saves ML scores to database for frontend to display
+  ml-inference:
+    build:
+      context: ./agents/ml-inference
+      dockerfile: Dockerfile
+    container_name: crypto-ml-inference
+    volumes:
+      - shared-data:/app/shared
+    environment:
+      - SHARED_DATA_PATH=/app/shared
+      - INFERENCE_INTERVAL=300          # 5 minutes
+      - INFERENCE_TIMEFRAME=15m
+      - LOG_LEVEL=INFO
+    networks:
+      - trading-network
+    restart: unless-stopped
+    depends_on:
+      - historical-data  # Needs OHLCV data
+
+  # =========================================
   # FRONTEND AGENT (Streamlit Dashboard)
   # =========================================
   frontend:

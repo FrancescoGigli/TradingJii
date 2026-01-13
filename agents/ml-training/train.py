@@ -281,15 +281,15 @@ def load_dataset(db_path: Path, symbol: str = None, timeframe: str = None) -> pd
 
 def validate_data_quality(df: pd.DataFrame, features: list, timeframe: str = '15m') -> dict:
     """
-    🔍 Rigorosa validazione qualità dati per ML training.
+    🔍 Rigorous data quality validation for ML training.
     
-    Controlla:
-    1. NaN nelle features
-    2. NaN nei target
-    3. Timestamp consecutivi (senza gap)
+    Checks:
+    1. NaN in features
+    2. NaN in targets
+    3. Consecutive timestamps (no gaps)
     
     Returns:
-        dict con statistiche di validazione
+        dict with validation statistics
     """
     print("\n🔍 DATA QUALITY VALIDATION")
     print("="*60)
@@ -435,13 +435,13 @@ def prepare_dataset(df: pd.DataFrame) -> tuple:
     print(f"   📊 Using {len(available_features)} features")
     
     # ═══════════════════════════════════════════════════════════════════════════
-    # RIGOROSA VALIDAZIONE QUALITÀ DATI
+    # RIGOROUS DATA QUALITY VALIDATION
     # ═══════════════════════════════════════════════════════════════════════════
     
     validation = validate_data_quality(df, available_features)
     
     # ═══════════════════════════════════════════════════════════════════════════
-    # FILTRA RIGHE CON NaN
+    # FILTER ROWS WITH NaN
     # ═══════════════════════════════════════════════════════════════════════════
     
     # Find first row where all features are non-null
@@ -464,15 +464,15 @@ def prepare_dataset(df: pd.DataFrame) -> tuple:
     print(f"\n   ✅ Filtered {rows_removed:,} warm-up rows (NaN indicators)")
     
     # ═══════════════════════════════════════════════════════════════════════════
-    # VERIFICA FINALE: NESSUN NaN NELLE FEATURES E TARGETS
+    # FINAL CHECK: NO NaN IN FEATURES AND TARGETS
     # ═══════════════════════════════════════════════════════════════════════════
     
-    # Double-check: rimuovi qualsiasi riga con NaN residui
+    # Double-check: remove any rows with residual NaN
     X_temp = df[available_features]
     y_long_temp = df[TARGET_LONG]
     y_short_temp = df[TARGET_SHORT]
     
-    # Mask di righe valide (no NaN in features E no NaN in targets)
+    # Valid rows mask (no NaN in features AND no NaN in targets)
     valid_mask = ~(X_temp.isna().any(axis=1) | y_long_temp.isna() | y_short_temp.isna())
     
     rows_with_nan = (~valid_mask).sum()
@@ -483,7 +483,7 @@ def prepare_dataset(df: pd.DataFrame) -> tuple:
     print(f"   ✅ FINAL Dataset: {len(df):,} rows from {df['timestamp'].min()} to {df['timestamp'].max()}")
     
     # ═══════════════════════════════════════════════════════════════════════════
-    # VERIFICA ASSOLUTA: ASSERT NO NaN
+    # ABSOLUTE CHECK: ASSERT NO NaN
     # ═══════════════════════════════════════════════════════════════════════════
     
     X = df[available_features].copy()
@@ -491,12 +491,12 @@ def prepare_dataset(df: pd.DataFrame) -> tuple:
     y_short = df[TARGET_SHORT].copy()
     timestamps = df['timestamp'].copy()
     
-    # ASSERT finale
-    assert X.isna().sum().sum() == 0, f"❌ ERRORE: Ancora NaN nelle features!"
-    assert y_long.isna().sum() == 0, f"❌ ERRORE: Ancora NaN in score_long!"
-    assert y_short.isna().sum() == 0, f"❌ ERRORE: Ancora NaN in score_short!"
+    # Final ASSERT
+    assert X.isna().sum().sum() == 0, f"❌ ERROR: Still NaN in features!"
+    assert y_long.isna().sum() == 0, f"❌ ERROR: Still NaN in score_long!"
+    assert y_short.isna().sum() == 0, f"❌ ERROR: Still NaN in score_short!"
     
-    print(f"   ✅ ASSERT PASSED: Zero NaN in features e targets!")
+    print(f"   ✅ ASSERT PASSED: Zero NaN in features and targets!")
     
     return X, y_long, y_short, timestamps, available_features
 

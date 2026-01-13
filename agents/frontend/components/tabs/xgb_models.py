@@ -195,15 +195,17 @@ def render_xgb_models_tab():
     st.markdown("### 🎯 Ranking Metrics")
     st.caption("How well does the model rank trading opportunities? (Most important for trading!)")
     
-    ranking_long = metrics_long.get('ranking', {})
-    ranking_short = metrics_short.get('ranking', {})
+    # Support both old format (nested 'ranking') and new format (direct keys)
+    ranking_long = metrics_long.get('ranking', metrics_long)
+    ranking_short = metrics_short.get('ranking', metrics_short)
     
     col_long, col_short = st.columns(2)
     
     # LONG Model Spearman
     with col_long:
-        spearman_long = ranking_long.get('spearman_corr', 0)
-        pval_long = ranking_long.get('spearman_pval', 1)
+        # Try new format first, then old format
+        spearman_long = ranking_long.get('test_spearman', ranking_long.get('spearman_corr', 0))
+        pval_long = ranking_long.get('test_spearman_pval', ranking_long.get('spearman_pval', 1))
         quality_long, color_long = get_signal_quality(spearman_long)
         
         st.markdown("#### 📈 LONG Model")
@@ -213,8 +215,8 @@ def render_xgb_models_tab():
     
     # SHORT Model Spearman
     with col_short:
-        spearman_short = ranking_short.get('spearman_corr', 0)
-        pval_short = ranking_short.get('spearman_pval', 1)
+        spearman_short = ranking_short.get('test_spearman', ranking_short.get('spearman_corr', 0))
+        pval_short = ranking_short.get('test_spearman_pval', ranking_short.get('spearman_pval', 1))
         quality_short, color_short = get_signal_quality(spearman_short)
         
         st.markdown("#### 📉 SHORT Model")
@@ -325,18 +327,23 @@ def render_xgb_models_tab():
             '📉 SHORT': f'{metrics_short.get(key, 0):{fmt}}'
         })
     
-    # Ranking metrics
+    # Ranking metrics (support both old and new format)
+    spearman_l = ranking_long.get('test_spearman', ranking_long.get('spearman_corr', 0))
+    spearman_s = ranking_short.get('test_spearman', ranking_short.get('spearman_corr', 0))
+    pval_l = ranking_long.get('test_spearman_pval', ranking_long.get('spearman_pval', 1))
+    pval_s = ranking_short.get('test_spearman_pval', ranking_short.get('spearman_pval', 1))
+    
     summary_rows.append({
         'Category': 'Ranking',
         'Metric': 'Spearman Corr',
-        '📈 LONG': f'{ranking_long.get("spearman_corr", 0):.4f}',
-        '📉 SHORT': f'{ranking_short.get("spearman_corr", 0):.4f}'
+        '📈 LONG': f'{spearman_l:.4f}',
+        '📉 SHORT': f'{spearman_s:.4f}'
     })
     summary_rows.append({
         'Category': 'Ranking',
         'Metric': 'Spearman p-value',
-        '📈 LONG': f'{ranking_long.get("spearman_pval", 1):.2e}',
-        '📉 SHORT': f'{ranking_short.get("spearman_pval", 1):.2e}'
+        '📈 LONG': f'{pval_l:.2e}',
+        '📉 SHORT': f'{pval_s:.2e}'
     })
     
     # Precision@K
