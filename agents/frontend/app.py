@@ -17,7 +17,8 @@ from components.tabs import (
     render_analysis_tab,
     render_backtest_tab,
     render_historical_data_tab,
-    render_ml_labels_tab
+    render_ml_labels_tab,
+    render_xgb_models_tab
 )
 
 
@@ -75,12 +76,13 @@ def main():
         render_sidebar()
     
     # Main content - TABS (ordered by workflow phases)
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Top 100 Coins", 
-        "📈 Coin Analysis",
-        "📚 Historical Data",
-        "🔄 Backtest",
-        "🎯 ML Labels"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 Top", 
+        "📈 Charts",
+        "📚 Data",
+        "🔄 Test",
+        "🎯 ML",
+        "🤖 XGB"
     ])
     
     with tab1:
@@ -97,6 +99,9 @@ def main():
     
     with tab5:
         render_ml_labels_tab()
+    
+    with tab6:
+        render_xgb_models_tab()
     
     # Footer
     st.markdown(FOOTER_HTML, unsafe_allow_html=True)
