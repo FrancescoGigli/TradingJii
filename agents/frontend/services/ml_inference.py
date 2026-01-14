@@ -23,6 +23,220 @@ import pandas as pd
 import numpy as np
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE CALCULATION - Compute all 69 features needed by XGB model
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_ml_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute all 69 features required by the XGBoost model.
+    
+    Takes raw OHLCV data and computes technical indicators and derived features.
+    Uses ONLY past data (no lookahead bias).
+    
+    Args:
+        df: DataFrame with columns [open, high, low, close, volume]
+        
+    Returns:
+        DataFrame with all 69 features
+    """
+    features = df.copy()
+    
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
+    open_price = df['open']
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 1. Moving Averages (6-9)
+    # ═══════════════════════════════════════════════════════════════════
+    features['sma_20'] = close.rolling(20).mean()
+    features['sma_50'] = close.rolling(50).mean()
+    features['ema_12'] = close.ewm(span=12, adjust=False).mean()
+    features['ema_26'] = close.ewm(span=26, adjust=False).mean()
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 2. Bollinger Bands (10-14)
+    # ═══════════════════════════════════════════════════════════════════
+    bb_period = 20
+    bb_std = 2
+    bb_mid = close.rolling(bb_period).mean()
+    bb_std_val = close.rolling(bb_period).std()
+    features['bb_upper'] = bb_mid + (bb_std_val * bb_std)
+    features['bb_mid'] = bb_mid
+    features['bb_lower'] = bb_mid - (bb_std_val * bb_std)
+    features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / bb_mid
+    bb_range = features['bb_upper'] - features['bb_lower']
+    features['bb_position'] = (close - features['bb_lower']) / bb_range.replace(0, np.nan)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 3. RSI (15)
+    # ═══════════════════════════════════════════════════════════════════
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).ewm(span=14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(span=14, adjust=False).mean()
+    rs = gain / loss.replace(0, np.nan)
+    features['rsi'] = 100 - (100 / (1 + rs))
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 4. MACD (16-18)
+    # ═══════════════════════════════════════════════════════════════════
+    ema_fast = close.ewm(span=12, adjust=False).mean()
+    ema_slow = close.ewm(span=26, adjust=False).mean()
+    features['macd'] = ema_fast - ema_slow
+    features['macd_signal'] = features['macd'].ewm(span=9, adjust=False).mean()
+    features['macd_hist'] = features['macd'] - features['macd_signal']
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 5. Stochastic (19-20)
+    # ═══════════════════════════════════════════════════════════════════
+    stoch_period = 14
+    low_min = low.rolling(stoch_period).min()
+    high_max = high.rolling(stoch_period).max()
+    stoch_range = high_max - low_min
+    features['stoch_k'] = 100 * (close - low_min) / stoch_range.replace(0, np.nan)
+    features['stoch_d'] = features['stoch_k'].rolling(3).mean()
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 6. ATR (21-22)
+    # ═══════════════════════════════════════════════════════════════════
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    features['atr'] = tr.ewm(span=14, adjust=False).mean()
+    features['atr_pct'] = features['atr'] / close
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 7. OBV and Volume (23-24)
+    # ═══════════════════════════════════════════════════════════════════
+    obv_sign = np.sign(close.diff())
+    features['obv'] = (obv_sign * volume).cumsum()
+    features['volume_sma'] = volume.rolling(20).mean()
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 8. ADX (25-26)
+    # ═══════════════════════════════════════════════════════════════════
+    adx_period = 14
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0)
+    atr_adx = tr.ewm(span=adx_period, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(span=adx_period, adjust=False).mean() / atr_adx)
+    minus_di = 100 * (minus_dm.ewm(span=adx_period, adjust=False).mean() / atr_adx)
+    di_sum = plus_di + minus_di
+    dx = 100 * abs(plus_di - minus_di) / di_sum.replace(0, np.nan)
+    features['adx_14'] = dx.ewm(span=adx_period, adjust=False).mean()
+    features['adx_14_norm'] = features['adx_14'] / 100
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 9. Returns (27-29)
+    # ═══════════════════════════════════════════════════════════════════
+    features['ret_5'] = np.log(close / close.shift(5))
+    features['ret_10'] = np.log(close / close.shift(10))
+    features['ret_20'] = np.log(close / close.shift(20))
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 10. EMA Distances and Crosses (30-34)
+    # ═══════════════════════════════════════════════════════════════════
+    ema_20 = close.ewm(span=20, adjust=False).mean()
+    ema_50 = close.ewm(span=50, adjust=False).mean()
+    ema_200 = close.ewm(span=200, adjust=False).mean()
+    features['ema_20_dist'] = (close - ema_20) / ema_20
+    features['ema_50_dist'] = (close - ema_50) / ema_50
+    features['ema_200_dist'] = (close - ema_200) / ema_200
+    features['ema_20_50_cross'] = np.sign(ema_20 - ema_50)
+    features['ema_50_200_cross'] = np.sign(ema_50 - ema_200)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 11. Normalized Indicators (35-36)
+    # ═══════════════════════════════════════════════════════════════════
+    features['rsi_14_norm'] = (features['rsi'] - 50) / 50  # -1 to 1
+    macd_hist_std = features['macd_hist'].rolling(100).std().replace(0, np.nan)
+    features['macd_hist_norm'] = features['macd_hist'] / macd_hist_std
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 12. Trend and Momentum (37-40)
+    # ═══════════════════════════════════════════════════════════════════
+    features['trend_direction'] = np.sign(close - close.shift(20))
+    features['momentum_10'] = close - close.shift(10)
+    features['momentum_20'] = close - close.shift(20)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 13. Volatility Features (41-48)
+    # ═══════════════════════════════════════════════════════════════════
+    log_ret = np.log(close / close.shift(1))
+    features['vol_5'] = log_ret.rolling(5).std()
+    features['vol_10'] = log_ret.rolling(10).std()
+    features['vol_20'] = log_ret.rolling(20).std()
+    features['range_pct_5'] = (high.rolling(5).max() - low.rolling(5).min()) / close
+    features['range_pct_10'] = (high.rolling(10).max() - low.rolling(10).min()) / close
+    features['range_pct_20'] = (high.rolling(20).max() - low.rolling(20).min()) / close
+    
+    # Volatility percentile
+    vol_20 = features['vol_20']
+    def rolling_percentile(s, w):
+        return s.rolling(w).apply(lambda x: (x[:-1] < x[-1]).sum() / max(len(x) - 1, 1), raw=True)
+    features['vol_percentile'] = rolling_percentile(vol_20, 100)
+    features['vol_ratio'] = volume / features['volume_sma']
+    features['vol_change'] = features['vol_20'] / features['vol_20'].shift(10)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 14. OBV and VWAP (49-51)
+    # ═══════════════════════════════════════════════════════════════════
+    obv_sma = features['obv'].rolling(20).mean()
+    features['obv_slope'] = (features['obv'] - obv_sma) / obv_sma.abs().replace(0, 1)
+    typical_price = (high + low + close) / 3
+    vwap = (typical_price * volume).rolling(20).sum() / volume.rolling(20).sum()
+    features['vwap_dist'] = (close - vwap) / vwap
+    features['vol_stability'] = features['vol_5'] / features['vol_20'].replace(0, np.nan)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 15. Candle Features (52-58)
+    # ═══════════════════════════════════════════════════════════════════
+    body = abs(close - open_price)
+    candle_range = high - low
+    features['body_pct'] = body / candle_range.replace(0, np.nan)
+    features['candle_direction'] = np.sign(close - open_price)
+    features['upper_shadow_pct'] = (high - pd.concat([open_price, close], axis=1).max(axis=1)) / candle_range.replace(0, np.nan)
+    features['lower_shadow_pct'] = (pd.concat([open_price, close], axis=1).min(axis=1) - low) / candle_range.replace(0, np.nan)
+    features['gap_pct'] = (open_price - close.shift(1)) / close.shift(1)
+    
+    # Consecutive up/down
+    direction = (close > close.shift(1)).astype(int)
+    features['consecutive_up'] = direction.groupby((direction != direction.shift()).cumsum()).cumsum() * direction
+    direction_down = (close < close.shift(1)).astype(int)
+    features['consecutive_down'] = direction_down.groupby((direction_down != direction_down.shift()).cumsum()).cumsum() * direction_down
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 16. Speed and Acceleration (59-62)
+    # ═══════════════════════════════════════════════════════════════════
+    features['speed_5'] = log_ret.rolling(5).mean()
+    features['speed_20'] = log_ret.rolling(20).mean()
+    features['accel_5'] = features['speed_5'].diff(5)
+    features['accel_20'] = features['speed_20'].diff(20)
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # 17. Percentiles and Position (63-69)
+    # ═══════════════════════════════════════════════════════════════════
+    features['ret_percentile_50'] = rolling_percentile(log_ret, 50)
+    features['ret_percentile_100'] = rolling_percentile(log_ret, 100)
+    
+    def price_position(window):
+        h = high.rolling(window).max()
+        l = low.rolling(window).min()
+        return (close - l) / (h - l).replace(0, np.nan)
+    
+    features['price_position_20'] = price_position(20)
+    features['price_position_50'] = price_position(50)
+    features['price_position_100'] = price_position(100)
+    features['dist_from_high_20'] = (close - high.rolling(20).max()) / close
+    features['dist_from_low_20'] = (close - low.rolling(20).min()) / close
+    
+    return features
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -52,50 +266,83 @@ class MLPrediction:
     error: Optional[str] = None
 
 
-def normalize_xgb_score(score: float) -> float:
+def normalize_xgb_score(score: float, model_type: str = 'long') -> float:
     """
-    Normalize XGBoost score to -100/+100 range (same as Signal Calculator).
+    Normalize XGBoost score to -100/+100 range using Z-score normalization.
     
-    XGB score ranges typically from -0.02 to +0.02:
-    - Top 1% (score > 0.015): maps to +80 to +100
-    - Top 5% (score > 0.005): maps to +40 to +80
-    - Top 10% (score > 0.001): maps to +10 to +40
-    - Neutral (-0.001 to +0.001): maps to -10 to +10
-    - Bottom 10% (score < -0.001): maps to -10 to -40
-    - Bottom 5% (score < -0.005): maps to -40 to -80
-    - Bottom 1% (score < -0.015): maps to -80 to -100
+    The model has good RANKING ability (Spearman ~0.05, Top 1% = 60% positive)
+    but low R² (~3%) so predictions cluster around mean.
+    
+    Uses calibrated statistics from actual model predictions:
+    - LONG model: Mean=-0.002, Std=0.004, Range=[-0.005, +0.010]
+    - SHORT model: Mean=-0.005, Std=0.001, Range=[-0.006, -0.002]
     
     Args:
-        score: Raw XGB score (typically -0.02 to +0.02)
+        score: Raw XGB score (model output)
+        model_type: 'long' or 'short'
     
     Returns:
         Normalized score in range -100 to +100
     """
-    if score >= 0.020:
-        return 100.0
-    elif score >= 0.015:
-        # 0.015 to 0.020 → 80 to 100
-        return 80.0 + (score - 0.015) / 0.005 * 20.0
-    elif score >= 0.005:
-        # 0.005 to 0.015 → 40 to 80
-        return 40.0 + (score - 0.005) / 0.010 * 40.0
-    elif score >= 0.001:
-        # 0.001 to 0.005 → 10 to 40
-        return 10.0 + (score - 0.001) / 0.004 * 30.0
-    elif score >= -0.001:
-        # -0.001 to 0.001 → -10 to 10
-        return score / 0.001 * 10.0
-    elif score >= -0.005:
-        # -0.005 to -0.001 → -40 to -10
-        return -10.0 + (score + 0.001) / 0.004 * 30.0
-    elif score >= -0.015:
-        # -0.015 to -0.005 → -80 to -40
-        return -40.0 + (score + 0.005) / 0.010 * 40.0
-    elif score >= -0.020:
-        # -0.020 to -0.015 → -100 to -80
-        return -80.0 + (score + 0.015) / 0.005 * 20.0
-    else:
-        return -100.0
+    # Calibrated statistics from actual predictions (200 candles BTC 1h)
+    if model_type == 'long':
+        # LONG: Range [-0.005, +0.010], Mean=-0.002
+        # Positive scores are GOOD for long
+        mean = -0.002
+        std = 0.004
+    else:  # short
+        # SHORT model always predicts negative due to training period
+        # More negative = stronger SHORT signal
+        mean = -0.005
+        std = 0.001
+    
+    # Calculate z-score
+    z = (score - mean) / std if std > 0 else 0
+    
+    # Map z-score to -100/+100 range
+    # z = ±3 → ±100
+    normalized = z * 33.33
+    
+    # Clamp to range
+    return max(-100.0, min(100.0, normalized))
+
+
+def normalize_xgb_score_batch(scores: 'pd.Series', model_type: str = 'long') -> 'pd.Series':
+    """
+    Normalize XGBoost scores using PERCENTILE ranking.
+    
+    This is the CORRECT approach because:
+    - Model has good RANKING (Spearman ~0.05, Top 1% = 60% positive)
+    - Model has poor absolute prediction (R² ~3%)
+    
+    Uses percentile of each score within the batch:
+    - Top 1% → +100
+    - Top 5% → +80
+    - Top 10% → +60
+    - Median → 0
+    - Bottom 10% → -60
+    - Bottom 5% → -80
+    - Bottom 1% → -100
+    
+    Args:
+        scores: Series of raw XGB scores
+        model_type: 'long' or 'short'
+    
+    Returns:
+        Series of normalized scores in range -100 to +100
+    """
+    import pandas as pd
+    
+    # Calculate percentile rank (0-100)
+    percentile_rank = scores.rank(pct=True) * 100
+    
+    # Convert to -100/+100 range
+    # 0 percentile → -100
+    # 50 percentile → 0
+    # 100 percentile → +100
+    normalized = (percentile_rank - 50) * 2
+    
+    return normalized
 
 
 class MLInferenceService:

@@ -365,7 +365,7 @@ def render_export_dataset():
                                          key=lambda x: x[1], reverse=True)
             ])
             
-            st.dataframe(symbol_df, use_container_width=True, hide_index=True)
+            st.table(symbol_df.head(20))
     
     elif 'export_stats' in st.session_state and st.session_state['export_stats'].get('error'):
         st.error(f"❌ {st.session_state['export_stats']['error']}")

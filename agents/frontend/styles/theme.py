@@ -415,17 +415,77 @@ def _generate_css() -> str:
         box-shadow: 0 0 10px {rgba(cyan, 0.3)};
     }}
     
-    /* Expander */
+    /* Expander - COMPLETE DARK THEME */
     .streamlit-expanderHeader {{
-        background: {bg_input};
-        border: 1px solid {border};
-        border-radius: 10px;
+        background: {bg_input} !important;
+        background-color: {bg_input} !important;
+        border: 1px solid {border} !important;
+        border-radius: 10px !important;
         color: {cyan} !important;
     }}
     
     .streamlit-expanderHeader:hover {{
-        border-color: {border_h};
-        box-shadow: 0 0 15px {rgba(cyan, 0.2)};
+        border-color: {border_h} !important;
+        box-shadow: 0 0 15px {rgba(cyan, 0.2)} !important;
+    }}
+    
+    .streamlit-expanderHeader p,
+    .streamlit-expanderHeader span {{
+        color: {cyan} !important;
+    }}
+    
+    /* Expander content area */
+    .streamlit-expanderContent {{
+        background: {bg_s} !important;
+        background-color: {bg_s} !important;
+        border: 1px solid {border} !important;
+        border-top: none !important;
+        border-radius: 0 0 10px 10px !important;
+    }}
+    
+    /* Alternative selectors for newer Streamlit */
+    [data-testid="stExpander"] {{
+        background: transparent !important;
+    }}
+    
+    [data-testid="stExpander"] > div:first-child {{
+        background: {bg_input} !important;
+        background-color: {bg_input} !important;
+        border: 1px solid {border} !important;
+        border-radius: 10px !important;
+    }}
+    
+    [data-testid="stExpander"] > div:first-child:hover {{
+        border-color: {border_h} !important;
+    }}
+    
+    [data-testid="stExpander"] > div:last-child {{
+        background: {bg_s} !important;
+        background-color: {bg_s} !important;
+        border: 1px solid {border} !important;
+        border-top: none !important;
+        border-radius: 0 0 10px 10px !important;
+    }}
+    
+    [data-testid="stExpander"] details {{
+        background: {bg_input} !important;
+        border: 1px solid {border} !important;
+        border-radius: 10px !important;
+    }}
+    
+    [data-testid="stExpander"] details > summary {{
+        background: {bg_input} !important;
+        color: {cyan} !important;
+    }}
+    
+    [data-testid="stExpander"] details > div {{
+        background: {bg_s} !important;
+        background-color: {bg_s} !important;
+    }}
+    
+    [data-testid="stExpander"] details[open] > summary {{
+        border-bottom: 1px solid {border} !important;
+        border-radius: 10px 10px 0 0 !important;
     }}
     
     /* Checkbox */

@@ -351,7 +351,7 @@ def render_single_coin_visualization():
         
         available_cols = [c for c in sample_cols if c in df_labels.columns]
         sample_df = df_labels[available_cols].tail(20).round(5)
-        st.dataframe(sample_df, use_container_width=True)
+        st.table(sample_df)
     
     # === EXPORT ===
     st.divider()

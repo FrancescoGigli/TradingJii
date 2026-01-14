@@ -450,21 +450,256 @@ def render_backtest_tab():
     )
     
     # ═══════════════════════════════════════════════════════════════════
-    # MAIN BACKTEST CHART
+    # SECTION 1: TECHNICAL BACKTEST CHART
     # ═══════════════════════════════════════════════════════════════════
     st.markdown("---")
-    st.markdown("### 📈 Backtest Chart")
+    st.markdown("### 📊 Technical Backtest Chart")
     st.markdown("""
     <p style="color: #a0a0a0; font-size: 0.85rem;">
-    <b>▲</b> = LONG entry | <b>▼</b> = SHORT entry | <b>✗</b> = Exit | 
+    Signal Calculator based on <b>RSI + MACD + Bollinger Bands</b>. 
+    <b>▲</b> = LONG entry | <b>▼</b> = SHORT entry | <b>✗</b> = Exit |
     <span style="color: #00ff88;">Green line</span> = Profit | 
     <span style="color: #ff4757;">Red line</span> = Loss
     </p>
     """, unsafe_allow_html=True)
     
-    # Create and display backtest chart
-    backtest_fig = create_backtest_chart(result, selected_name)
-    st.plotly_chart(backtest_fig, use_container_width=True)
+    # Create and display technical backtest chart (NO XGB data)
+    tech_backtest_fig = create_backtest_chart(result, selected_name, xgb_data=None, xgb_threshold=0)
+    st.plotly_chart(tech_backtest_fig, use_container_width=True, key="tech_chart")
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # SECTION 2: XGB BACKTEST CHART
+    # ═══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 🤖 XGBoost ML Backtest Chart")
+    
+    if ml_service.is_available:
+        st.markdown("""
+        <p style="color: #a0a0a0; font-size: 0.85rem;">
+        XGBoost ML model predictions using <b>69 technical features</b>.
+        Simulate trades with <b>Trailing Stop</b> for realistic backtest.
+        Scores normalized using <b>Percentile Ranking</b>.
+        </p>
+        """, unsafe_allow_html=True)
+        
+        # XGB Settings in expander
+        with st.expander("⚙️ XGB Simulation Settings", expanded=True):
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                xgb_threshold = st.slider(
+                    "🎯 Entry Threshold",
+                    min_value=10,
+                    max_value=80,
+                    value=40,
+                    step=5,
+                    help="XGB score threshold to enter trades"
+                )
+            
+            with col2:
+                xgb_stop_loss = st.slider(
+                    "🛑 Stop Loss %",
+                    min_value=0.5,
+                    max_value=5.0,
+                    value=2.0,
+                    step=0.5,
+                    help="Fixed stop loss percentage"
+                )
+            
+            with col3:
+                xgb_take_profit = st.slider(
+                    "🎯 Take Profit %",
+                    min_value=1.0,
+                    max_value=10.0,
+                    value=4.0,
+                    step=0.5,
+                    help="Take profit percentage"
+                )
+            
+            with col4:
+                xgb_trailing_stop = st.slider(
+                    "📈 Trailing Stop %",
+                    min_value=0.5,
+                    max_value=3.0,
+                    value=1.5,
+                    step=0.5,
+                    help="Trailing stop percentage (activated after profit)"
+                )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                xgb_trailing_activation = st.slider(
+                    "🔓 Trailing Activation %",
+                    min_value=0.5,
+                    max_value=3.0,
+                    value=1.0,
+                    step=0.5,
+                    help="Profit % needed to activate trailing stop"
+                )
+            with col2:
+                xgb_max_holding = st.slider(
+                    "⏰ Max Holding (candles)",
+                    min_value=0,
+                    max_value=100,
+                    value=50,
+                    step=10,
+                    help="Force exit after N candles (0=disabled)"
+                )
+        
+        # Calculate XGB scores for all candles
+        xgb_data = None
+        try:
+            from services.ml_inference import normalize_xgb_score, normalize_xgb_score_batch, compute_ml_features
+            
+            with st.spinner("🔄 Computing 69 features and running XGB inference..."):
+                # Compute all 69 features required by the model
+                df_with_features = compute_ml_features(df_full)
+                
+                # Predict batch with all features
+                df_with_predictions = ml_service.predict_batch(df_with_features)
+                
+                if 'pred_score_long' in df_with_predictions.columns:
+                    # Create XGB data DataFrame with PERCENTILE-based normalized scores
+                    # This leverages the model's good RANKING ability (Spearman ~0.05, Top 1% = 60% positive)
+                    xgb_data = pd.DataFrame(index=df_full.index)
+                    xgb_data['xgb_score_long_norm'] = normalize_xgb_score_batch(df_with_predictions['pred_score_long'], 'long')
+                    xgb_data['xgb_score_short_norm'] = normalize_xgb_score_batch(df_with_predictions['pred_score_short'], 'short')
+                    
+                    # Debug stats
+                    with st.expander("📊 XGB Score Debug (Ranking-Based)", expanded=False):
+                        st.info("⚡ Model uses **PERCENTILE RANKING** - Top predictions have ~60% positive outcomes!")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("**LONG Model Raw:**")
+                            st.write(f"Min: {df_with_predictions['pred_score_long'].min():.6f}")
+                            st.write(f"Max: {df_with_predictions['pred_score_long'].max():.6f}")
+                            st.write(f"Mean: {df_with_predictions['pred_score_long'].mean():.6f}")
+                            st.write("**Normalized (Percentile):**")
+                            st.write(f"Range: {xgb_data['xgb_score_long_norm'].min():.0f} to {xgb_data['xgb_score_long_norm'].max():.0f}")
+                        with col2:
+                            st.write("**SHORT Model Raw:**")
+                            st.write(f"Min: {df_with_predictions['pred_score_short'].min():.6f}")
+                            st.write(f"Max: {df_with_predictions['pred_score_short'].max():.6f}")
+                            st.write(f"Mean: {df_with_predictions['pred_score_short'].mean():.6f}")
+                            st.write("**Normalized (Percentile):**")
+                            st.write(f"Range: {xgb_data['xgb_score_short_norm'].min():.0f} to {xgb_data['xgb_score_short_norm'].max():.0f}")
+        except Exception as e:
+            st.error(f"❌ Error calculating XGB scores: {e}")
+            xgb_data = None
+        
+        if xgb_data is not None:
+            # Create XGB-only chart
+            from ai.visualizations.backtest_charts import create_xgb_chart
+            xgb_fig = create_xgb_chart(df_full, xgb_data, selected_name, xgb_threshold)
+            st.plotly_chart(xgb_fig, use_container_width=True, key="xgb_chart")
+            
+            # XGB signal statistics
+            # LONG: score_long > threshold (positive = good LONG opportunity)
+            # SHORT: For now use inverted long score (negative LONG = potential SHORT)
+            # The SHORT model may be biased based on training period
+            long_signals = (xgb_data['xgb_score_long_norm'] > xgb_threshold).sum()
+            short_signals = (xgb_data['xgb_score_long_norm'] < -xgb_threshold).sum()  # Using inverted LONG model for SHORT
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("📈 XGB LONG Signals", long_signals)
+            col2.metric("📉 XGB SHORT Signals", short_signals)
+            col3.metric("📊 Total XGB Signals", long_signals + short_signals)
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # XGB SIMULATION WITH TRAILING STOP
+            # ═══════════════════════════════════════════════════════════════════
+            st.markdown("---")
+            st.markdown("#### 🎯 XGB Trade Simulation (with Trailing Stop)")
+            
+            if st.button("🚀 Run XGB Simulation", type="primary", use_container_width=True, key="run_xgb_sim"):
+                try:
+                    from ai.backtest.xgb_simulator import run_xgb_simulation, XGBSimulatorConfig
+                    from ai.visualizations.xgb_charts import create_xgb_simulation_chart, create_xgb_stats_table
+                    
+                    # Create config from sliders
+                    xgb_config = XGBSimulatorConfig(
+                        entry_threshold=xgb_threshold,
+                        stop_loss_pct=xgb_stop_loss,
+                        take_profit_pct=xgb_take_profit,
+                        trailing_stop_pct=xgb_trailing_stop,
+                        trailing_activation_pct=xgb_trailing_activation,
+                        max_holding_candles=xgb_max_holding,
+                        min_holding_candles=2
+                    )
+                    
+                    with st.spinner("🔄 Running XGB simulation with trailing stop..."):
+                        # Run simulation
+                        xgb_sim_result = run_xgb_simulation(
+                            df=df_full,
+                            xgb_scores=xgb_data['xgb_score_long_norm'],
+                            config=xgb_config
+                        )
+                        
+                        # Store in session state
+                        st.session_state['xgb_sim_result'] = xgb_sim_result
+                        st.rerun()
+                        
+                except Exception as e:
+                    st.error(f"❌ Error running XGB simulation: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+            
+            # Display results if available
+            if 'xgb_sim_result' in st.session_state:
+                xgb_sim_result = st.session_state['xgb_sim_result']
+                
+                # Statistics
+                xgb_stats = xgb_sim_result.get_statistics()
+                
+                try:
+                    from ai.visualizations.xgb_charts import create_xgb_simulation_chart, create_xgb_stats_table
+                    
+                    # Show stats table
+                    st.markdown(create_xgb_stats_table(xgb_stats), unsafe_allow_html=True)
+                    
+                    # Create and display simulation chart
+                    xgb_sim_fig = create_xgb_simulation_chart(xgb_sim_result, selected_name)
+                    st.plotly_chart(xgb_sim_fig, use_container_width=True, key="xgb_sim_chart")
+                    
+                    # Trade list
+                    if xgb_sim_result.trades:
+                        with st.expander(f"📋 XGB Trade Details ({len(xgb_sim_result.trades)} trades)", expanded=False):
+                            for trade in xgb_sim_result.trades:
+                                trade_emoji = "🟢" if trade.trade_type.value == "LONG" else "🔴"
+                                result_emoji = "✅" if trade.is_winner else "❌"
+                                exit_reason = trade.exit_reason.value if trade.exit_reason else "N/A"
+                                
+                                st.markdown(f"""
+                                <div style="background: #1e1e2e; padding: 10px 15px; border-radius: 8px; margin: 5px 0; 
+                                            border-left: 3px solid {'#00ff88' if trade.is_winner else '#ff4757'};">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <span>{result_emoji} {trade_emoji} <b>#{trade.trade_id}</b> {trade.trade_type.value}</span>
+                                        <span style="color: {'#00ff88' if trade.is_winner else '#ff4757'}; font-weight: 700;">
+                                            {trade.pnl_pct:+.2f}%
+                                        </span>
+                                    </div>
+                                    <div style="color: #888; font-size: 0.8rem; margin-top: 5px;">
+                                        Entry: ${trade.entry_price:,.2f} | Exit: ${trade.exit_price:,.2f} | 
+                                        <span style="color: #ffaa00;">{exit_reason}</span>
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                except Exception as e:
+                    st.error(f"❌ Error displaying results: {e}")
+        else:
+            st.warning("⚠️ Could not generate XGB signals")
+    else:
+        st.warning(f"""
+        **⚠️ XGBoost Model Not Available**
+        
+        {ml_service.error_message or 'Models not found'}
+        
+        **To enable:**
+        1. Run training: `python agents/ml-training/train.py`
+        2. Copy models to container
+        3. Restart frontend
+        """)
     
     # Show warning if no trades were generated
     trades_list = result.trades.trades
