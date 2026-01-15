@@ -663,9 +663,10 @@ def train_model(X_train, y_train, X_test, y_test, model_name: str):
     return model, scaler, metrics, feature_importance
 
 
-def save_models(model_long, model_short, scaler, feature_names, metrics_long, metrics_short, output_dir: Path):
+def save_models(model_long, model_short, scaler, feature_names, metrics_long, metrics_short, output_dir: Path,
+                train_start=None, train_end=None, test_start=None, test_end=None, symbols=None, timeframes=None):
     """
-    Save trained models, scaler, and metadata.
+    Save trained models, scaler, and metadata including training date ranges.
     """
     print(f"\n💾 Saving models to: {output_dir}")
     
@@ -693,7 +694,7 @@ def save_models(model_long, model_short, scaler, feature_names, metrics_long, me
         pickle.dump(scaler, f)
     print(f"   ✅ {scaler_path.name}")
     
-    # Save metadata
+    # Save metadata with training date ranges
     metadata = {
         'version': version,
         'created_at': datetime.now().isoformat(),
@@ -703,6 +704,17 @@ def save_models(model_long, model_short, scaler, feature_names, metrics_long, me
         'train_ratio': TRAIN_RATIO,
         'metrics_long': metrics_long,
         'metrics_short': metrics_short,
+        # Training date ranges - CRITICAL for out-of-sample testing!
+        'data_range': {
+            'train_start': str(train_start) if train_start else None,
+            'train_end': str(train_end) if train_end else None,
+            'test_start': str(test_start) if test_start else None,
+            'test_end': str(test_end) if test_end else None,
+            'total_start': str(train_start) if train_start else None,
+            'total_end': str(test_end) if test_end else None,
+        },
+        'symbols': symbols if symbols else [],
+        'timeframes': timeframes if timeframes else [],
     }
     
     with open(metadata_path, 'w') as f:
@@ -822,10 +834,20 @@ def main():
     metrics_long['ranking'] = ranking_long
     metrics_short['ranking'] = ranking_short
     
-    # Save models
+    # Extract symbols and timeframes from data
+    unique_symbols = df['symbol'].unique().tolist() if 'symbol' in df.columns else []
+    unique_timeframes = df['timeframe'].unique().tolist() if 'timeframe' in df.columns else []
+    
+    # Save models with training date ranges
     version = save_models(
         model_long, model_short, scaler, feature_names,
-        metrics_long, metrics_short, output_dir
+        metrics_long, metrics_short, output_dir,
+        train_start=ts_train.iloc[0],
+        train_end=ts_train.iloc[-1],
+        test_start=ts_test.iloc[0],
+        test_end=ts_test.iloc[-1],
+        symbols=unique_symbols,
+        timeframes=unique_timeframes
     )
     
     # Summary

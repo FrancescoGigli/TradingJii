@@ -492,6 +492,110 @@ def _generate_css() -> str:
     .stCheckbox label {{
         color: {text_s} !important;
     }}
+    
+    /* ═══════════════════════════════════════════════════════════════════════════
+       MULTISELECT - DARK THEME WITH CYAN TAGS
+       ═══════════════════════════════════════════════════════════════════════════ */
+    
+    /* Multiselect container */
+    .stMultiSelect > div > div {{
+        background: {bg_input} !important;
+        background-color: {bg_input} !important;
+        border: 1px solid {border} !important;
+        border-radius: 10px !important;
+    }}
+    
+    .stMultiSelect > div > div:hover {{
+        border-color: {border_h} !important;
+        box-shadow: 0 0 15px {rgba(cyan, 0.2)} !important;
+    }}
+    
+    /* Multiselect input area */
+    .stMultiSelect [data-baseweb="select"] {{
+        background: {bg_input} !important;
+        background-color: {bg_input} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="select"] > div {{
+        background: {bg_input} !important;
+        background-color: {bg_input} !important;
+        border: none !important;
+    }}
+    
+    /* Multiselect input field */
+    .stMultiSelect input {{
+        background: {bg_input} !important;
+        background-color: {bg_input} !important;
+        color: {text_p} !important;
+    }}
+    
+    /* TAGS/PILLS - The selected items - CYAN STYLE */
+    .stMultiSelect [data-baseweb="tag"] {{
+        background: {rgba(cyan, 0.3)} !important;
+        background-color: {rgba(cyan, 0.3)} !important;
+        border: 1px solid {cyan} !important;
+        border-radius: 6px !important;
+        color: {cyan} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="tag"]:hover {{
+        background: {rgba(cyan, 0.4)} !important;
+        background-color: {rgba(cyan, 0.4)} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="tag"] span {{
+        color: {cyan} !important;
+    }}
+    
+    /* Tag close button (X) */
+    .stMultiSelect [data-baseweb="tag"] [role="presentation"] {{
+        color: {cyan} !important;
+        background: transparent !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="tag"] [role="presentation"]:hover {{
+        background: {rgba(red, 0.3)} !important;
+        color: {red} !important;
+    }}
+    
+    /* Alternative tag selectors for newer Streamlit */
+    [data-baseweb="tag"],
+    div[data-baseweb="tag"] {{
+        background: {rgba(cyan, 0.3)} !important;
+        background-color: {rgba(cyan, 0.3)} !important;
+        border: 1px solid {cyan} !important;
+        border-radius: 6px !important;
+    }}
+    
+    [data-baseweb="tag"] span,
+    [data-baseweb="tag"] div {{
+        color: {cyan} !important;
+    }}
+    
+    /* Dropdown for multiselect */
+    .stMultiSelect [data-baseweb="popover"] {{
+        background: {bg_s} !important;
+        border: 1px solid {border} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="menu"] {{
+        background: {bg_s} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="menu"] li {{
+        background: {bg_s} !important;
+        color: {text_p} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="menu"] li:hover {{
+        background: {rgba(cyan, 0.2)} !important;
+    }}
+    
+    /* Label for multiselect */
+    .stMultiSelect label {{
+        color: {text_m} !important;
+        font-weight: 600 !important;
+    }}
 </style>
 """
 

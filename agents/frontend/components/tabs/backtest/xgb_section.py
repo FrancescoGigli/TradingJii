@@ -9,6 +9,113 @@ Includes:
 
 import streamlit as st
 import pandas as pd
+from datetime import datetime
+
+
+def _render_date_range_info(df_full, ml_service):
+    """
+    Render backtest date range info and check for overlap with training data.
+    
+    Shows:
+    - Current backtest date range
+    - Model training date range (if available)
+    - Warning if backtest overlaps with training data (in-sample)
+    """
+    # Get backtest date range
+    if 'timestamp' in df_full.columns:
+        backtest_start = pd.to_datetime(df_full['timestamp'].min())
+        backtest_end = pd.to_datetime(df_full['timestamp'].max())
+    else:
+        backtest_start = df_full.index.min()
+        backtest_end = df_full.index.max()
+    
+    # Try to get model metadata
+    model_metadata = ml_service.get_metadata() if hasattr(ml_service, 'get_metadata') else None
+    
+    # Build info card
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown(f"""
+        <div style="background: #252542; padding: 12px 15px; border-radius: 8px; border-left: 4px solid #00d4ff;">
+            <p style="color: #888; margin: 0; font-size: 0.75rem;">📊 BACKTEST DATA RANGE</p>
+            <p style="color: white; margin: 5px 0; font-weight: 600;">
+                {backtest_start.strftime('%Y-%m-%d %H:%M')} → {backtest_end.strftime('%Y-%m-%d %H:%M')}
+            </p>
+            <p style="color: #00d4ff; margin: 0; font-size: 0.8rem;">
+                {len(df_full):,} candles
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        if model_metadata and 'data_range' in model_metadata:
+            data_range = model_metadata['data_range']
+            train_end = data_range.get('train_end')
+            
+            if train_end:
+                train_end_dt = pd.to_datetime(train_end)
+                train_start_dt = pd.to_datetime(data_range.get('train_start', train_end))
+                
+                st.markdown(f"""
+                <div style="background: #252542; padding: 12px 15px; border-radius: 8px; border-left: 4px solid #ffaa00;">
+                    <p style="color: #888; margin: 0; font-size: 0.75rem;">🤖 MODEL TRAINING DATA</p>
+                    <p style="color: white; margin: 5px 0; font-weight: 600;">
+                        {train_start_dt.strftime('%Y-%m-%d')} → {train_end_dt.strftime('%Y-%m-%d')}
+                    </p>
+                    <p style="color: #ffaa00; margin: 0; font-size: 0.8rem;">
+                        Model: {model_metadata.get('version', 'unknown')}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Check for overlap
+                if backtest_start < train_end_dt:
+                    overlap_pct = 0
+                    if backtest_end > train_start_dt:
+                        # Calculate overlap
+                        overlap_start = max(backtest_start, train_start_dt)
+                        overlap_end = min(backtest_end, train_end_dt)
+                        if overlap_end > overlap_start:
+                            total_backtest = (backtest_end - backtest_start).total_seconds()
+                            overlap_seconds = (overlap_end - overlap_start).total_seconds()
+                            overlap_pct = (overlap_seconds / total_backtest) * 100
+                    
+                    if overlap_pct > 0:
+                        st.warning(f"""
+                        ⚠️ **IN-SAMPLE WARNING**: {overlap_pct:.1f}% of backtest data was seen during training!
+                        
+                        - Model trained until: **{train_end_dt.strftime('%Y-%m-%d')}**
+                        - Backtest starts from: **{backtest_start.strftime('%Y-%m-%d')}**
+                        
+                        For valid out-of-sample testing, use data **after {train_end_dt.strftime('%Y-%m-%d')}**.
+                        """)
+                elif backtest_start > train_end_dt:
+                    st.success(f"✅ **OUT-OF-SAMPLE**: Backtest uses data after model training (valid test)")
+            else:
+                st.markdown(f"""
+                <div style="background: #252542; padding: 12px 15px; border-radius: 8px; border-left: 4px solid #888;">
+                    <p style="color: #888; margin: 0; font-size: 0.75rem;">🤖 MODEL TRAINING DATA</p>
+                    <p style="color: #888; margin: 5px 0;">
+                        ⚠️ Training dates not saved in model metadata
+                    </p>
+                    <p style="color: #888; margin: 0; font-size: 0.8rem;">
+                        Re-train model to save date ranges
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background: #252542; padding: 12px 15px; border-radius: 8px; border-left: 4px solid #888;">
+                <p style="color: #888; margin: 0; font-size: 0.75rem;">🤖 MODEL TRAINING DATA</p>
+                <p style="color: #888; margin: 5px 0;">
+                    ⚠️ No metadata available
+                </p>
+                <p style="color: #888; margin: 0; font-size: 0.8rem;">
+                    Re-train model to save date ranges
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 def render_xgb_section(df_full, ml_service, selected_name: str):
@@ -35,6 +142,11 @@ def render_xgb_section(df_full, ml_service, selected_name: str):
         3. Restart frontend
         """)
         return
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # SHOW BACKTEST DATE RANGE AND MODEL TRAINING DATES
+    # ═══════════════════════════════════════════════════════════════════
+    _render_date_range_info(df_full, ml_service)
     
     st.markdown("""
     <p style="color: #a0a0a0; font-size: 0.85rem;">

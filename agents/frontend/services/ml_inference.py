@@ -575,6 +575,22 @@ class MLInferenceService:
             'version': self.model_version,
             'n_features': self.metadata.get('n_features', 0)
         }
+    
+    def get_metadata(self) -> Optional[Dict[str, Any]]:
+        """
+        Get full model metadata including training date ranges.
+        
+        Returns:
+            dict with:
+                - version: model version string
+                - created_at: timestamp
+                - data_range: {train_start, train_end, test_start, test_end}
+                - symbols: list of symbols used in training
+                - timeframes: list of timeframes used
+                - metrics_long, metrics_short: model performance
+                - n_features: number of features
+        """
+        return self.metadata
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

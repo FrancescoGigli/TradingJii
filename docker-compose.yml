@@ -93,6 +93,15 @@ services:
       - "8501:8501"
     volumes:
       - shared-data:/app/shared
+    # Resource limits to prevent Optuna training from consuming all resources
+    deploy:
+      resources:
+        limits:
+          cpus: '4'      # Max 4 CPU cores (enough for Optuna but won't block system)
+          memory: 4G     # Max 4GB RAM
+        reservations:
+          cpus: '0.5'    # Reserve at least 0.5 CPU
+          memory: 256M   # Reserve at least 256MB
     environment:
       - SHARED_DATA_PATH=/app/shared
       # Bybit API (for balance, positions, trading)

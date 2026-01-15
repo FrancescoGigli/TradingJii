@@ -26,6 +26,7 @@ from ai.visualizations.optimization_charts import (
     create_best_config_card,
     create_ranking_table_html
 )
+from ai.visualizations.xgb_charts import create_xgb_simulation_chart
 
 
 def render_optimization_section(df_full: pd.DataFrame, xgb_data: pd.DataFrame, symbol_name: str):
@@ -389,6 +390,49 @@ def _display_optimization_results(result: TrailingOptimizationResult, symbol_nam
     st.markdown("---")
     if result.best_by_sharpe:
         _render_best_config_native(result.best_by_sharpe)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # BEST CONFIG - CANDLESTICK WITH TRADES (Entry/Exit Points)
+        # ═══════════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("#### 📊 Best Config - Trade Visualization")
+        st.caption("Candlestick chart with LONG/SHORT entry points and exit markers. Green lines = profit, Red lines = loss.")
+        
+        # The simulation_result is already an XGBSimulatorResult
+        best_sim_result = result.best_by_sharpe.simulation_result
+        best_config = result.best_by_sharpe.config
+        
+        if best_sim_result and len(best_sim_result.trades) > 0:
+            try:
+                # Build title with configuration parameters
+                config_title = (
+                    f"{symbol_name} | "
+                    f"SL: {best_config.stop_loss_pct}% | "
+                    f"TP: {best_config.take_profit_pct}% | "
+                    f"TS: {best_config.trailing_stop_pct}% | "
+                    f"Act: {best_config.trailing_activation_pct}% | "
+                    f"Thr: {int(best_config.entry_threshold)}"
+                )
+                
+                trades_fig = create_xgb_simulation_chart(
+                    result=best_sim_result,
+                    symbol=config_title,
+                    show_trailing_stops=True
+                )
+                st.plotly_chart(trades_fig, use_container_width=True, key="best_config_trades_chart")
+                
+                # Trade summary
+                stats = best_sim_result.get_statistics()
+                st.info(f"""
+                **Trade Summary:** {stats['total_trades']} trades 
+                (LONG: {stats['long_trades']}, SHORT: {stats['short_trades']}) | 
+                ✅ {stats['winning_trades']} wins | ❌ {stats['losing_trades']} losses | 
+                📤 Exit Reasons: {', '.join([f"{k}: {v}" for k, v in stats.get('exit_reasons', {}).items()])}
+                """)
+            except Exception as e:
+                st.warning(f"⚠️ Could not render trades chart: {e}")
+        else:
+            st.info("ℹ️ No trades executed with this configuration.")
     
     # ═══════════════════════════════════════════════════════════════════
     # EQUITY CURVES COMPARISON
