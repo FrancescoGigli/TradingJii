@@ -16,9 +16,7 @@ from components.tabs import (
     render_top_coins_tab,
     render_analysis_tab,
     render_backtest_tab,
-    render_historical_data_tab,
-    render_ml_labels_tab,
-    render_xgb_models_tab
+    render_train_tab
 )
 
 
@@ -59,10 +57,11 @@ FOOTER_HTML = """
 # ============================================================
 def main():
     """Main application entry point"""
-    
-    # Header
-    st.markdown(HEADER_HTML, unsafe_allow_html=True)
-    
+
+    # Sidebar
+    with st.sidebar:
+        render_sidebar()
+
     # Persistent header bar with Balance/Sentiment/Services
     try:
         from components.header import render_header_bar
@@ -70,39 +69,30 @@ def main():
     except Exception as e:
         # Fallback: show simple metrics if header fails
         pass
-    
-    # Sidebar
-    with st.sidebar:
-        render_sidebar()
-    
-    # Main content - TABS (ordered by workflow phases)
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 Top", 
+
+    # Main content - TABS (4 tabs: Top, Charts, Test, Train)
+    # Tabs FIRST, then content
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Top",
         "📈 Charts",
-        "📚 Data",
         "🔄 Test",
-        "🎯 ML",
-        "🤖 XGB"
+        "🎓 Train"
     ])
-    
+
     with tab1:
+        # Header inside Top tab
+        st.markdown(HEADER_HTML, unsafe_allow_html=True)
         render_top_coins_tab()
-    
+
     with tab2:
         render_analysis_tab()
-    
+
     with tab3:
-        render_historical_data_tab()
-    
-    with tab4:
         render_backtest_tab()
-    
-    with tab5:
-        render_ml_labels_tab()
-    
-    with tab6:
-        render_xgb_models_tab()
-    
+
+    with tab4:
+        render_train_tab()
+
     # Footer
     st.markdown(FOOTER_HTML, unsafe_allow_html=True)
 
