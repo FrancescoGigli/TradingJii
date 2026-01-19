@@ -1,9 +1,11 @@
 """
-🗄️ Historical Database Module
+🗄️ Training Data Database Module
 
-Manages SQLite database for historical OHLCV data:
-- historical_ohlcv: Long-term price data (12+ months)
-- backfill_status: Progress tracking for each symbol/timeframe
+Manages SQLite database for ML training data:
+- training_data: OHLCV + 16 indicators for ML training
+  - Date aligned between 15m and 1h timeframes
+  - No NULL values (warmup candles are fetched but discarded)
+- backfill_status: Tracks download progress per symbol/timeframe
 """
 
 import sqlite3
@@ -21,42 +23,43 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Warmup period - extra candles to fetch for indicator calculation
+WARMUP_CANDLES = 200
+
 
 class BackfillStatus(Enum):
-    """Status of backfill operation for a symbol/timeframe"""
+    """Status of data backfill for a symbol/timeframe"""
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETE = "COMPLETE"
     ERROR = "ERROR"
-    NEEDS_UPDATE = "NEEDS_UPDATE"
 
 
 @dataclass
 class BackfillInfo:
-    """Information about backfill status for a symbol/timeframe"""
+    """Information about backfill status"""
     symbol: str
     timeframe: str
     status: BackfillStatus
-    oldest_timestamp: Optional[datetime]
-    warmup_start: Optional[datetime]
-    training_start: Optional[datetime]
-    newest_timestamp: Optional[datetime]
-    total_candles: int
-    warmup_candles: int
-    training_candles: int
-    completeness_pct: float
-    gap_count: int
-    last_update: Optional[datetime]
-    error_message: Optional[str]
+    oldest_timestamp: Optional[datetime] = None
+    newest_timestamp: Optional[datetime] = None
+    total_candles: int = 0
+    warmup_candles: int = 0
+    training_candles: int = 0
+    completeness_pct: float = 0.0
+    gap_count: int = 0
+    last_update: Optional[datetime] = None
+    error_message: Optional[str] = None
 
 
-class HistoricalDatabase:
+class TrainingDatabase:
     """
-    SQLite Database manager for historical OHLCV data.
+    SQLite Database manager for ML training data.
     
     Creates and manages:
-    - historical_ohlcv: Store 12+ months of candle data
-    - backfill_status: Track download progress per symbol/timeframe
+    - training_data: OHLCV + 16 technical indicators
+      - Date aligned between timeframes
+      - No NULL values
     """
     
     def __init__(self, db_path: str = None):
@@ -75,343 +78,90 @@ class HistoricalDatabase:
         return conn
     
     def _init_db(self):
-        """Initialize database tables for historical data"""
+        """Initialize database tables for training data"""
         conn = self._get_connection()
         cur = conn.cursor()
         
-        # Historical OHLCV table (main data store for ML) with indicators
+        # Training Data table (OHLCV + 16 indicators)
         cur.execute('''
-            CREATE TABLE IF NOT EXISTS historical_ohlcv (
+            CREATE TABLE IF NOT EXISTS training_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
+                
+                -- OHLCV
                 open REAL NOT NULL,
                 high REAL NOT NULL,
                 low REAL NOT NULL,
                 close REAL NOT NULL,
                 volume REAL NOT NULL,
-                fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 
-                -- Technical Indicators (pre-computed)
-                sma_20 REAL,
-                sma_50 REAL,
-                ema_12 REAL,
-                ema_26 REAL,
-                bb_upper REAL,
-                bb_mid REAL,
-                bb_lower REAL,
-                macd REAL,
-                macd_signal REAL,
-                macd_hist REAL,
-                rsi REAL,
-                stoch_k REAL,
-                stoch_d REAL,
-                atr REAL,
-                volume_sma REAL,
-                obv REAL,
+                -- Technical Indicators (16 total - NO NULL values)
+                sma_20 REAL NOT NULL,
+                sma_50 REAL NOT NULL,
+                ema_12 REAL NOT NULL,
+                ema_26 REAL NOT NULL,
+                bb_upper REAL NOT NULL,
+                bb_mid REAL NOT NULL,
+                bb_lower REAL NOT NULL,
+                macd REAL NOT NULL,
+                macd_signal REAL NOT NULL,
+                macd_hist REAL NOT NULL,
+                rsi REAL NOT NULL,
+                stoch_k REAL NOT NULL,
+                stoch_d REAL NOT NULL,
+                atr REAL NOT NULL,
+                volume_sma REAL NOT NULL,
+                obv REAL NOT NULL,
+                
+                -- Metadata
+                fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 
                 UNIQUE(symbol, timeframe, timestamp)
             )
         ''')
         
-        # Add indicator columns if they don't exist (for existing databases)
-        indicator_cols = [
-            'sma_20', 'sma_50', 'ema_12', 'ema_26',
-            'bb_upper', 'bb_mid', 'bb_lower',
-            'macd', 'macd_signal', 'macd_hist',
-            'rsi', 'stoch_k', 'stoch_d', 'atr',
-            'volume_sma', 'obv'
-        ]
-        
-        for col in indicator_cols:
-            try:
-                cur.execute(f'ALTER TABLE historical_ohlcv ADD COLUMN {col} REAL')
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-        
         # Indexes for fast queries
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_hist_symbol_tf ON historical_ohlcv(symbol, timeframe)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_hist_timestamp ON historical_ohlcv(timestamp)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_hist_symbol_tf_ts ON historical_ohlcv(symbol, timeframe, timestamp)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_train_symbol ON training_data(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_train_timeframe ON training_data(timeframe)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_train_timestamp ON training_data(timestamp)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_train_symbol_tf ON training_data(symbol, timeframe)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_train_symbol_tf_ts ON training_data(symbol, timeframe, timestamp)')
         
-        # Backfill status table (tracks progress)
+        # Backfill Status table
         cur.execute('''
             CREATE TABLE IF NOT EXISTS backfill_status (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
-                status TEXT DEFAULT 'PENDING',
-                
-                -- Date range
+                status TEXT NOT NULL DEFAULT 'PENDING',
                 oldest_timestamp TEXT,
                 warmup_start TEXT,
                 training_start TEXT,
                 newest_timestamp TEXT,
-                
-                -- Statistics
                 total_candles INTEGER DEFAULT 0,
                 warmup_candles INTEGER DEFAULT 0,
                 training_candles INTEGER DEFAULT 0,
-                
-                -- Quality metrics
                 completeness_pct REAL DEFAULT 0.0,
                 gap_count INTEGER DEFAULT 0,
-                
-                -- Tracking
-                last_update TEXT,
+                last_update TEXT DEFAULT CURRENT_TIMESTAMP,
                 error_message TEXT,
-                
-                PRIMARY KEY (symbol, timeframe)
+                UNIQUE(symbol, timeframe)
             )
         ''')
         
         conn.commit()
         conn.close()
         
-        logger.info("🗄️ Historical database initialized")
-    
-    # =========================================
-    # OHLCV DATA OPERATIONS
-    # =========================================
-    
-    def save_candles(
-        self, 
-        symbol: str, 
-        timeframe: str, 
-        df: pd.DataFrame
-    ) -> int:
-        """
-        Save OHLCV candles with indicators to historical_ohlcv table.
-        Uses INSERT OR REPLACE for upsert behavior.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Candle timeframe (e.g., '15m')
-            df: DataFrame with OHLCV data and indicators (must have datetime index)
-            
-        Returns:
-            Number of candles saved
-        """
-        if df is None or df.empty:
-            return 0
-        
-        conn = self._get_connection()
-        cur = conn.cursor()
-        
-        # Prepare data
-        data = df.reset_index()
-        if 'timestamp' not in data.columns and data.index.name == 'timestamp':
-            data = data.reset_index()
-        
-        # Convert timestamp to string if datetime
-        if 'timestamp' in data.columns:
-            if pd.api.types.is_datetime64_any_dtype(data['timestamp']):
-                data['timestamp'] = data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Indicator columns
-        indicator_cols = [
-            'sma_20', 'sma_50', 'ema_12', 'ema_26',
-            'bb_upper', 'bb_mid', 'bb_lower',
-            'macd', 'macd_signal', 'macd_hist',
-            'rsi', 'stoch_k', 'stoch_d', 'atr',
-            'volume_sma', 'obv'
-        ]
-        
-        # Check which indicator columns exist in dataframe
-        available_indicators = [col for col in indicator_cols if col in data.columns]
-        has_indicators = len(available_indicators) > 0
-        
-        count = 0
-        for _, row in data.iterrows():
-            try:
-                if has_indicators:
-                    # Build dynamic query with indicators
-                    cols = 'symbol, timeframe, timestamp, open, high, low, close, volume, fetched_at'
-                    placeholders = '?, ?, ?, ?, ?, ?, ?, ?, ?'
-                    values = [
-                        symbol, timeframe, row['timestamp'],
-                        float(row['open']), float(row['high']), 
-                        float(row['low']), float(row['close']), 
-                        float(row['volume']), now
-                    ]
-                    
-                    for col in available_indicators:
-                        cols += f', {col}'
-                        placeholders += ', ?'
-                        val = row[col]
-                        values.append(None if pd.isna(val) else float(val))
-                    
-                    cur.execute(f'''
-                        INSERT OR REPLACE INTO historical_ohlcv 
-                        ({cols})
-                        VALUES ({placeholders})
-                    ''', values)
-                else:
-                    # Original query without indicators
-                    cur.execute('''
-                        INSERT OR REPLACE INTO historical_ohlcv 
-                        (symbol, timeframe, timestamp, open, high, low, close, volume, fetched_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        symbol, timeframe, row['timestamp'],
-                        float(row['open']), float(row['high']), 
-                        float(row['low']), float(row['close']), 
-                        float(row['volume']), now
-                    ))
-                count += 1
-            except Exception as e:
-                logger.warning(f"Error saving candle {symbol}[{timeframe}] {row.get('timestamp', 'N/A')}: {e}")
-        
-        conn.commit()
-        conn.close()
-        
-        return count
-    
-    def get_candles(
-        self, 
-        symbol: str, 
-        timeframe: str, 
-        start_date: datetime = None,
-        end_date: datetime = None,
-        limit: int = None,
-        include_indicators: bool = True
-    ) -> pd.DataFrame:
-        """
-        Get historical OHLCV data with indicators from database.
-        
-        Args:
-            symbol: Trading pair symbol
-            timeframe: Candle timeframe
-            start_date: Start of date range (optional)
-            end_date: End of date range (optional)
-            limit: Maximum rows to return (optional)
-            include_indicators: Include pre-computed indicators (default True)
-            
-        Returns:
-            DataFrame with OHLCV data and indicators, datetime index
-        """
-        conn = self._get_connection()
-        
-        # Base columns
-        columns = 'timestamp, open, high, low, close, volume'
-        
-        # Add indicator columns if requested
-        if include_indicators:
-            indicator_cols = [
-                'sma_20', 'sma_50', 'ema_12', 'ema_26',
-                'bb_upper', 'bb_mid', 'bb_lower',
-                'macd', 'macd_signal', 'macd_hist',
-                'rsi', 'stoch_k', 'stoch_d', 'atr',
-                'volume_sma', 'obv'
-            ]
-            columns += ', ' + ', '.join(indicator_cols)
-        
-        query = f'''
-            SELECT {columns}
-            FROM historical_ohlcv
-            WHERE symbol = ? AND timeframe = ?
-        '''
-        params = [symbol, timeframe]
-        
-        if start_date:
-            query += ' AND timestamp >= ?'
-            params.append(start_date.strftime('%Y-%m-%d %H:%M:%S'))
-        
-        if end_date:
-            query += ' AND timestamp <= ?'
-            params.append(end_date.strftime('%Y-%m-%d %H:%M:%S'))
-        
-        query += ' ORDER BY timestamp ASC'
-        
-        if limit:
-            query += f' LIMIT {limit}'
-        
-        df = pd.read_sql_query(query, conn, params=params)
-        conn.close()
-        
-        if len(df) > 0:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df.set_index('timestamp', inplace=True)
-        
-        return df
-    
-    def get_date_range(self, symbol: str, timeframe: str) -> Tuple[Optional[datetime], Optional[datetime]]:
-        """Get the date range of data for a symbol/timeframe"""
-        conn = self._get_connection()
-        cur = conn.cursor()
-        
-        cur.execute('''
-            SELECT MIN(timestamp), MAX(timestamp)
-            FROM historical_ohlcv
-            WHERE symbol = ? AND timeframe = ?
-        ''', (symbol, timeframe))
-        
-        row = cur.fetchone()
-        conn.close()
-        
-        if row and row[0] and row[1]:
-            return (
-                datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S'),
-                datetime.strptime(row[1], '%Y-%m-%d %H:%M:%S')
-            )
-        return None, None
-    
-    def get_candle_count(self, symbol: str, timeframe: str) -> int:
-        """Get total candle count for a symbol/timeframe"""
-        conn = self._get_connection()
-        cur = conn.cursor()
-        
-        cur.execute('''
-            SELECT COUNT(*) FROM historical_ohlcv
-            WHERE symbol = ? AND timeframe = ?
-        ''', (symbol, timeframe))
-        
-        count = cur.fetchone()[0]
-        conn.close()
-        return count
-    
-    def get_newest_timestamp(self, symbol: str, timeframe: str) -> Optional[datetime]:
-        """Get the most recent candle timestamp for a symbol/timeframe"""
-        conn = self._get_connection()
-        cur = conn.cursor()
-        
-        cur.execute('''
-            SELECT MAX(timestamp) FROM historical_ohlcv
-            WHERE symbol = ? AND timeframe = ?
-        ''', (symbol, timeframe))
-        
-        row = cur.fetchone()
-        conn.close()
-        
-        if row and row[0]:
-            return datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
-        return None
-    
-    def get_oldest_timestamp(self, symbol: str, timeframe: str) -> Optional[datetime]:
-        """Get the oldest candle timestamp for a symbol/timeframe"""
-        conn = self._get_connection()
-        cur = conn.cursor()
-        
-        cur.execute('''
-            SELECT MIN(timestamp) FROM historical_ohlcv
-            WHERE symbol = ? AND timeframe = ?
-        ''', (symbol, timeframe))
-        
-        row = cur.fetchone()
-        conn.close()
-        
-        if row and row[0]:
-            return datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
-        return None
+        logger.info("🗄️ Training database initialized (2 tables: training_data, backfill_status)")
     
     # =========================================
     # BACKFILL STATUS OPERATIONS
     # =========================================
     
     def init_backfill_status(self, symbol: str, timeframe: str):
-        """Initialize backfill status for a symbol/timeframe"""
+        """Initialize backfill status for a symbol/timeframe if not exists"""
         conn = self._get_connection()
         cur = conn.cursor()
         
@@ -443,13 +193,13 @@ class HistoricalDatabase:
         conn = self._get_connection()
         cur = conn.cursor()
         
-        # Build dynamic update query
+        # Build update query dynamically
         updates = []
         params = []
         
         if status is not None:
             updates.append("status = ?")
-            params.append(status.value)
+            params.append(status.value if isinstance(status, BackfillStatus) else status)
         
         if oldest_timestamp is not None:
             updates.append("oldest_timestamp = ?")
@@ -491,15 +241,15 @@ class HistoricalDatabase:
             updates.append("error_message = ?")
             params.append(error_message)
         
-        # Always update last_update
-        updates.append("last_update = ?")
-        params.append(datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
+        updates.append("last_update = datetime('now')")
         
-        # Add WHERE params
         params.extend([symbol, timeframe])
         
-        query = f"UPDATE backfill_status SET {', '.join(updates)} WHERE symbol = ? AND timeframe = ?"
-        cur.execute(query, params)
+        cur.execute(f'''
+            UPDATE backfill_status
+            SET {', '.join(updates)}
+            WHERE symbol = ? AND timeframe = ?
+        ''', params)
         
         conn.commit()
         conn.close()
@@ -510,7 +260,10 @@ class HistoricalDatabase:
         cur = conn.cursor()
         
         cur.execute('''
-            SELECT * FROM backfill_status
+            SELECT symbol, timeframe, status, oldest_timestamp, newest_timestamp,
+                   total_candles, warmup_candles, training_candles,
+                   completeness_pct, gap_count, last_update, error_message
+            FROM backfill_status
             WHERE symbol = ? AND timeframe = ?
         ''', (symbol, timeframe))
         
@@ -520,79 +273,317 @@ class HistoricalDatabase:
         if not row:
             return None
         
-        def parse_dt(s):
-            return datetime.strptime(s, '%Y-%m-%d %H:%M:%S') if s else None
-        
         return BackfillInfo(
             symbol=row['symbol'],
             timeframe=row['timeframe'],
             status=BackfillStatus(row['status']),
-            oldest_timestamp=parse_dt(row['oldest_timestamp']),
-            warmup_start=parse_dt(row['warmup_start']),
-            training_start=parse_dt(row['training_start']),
-            newest_timestamp=parse_dt(row['newest_timestamp']),
+            oldest_timestamp=datetime.strptime(row['oldest_timestamp'], '%Y-%m-%d %H:%M:%S') if row['oldest_timestamp'] else None,
+            newest_timestamp=datetime.strptime(row['newest_timestamp'], '%Y-%m-%d %H:%M:%S') if row['newest_timestamp'] else None,
             total_candles=row['total_candles'] or 0,
             warmup_candles=row['warmup_candles'] or 0,
             training_candles=row['training_candles'] or 0,
             completeness_pct=row['completeness_pct'] or 0.0,
             gap_count=row['gap_count'] or 0,
-            last_update=parse_dt(row['last_update']),
+            last_update=datetime.strptime(row['last_update'], '%Y-%m-%d %H:%M:%S') if row['last_update'] else None,
             error_message=row['error_message']
         )
     
     def get_all_backfill_status(self) -> List[BackfillInfo]:
-        """Get backfill status for all symbol/timeframe combinations"""
+        """Get backfill status for all symbol/timeframe pairs"""
         conn = self._get_connection()
         cur = conn.cursor()
         
-        cur.execute('SELECT * FROM backfill_status ORDER BY symbol, timeframe')
-        rows = cur.fetchall()
-        conn.close()
+        cur.execute('''
+            SELECT symbol, timeframe, status, oldest_timestamp, newest_timestamp,
+                   total_candles, warmup_candles, training_candles,
+                   completeness_pct, gap_count, last_update, error_message
+            FROM backfill_status
+            ORDER BY symbol, timeframe
+        ''')
         
-        def parse_dt(s):
-            return datetime.strptime(s, '%Y-%m-%d %H:%M:%S') if s else None
-        
-        result = []
-        for row in rows:
-            result.append(BackfillInfo(
+        results = []
+        for row in cur.fetchall():
+            results.append(BackfillInfo(
                 symbol=row['symbol'],
                 timeframe=row['timeframe'],
                 status=BackfillStatus(row['status']),
-                oldest_timestamp=parse_dt(row['oldest_timestamp']),
-                warmup_start=parse_dt(row['warmup_start']),
-                training_start=parse_dt(row['training_start']),
-                newest_timestamp=parse_dt(row['newest_timestamp']),
+                oldest_timestamp=datetime.strptime(row['oldest_timestamp'], '%Y-%m-%d %H:%M:%S') if row['oldest_timestamp'] else None,
+                newest_timestamp=datetime.strptime(row['newest_timestamp'], '%Y-%m-%d %H:%M:%S') if row['newest_timestamp'] else None,
                 total_candles=row['total_candles'] or 0,
                 warmup_candles=row['warmup_candles'] or 0,
                 training_candles=row['training_candles'] or 0,
                 completeness_pct=row['completeness_pct'] or 0.0,
                 gap_count=row['gap_count'] or 0,
-                last_update=parse_dt(row['last_update']),
+                last_update=datetime.strptime(row['last_update'], '%Y-%m-%d %H:%M:%S') if row['last_update'] else None,
                 error_message=row['error_message']
             ))
         
-        return result
+        conn.close()
+        return results
     
     def get_pending_backfills(self) -> List[Tuple[str, str]]:
-        """Get list of symbol/timeframe pairs that need backfill"""
+        """Get list of (symbol, timeframe) pairs with PENDING status"""
         conn = self._get_connection()
         cur = conn.cursor()
         
         cur.execute('''
             SELECT symbol, timeframe FROM backfill_status
-            WHERE status IN ('PENDING', 'IN_PROGRESS', 'NEEDS_UPDATE', 'ERROR')
-            ORDER BY 
-                CASE status 
-                    WHEN 'IN_PROGRESS' THEN 1 
-                    WHEN 'PENDING' THEN 2 
-                    WHEN 'NEEDS_UPDATE' THEN 3 
-                    ELSE 4 
-                END
+            WHERE status = 'PENDING'
+            ORDER BY symbol, timeframe
         ''')
         
-        result = [(row['symbol'], row['timeframe']) for row in cur.fetchall()]
+        results = [(row['symbol'], row['timeframe']) for row in cur.fetchall()]
         conn.close()
-        return result
+        return results
+    
+    # =========================================
+    # SAVE OPERATIONS
+    # =========================================
+    
+    def save_training_data(
+        self, 
+        symbol: str, 
+        timeframe: str, 
+        df: pd.DataFrame
+    ) -> int:
+        """
+        Save OHLCV candles with indicators to training_data table.
+        Only saves rows where ALL indicators are valid (no NULL).
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Candle timeframe (e.g., '15m')
+            df: DataFrame with OHLCV data and indicators (must have datetime index)
+            
+        Returns:
+            Number of candles saved
+        """
+        if df is None or df.empty:
+            return 0
+        
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        # Prepare data
+        data = df.reset_index()
+        if 'timestamp' not in data.columns and df.index.name == 'timestamp':
+            data = data.reset_index()
+        
+        # Convert timestamp to string if datetime
+        if 'timestamp' in data.columns:
+            if pd.api.types.is_datetime64_any_dtype(data['timestamp']):
+                data['timestamp'] = data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Indicator columns (all required)
+        indicator_cols = [
+            'sma_20', 'sma_50', 'ema_12', 'ema_26',
+            'bb_upper', 'bb_mid', 'bb_lower',
+            'macd', 'macd_signal', 'macd_hist',
+            'rsi', 'stoch_k', 'stoch_d', 'atr',
+            'volume_sma', 'obv'
+        ]
+        
+        count = 0
+        skipped = 0
+        
+        for _, row in data.iterrows():
+            try:
+                # Check if all indicators are valid (not NULL)
+                has_all_indicators = True
+                for col in indicator_cols:
+                    val = row.get(col, None)
+                    if val is None or pd.isna(val):
+                        has_all_indicators = False
+                        break
+                
+                if not has_all_indicators:
+                    skipped += 1
+                    continue
+                
+                # Build insert query
+                cols = 'symbol, timeframe, timestamp, open, high, low, close, volume'
+                placeholders = '?, ?, ?, ?, ?, ?, ?, ?'
+                values = [
+                    symbol, timeframe, row['timestamp'],
+                    float(row['open']), float(row['high']), 
+                    float(row['low']), float(row['close']), 
+                    float(row['volume'])
+                ]
+                
+                # Add all indicators
+                for col in indicator_cols:
+                    cols += f', {col}'
+                    placeholders += ', ?'
+                    values.append(float(row[col]))
+                
+                cols += ', fetched_at'
+                placeholders += ', ?'
+                values.append(now)
+                
+                cur.execute(f'''
+                    INSERT OR REPLACE INTO training_data 
+                    ({cols})
+                    VALUES ({placeholders})
+                ''', values)
+                count += 1
+                
+            except Exception as e:
+                logger.warning(f"Error saving candle {symbol}[{timeframe}] {row.get('timestamp', 'N/A')}: {e}")
+                skipped += 1
+        
+        conn.commit()
+        conn.close()
+        
+        if skipped > 0:
+            logger.info(f"  ⚠️ Skipped {skipped} candles with NULL indicators (warmup period)")
+        
+        return count
+    
+    def clear_training_data(self, symbol: str = None, timeframe: str = None):
+        """Clear training data (optionally filtered by symbol/timeframe)"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        if symbol and timeframe:
+            cur.execute('DELETE FROM training_data WHERE symbol = ? AND timeframe = ?', 
+                       (symbol, timeframe))
+        elif symbol:
+            cur.execute('DELETE FROM training_data WHERE symbol = ?', (symbol,))
+        elif timeframe:
+            cur.execute('DELETE FROM training_data WHERE timeframe = ?', (timeframe,))
+        else:
+            cur.execute('DELETE FROM training_data')
+        
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"🗑️ Cleared {deleted} rows from training_data")
+        return deleted
+    
+    # =========================================
+    # READ OPERATIONS
+    # =========================================
+    
+    def get_training_data(
+        self, 
+        symbol: str, 
+        timeframe: str, 
+        start_date: datetime = None,
+        end_date: datetime = None,
+        limit: int = None
+    ) -> pd.DataFrame:
+        """
+        Get training data with all indicators from database.
+        All rows guaranteed to have no NULL values.
+        
+        Args:
+            symbol: Trading pair symbol
+            timeframe: Candle timeframe
+            start_date: Start of date range (optional)
+            end_date: End of date range (optional)
+            limit: Maximum rows to return (optional)
+            
+        Returns:
+            DataFrame with OHLCV + 16 indicators, datetime index
+        """
+        conn = self._get_connection()
+        
+        query = '''
+            SELECT timestamp, open, high, low, close, volume,
+                   sma_20, sma_50, ema_12, ema_26,
+                   bb_upper, bb_mid, bb_lower,
+                   macd, macd_signal, macd_hist,
+                   rsi, stoch_k, stoch_d, atr,
+                   volume_sma, obv
+            FROM training_data
+            WHERE symbol = ? AND timeframe = ?
+        '''
+        params = [symbol, timeframe]
+        
+        if start_date:
+            query += ' AND timestamp >= ?'
+            params.append(start_date.strftime('%Y-%m-%d %H:%M:%S'))
+        
+        if end_date:
+            query += ' AND timestamp <= ?'
+            params.append(end_date.strftime('%Y-%m-%d %H:%M:%S'))
+        
+        query += ' ORDER BY timestamp ASC'
+        
+        if limit:
+            query += f' LIMIT {limit}'
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        if len(df) > 0:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.set_index('timestamp', inplace=True)
+        
+        return df
+    
+    def get_date_range(self, symbol: str, timeframe: str) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """Get the date range of data for a symbol/timeframe"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        cur.execute('''
+            SELECT MIN(timestamp), MAX(timestamp)
+            FROM training_data
+            WHERE symbol = ? AND timeframe = ?
+        ''', (symbol, timeframe))
+        
+        row = cur.fetchone()
+        conn.close()
+        
+        if row and row[0] and row[1]:
+            return (
+                datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S'),
+                datetime.strptime(row[1], '%Y-%m-%d %H:%M:%S')
+            )
+        return None, None
+    
+    def get_candle_count(self, symbol: str, timeframe: str) -> int:
+        """Get total candle count for a symbol/timeframe"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        cur.execute('''
+            SELECT COUNT(*) FROM training_data
+            WHERE symbol = ? AND timeframe = ?
+        ''', (symbol, timeframe))
+        
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
+    
+    def get_symbols(self) -> List[str]:
+        """Get all symbols with training data"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        cur.execute('SELECT DISTINCT symbol FROM training_data ORDER BY symbol')
+        symbols = [row[0] for row in cur.fetchall()]
+        
+        conn.close()
+        return symbols
+    
+    def get_timeframes(self, symbol: str = None) -> List[str]:
+        """Get available timeframes"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        if symbol:
+            cur.execute('SELECT DISTINCT timeframe FROM training_data WHERE symbol = ?', (symbol,))
+        else:
+            cur.execute('SELECT DISTINCT timeframe FROM training_data')
+        
+        timeframes = [row[0] for row in cur.fetchall()]
+        conn.close()
+        return timeframes
     
     # =========================================
     # STATISTICS
@@ -603,26 +594,17 @@ class HistoricalDatabase:
         conn = self._get_connection()
         cur = conn.cursor()
         
-        # Historical data stats
-        cur.execute('SELECT COUNT(DISTINCT symbol) FROM historical_ohlcv')
-        symbols_count = cur.fetchone()[0]
+        cur.execute('SELECT COUNT(DISTINCT symbol) FROM training_data')
+        symbols_count = cur.fetchone()[0] or 0
         
-        cur.execute('SELECT COUNT(DISTINCT timeframe) FROM historical_ohlcv')
-        tf_count = cur.fetchone()[0]
+        cur.execute('SELECT COUNT(DISTINCT timeframe) FROM training_data')
+        tf_count = cur.fetchone()[0] or 0
         
-        cur.execute('SELECT COUNT(*) FROM historical_ohlcv')
-        candles_count = cur.fetchone()[0]
+        cur.execute('SELECT COUNT(*) FROM training_data')
+        candles_count = cur.fetchone()[0] or 0
         
-        cur.execute('SELECT MIN(timestamp), MAX(timestamp) FROM historical_ohlcv')
+        cur.execute('SELECT MIN(timestamp), MAX(timestamp) FROM training_data')
         time_range = cur.fetchone()
-        
-        # Backfill status stats
-        cur.execute('''
-            SELECT status, COUNT(*) as count 
-            FROM backfill_status 
-            GROUP BY status
-        ''')
-        status_counts = {row['status']: row['count'] for row in cur.fetchall()}
         
         conn.close()
         
@@ -633,18 +615,45 @@ class HistoricalDatabase:
             'symbols': symbols_count,
             'timeframes': tf_count,
             'total_candles': candles_count,
-            'min_date': time_range[0],
-            'max_date': time_range[1],
-            'db_size_mb': db_size / (1024 * 1024),
-            'status_counts': status_counts
+            'min_date': time_range[0] if time_range else None,
+            'max_date': time_range[1] if time_range else None,
+            'db_size_mb': db_size / (1024 * 1024)
         }
+    
+    def get_symbol_stats(self) -> List[Dict]:
+        """Get per-symbol statistics"""
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        cur.execute('''
+            SELECT symbol, timeframe, 
+                   COUNT(*) as candles,
+                   MIN(timestamp) as start_date,
+                   MAX(timestamp) as end_date
+            FROM training_data
+            GROUP BY symbol, timeframe
+            ORDER BY symbol, timeframe
+        ''')
+        
+        results = []
+        for row in cur.fetchall():
+            results.append({
+                'symbol': row[0],
+                'timeframe': row[1],
+                'candles': row[2],
+                'start_date': row[3],
+                'end_date': row[4]
+            })
+        
+        conn.close()
+        return results
     
     def print_stats(self):
         """Print database statistics"""
         stats = self.get_stats()
         
         print(colored("\n" + "="*60, "cyan"))
-        print(colored("📊 HISTORICAL DATABASE STATISTICS", "cyan", attrs=['bold']))
+        print(colored("📊 TRAINING DATA STATISTICS", "cyan", attrs=['bold']))
         print(colored("="*60, "cyan"))
         print(colored(f"  📈 Unique symbols: {stats['symbols']}", "white"))
         print(colored(f"  ⏰ Timeframes: {stats['timeframes']}", "white"))
@@ -652,19 +661,15 @@ class HistoricalDatabase:
         print(colored(f"  💾 DB Size: {stats['db_size_mb']:.2f} MB", "white"))
         if stats['min_date'] and stats['max_date']:
             print(colored(f"  📅 Date range: {stats['min_date'][:10]} → {stats['max_date'][:10]}", "white"))
-        
-        if stats['status_counts']:
-            print(colored("\n  📋 Backfill Status:", "white"))
-            for status, count in stats['status_counts'].items():
-                icon = "✅" if status == "COMPLETE" else "🔄" if status == "IN_PROGRESS" else "⏳" if status == "PENDING" else "❌"
-                print(colored(f"     {icon} {status}: {count}", "white"))
-        
         print(colored("="*60, "cyan"))
+    
+    # =========================================
+    # UTILITY
+    # =========================================
     
     def get_symbols_from_data_fetcher(self) -> List[str]:
         """
         Get symbol list from the data-fetcher's top_symbols table.
-        This ensures we use the same symbols for historical data.
         """
         conn = self._get_connection()
         cur = conn.cursor()
@@ -673,8 +678,38 @@ class HistoricalDatabase:
             cur.execute('SELECT symbol FROM top_symbols ORDER BY rank ASC')
             symbols = [row['symbol'] for row in cur.fetchall()]
         except sqlite3.OperationalError:
-            # Table doesn't exist yet
             symbols = []
         
         conn.close()
         return symbols
+
+
+def align_date_to_hour(dt: datetime) -> datetime:
+    """Align datetime to the nearest hour (for 15m/1h alignment)"""
+    return dt.replace(minute=0, second=0, microsecond=0)
+
+
+def get_aligned_date_range(
+    start_date: datetime, 
+    end_date: datetime
+) -> Tuple[datetime, datetime]:
+    """
+    Get date range aligned to hour boundaries.
+    Both 15m and 1h candles will have same start/end hours.
+    
+    Args:
+        start_date: Requested start date
+        end_date: Requested end date
+        
+    Returns:
+        Tuple of (aligned_start, aligned_end) at hour boundaries
+    """
+    # Align start to next hour if not on hour
+    aligned_start = align_date_to_hour(start_date)
+    if aligned_start < start_date:
+        aligned_start += timedelta(hours=1)
+    
+    # Align end to previous hour if not on hour
+    aligned_end = align_date_to_hour(end_date)
+    
+    return aligned_start, aligned_end

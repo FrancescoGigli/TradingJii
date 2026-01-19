@@ -3,7 +3,7 @@
 
 Manages SQLite database for:
 - Top 100 symbols with volume (updated on startup/manual refresh)
-- OHLCV candles (200 candles per symbol, updated every 15 minutes)
+- Real-time OHLCV candles with indicators (updated every 15 minutes)
 """
 
 import sqlite3
@@ -42,7 +42,9 @@ class DatabaseCache:
         conn = self._get_connection()
         cur = conn.cursor()
         
-        # Top symbols table (static list updated on startup/manual refresh)
+        # =========================================
+        # TABLE 1: top_symbols
+        # =========================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS top_symbols (
                 symbol TEXT PRIMARY KEY,
@@ -52,7 +54,9 @@ class DatabaseCache:
             )
         ''')
         
-        # Update status table (tracks fetcher status for frontend)
+        # =========================================
+        # TABLE 2: update_status
+        # =========================================
         cur.execute('''
             CREATE TABLE IF NOT EXISTS update_status (
                 id INTEGER PRIMARY KEY DEFAULT 1,
@@ -70,9 +74,11 @@ class DatabaseCache:
             INSERT OR IGNORE INTO update_status (id, status) VALUES (1, 'IDLE')
         ''')
         
-        # OHLCV candles table (updated every 15 minutes)
+        # =========================================
+        # TABLE 3: realtime_ohlcv (MAIN TABLE)
+        # =========================================
         cur.execute('''
-            CREATE TABLE IF NOT EXISTS ohlcv_data (
+            CREATE TABLE IF NOT EXISTS realtime_ohlcv (
                 symbol TEXT,
                 timeframe TEXT,
                 timestamp TEXT,
@@ -81,18 +87,41 @@ class DatabaseCache:
                 low REAL,
                 close REAL,
                 volume REAL,
+                
+                -- Technical Indicators (16 total)
+                sma_20 REAL,
+                sma_50 REAL,
+                ema_12 REAL,
+                ema_26 REAL,
+                bb_upper REAL,
+                bb_mid REAL,
+                bb_lower REAL,
+                macd REAL,
+                macd_signal REAL,
+                macd_hist REAL,
+                rsi REAL,
+                stoch_k REAL,
+                stoch_d REAL,
+                atr REAL,
+                volume_sma REAL,
+                obv REAL,
+                
                 PRIMARY KEY (symbol, timeframe, timestamp)
             )
         ''')
         
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_symbol ON ohlcv_data(symbol)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_timeframe ON ohlcv_data(timeframe)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON ohlcv_data(timestamp)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_rt_symbol ON realtime_ohlcv(symbol)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_rt_timeframe ON realtime_ohlcv(timeframe)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_rt_timestamp ON realtime_ohlcv(timestamp)')
         
         conn.commit()
         conn.close()
         
-        logging.info("🗄️ Database initialized successfully")
+        logging.info("🗄️ Database initialized (3 tables: top_symbols, update_status, realtime_ohlcv)")
+    
+    # =========================================
+    # TOP SYMBOLS METHODS
+    # =========================================
     
     def save_top_symbols(self, symbols_with_volume: List[Tuple[str, float]]):
         """
@@ -160,40 +189,84 @@ class DatabaseCache:
         conn.close()
         return symbols
     
-    def save_data_to_db(self, symbol: str, timeframe: str, df: pd.DataFrame):
+    # =========================================
+    # REALTIME OHLCV METHODS
+    # =========================================
+    
+    def save_realtime_data(self, symbol: str, timeframe: str, df: pd.DataFrame):
         """
-        Save OHLCV data to database.
+        Save OHLCV data with indicators to realtime_ohlcv table.
         Uses INSERT OR REPLACE for upsert behavior.
+        
+        Args:
+            symbol: Trading pair
+            timeframe: Candle timeframe
+            df: DataFrame with OHLCV and indicator columns
         """
         if df is None or df.empty:
-            return
+            return 0
         
         conn = self._get_connection()
         cur = conn.cursor()
         
         data = df.reset_index()
-        data['timestamp'] = data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        if 'timestamp' in data.columns:
+            if pd.api.types.is_datetime64_any_dtype(data['timestamp']):
+                data['timestamp'] = data['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
+        # Indicator columns (16 total)
+        indicator_cols = [
+            'sma_20', 'sma_50', 'ema_12', 'ema_26',
+            'bb_upper', 'bb_mid', 'bb_lower',
+            'macd', 'macd_signal', 'macd_hist',
+            'rsi', 'stoch_k', 'stoch_d', 'atr',
+            'volume_sma', 'obv'
+        ]
+        
+        count = 0
         for _, row in data.iterrows():
-            cur.execute('''
-                INSERT OR REPLACE INTO ohlcv_data 
-                (symbol, timeframe, timestamp, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                symbol, timeframe, row['timestamp'],
-                row['open'], row['high'], row['low'], row['close'], row['volume']
-            ))
+            try:
+                # Build dynamic query with indicators
+                cols = 'symbol, timeframe, timestamp, open, high, low, close, volume'
+                placeholders = '?, ?, ?, ?, ?, ?, ?, ?'
+                values = [
+                    symbol, timeframe, row['timestamp'],
+                    float(row['open']), float(row['high']), 
+                    float(row['low']), float(row['close']), 
+                    float(row['volume'])
+                ]
+                
+                for col in indicator_cols:
+                    cols += f', {col}'
+                    placeholders += ', ?'
+                    val = row.get(col, None) if hasattr(row, 'get') else (row[col] if col in row.index else None)
+                    values.append(None if val is None or pd.isna(val) else float(val))
+                
+                cur.execute(f'''
+                    INSERT OR REPLACE INTO realtime_ohlcv 
+                    ({cols})
+                    VALUES ({placeholders})
+                ''', values)
+                count += 1
+            except Exception as e:
+                logging.warning(f"Error saving realtime candle {symbol}[{timeframe}]: {e}")
         
         conn.commit()
         conn.close()
+        return count
     
-    def get_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
-        """Get OHLCV data from database"""
+    def get_realtime_ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> pd.DataFrame:
+        """Get real-time OHLCV data with indicators from database"""
         conn = self._get_connection()
         
         query = '''
-            SELECT timestamp, open, high, low, close, volume
-            FROM ohlcv_data
+            SELECT timestamp, open, high, low, close, volume,
+                   sma_20, sma_50, ema_12, ema_26,
+                   bb_upper, bb_mid, bb_lower,
+                   macd, macd_signal, macd_hist,
+                   rsi, stoch_k, stoch_d, atr,
+                   volume_sma, obv
+            FROM realtime_ohlcv
             WHERE symbol = ? AND timeframe = ?
             ORDER BY timestamp DESC
             LIMIT ?
@@ -214,7 +287,7 @@ class DatabaseCache:
         conn = self._get_connection()
         cur = conn.cursor()
         
-        cur.execute('SELECT DISTINCT symbol FROM ohlcv_data ORDER BY symbol')
+        cur.execute('SELECT DISTINCT symbol FROM realtime_ohlcv ORDER BY symbol')
         symbols = [row[0] for row in cur.fetchall()]
         
         conn.close()
@@ -226,9 +299,9 @@ class DatabaseCache:
         cur = conn.cursor()
         
         if symbol:
-            cur.execute('SELECT DISTINCT timeframe FROM ohlcv_data WHERE symbol = ?', (symbol,))
+            cur.execute('SELECT DISTINCT timeframe FROM realtime_ohlcv WHERE symbol = ?', (symbol,))
         else:
-            cur.execute('SELECT DISTINCT timeframe FROM ohlcv_data')
+            cur.execute('SELECT DISTINCT timeframe FROM realtime_ohlcv')
         
         timeframes = [row[0] for row in cur.fetchall()]
         conn.close()
@@ -239,16 +312,16 @@ class DatabaseCache:
         conn = self._get_connection()
         cur = conn.cursor()
         
-        cur.execute('SELECT COUNT(DISTINCT symbol) FROM ohlcv_data')
+        cur.execute('SELECT COUNT(DISTINCT symbol) FROM realtime_ohlcv')
         symbols_count = cur.fetchone()[0]
         
-        cur.execute('SELECT COUNT(DISTINCT timeframe) FROM ohlcv_data')
+        cur.execute('SELECT COUNT(DISTINCT timeframe) FROM realtime_ohlcv')
         tf_count = cur.fetchone()[0]
         
-        cur.execute('SELECT COUNT(*) FROM ohlcv_data')
+        cur.execute('SELECT COUNT(*) FROM realtime_ohlcv')
         candles_count = cur.fetchone()[0]
         
-        cur.execute('SELECT MIN(timestamp), MAX(timestamp) FROM ohlcv_data')
+        cur.execute('SELECT MIN(timestamp), MAX(timestamp) FROM realtime_ohlcv')
         time_range = cur.fetchone()
         
         # Top symbols stats
@@ -261,12 +334,12 @@ class DatabaseCache:
         db_size = Path(self.db_path).stat().st_size if Path(self.db_path).exists() else 0
         
         return {
-            'symbols': symbols_count,
-            'timeframes': tf_count,
-            'candles': candles_count,
-            'min_date': time_range[0],
-            'max_date': time_range[1],
-            'top_symbols_count': top_count,
+            'symbols': symbols_count or 0,
+            'timeframes': tf_count or 0,
+            'candles': candles_count or 0,
+            'min_date': time_range[0] if time_range else None,
+            'max_date': time_range[1] if time_range else None,
+            'top_symbols_count': top_count or 0,
             'db_size_mb': db_size / (1024 * 1024)
         }
     
@@ -285,22 +358,22 @@ class DatabaseCache:
             print(colored(f"  📅 Data range: {stats['min_date'][:16]} → {stats['max_date'][:16]}", "white"))
         print(colored("="*60, "cyan"))
     
-    def cleanup_old_data(self, keep_candles: int = 200):
+    def cleanup_old_data(self, keep_candles: int = 500):
         """Cleanup old candles keeping only latest N per symbol/timeframe"""
         conn = self._get_connection()
         cur = conn.cursor()
         
         # Get all symbol-timeframe combinations
-        cur.execute('SELECT DISTINCT symbol, timeframe FROM ohlcv_data')
+        cur.execute('SELECT DISTINCT symbol, timeframe FROM realtime_ohlcv')
         pairs = cur.fetchall()
         
         deleted = 0
         for symbol, tf in pairs:
             cur.execute('''
-                DELETE FROM ohlcv_data
+                DELETE FROM realtime_ohlcv
                 WHERE symbol = ? AND timeframe = ?
                 AND timestamp NOT IN (
-                    SELECT timestamp FROM ohlcv_data
+                    SELECT timestamp FROM realtime_ohlcv
                     WHERE symbol = ? AND timeframe = ?
                     ORDER BY timestamp DESC
                     LIMIT ?

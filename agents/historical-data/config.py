@@ -90,6 +90,14 @@ COMPLETENESS_THRESHOLD = 99.0  # Minimum % completeness required
 # Storage Configuration (shared volume)
 # ----------------------------------------------------------------------
 SHARED_DATA_PATH = os.getenv("SHARED_DATA_PATH", "/app/shared")
+
+# ----------------------------------------------------------------------
+# Auto-Start Configuration
+# ----------------------------------------------------------------------
+# If False, backfill waits for trigger file from frontend
+# If True, backfill starts automatically on service start
+AUTO_BACKFILL = os.getenv("AUTO_BACKFILL", "false").lower() == "true"
+TRIGGER_FILE_PATH = f"{SHARED_DATA_PATH}/start_backfill.txt"
 CACHE_DIR = f"{SHARED_DATA_PATH}/data_cache"
 DB_FILE = "trading_data.db"
 DB_PATH = f"{CACHE_DIR}/{DB_FILE}"

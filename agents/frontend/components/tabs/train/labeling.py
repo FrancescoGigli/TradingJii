@@ -20,7 +20,7 @@ from ai.core.labels import TrailingStopLabeler, TrailingLabelConfig
 
 
 def get_training_features_symbols(timeframe: str) -> list:
-    """Get only symbols with >= 95% data completeness for BOTH timeframes"""
+    """Get only symbols with >= 95% data completeness for BOTH timeframes from training_data"""
     conn = get_connection()
     if not conn:
         return []
@@ -32,7 +32,7 @@ def get_training_features_symbols(timeframe: str) -> list:
         expected_1h = 8760
         threshold = 0.95  # 95% completeness required
         
-        # Get symbols that are complete for BOTH 15m AND 1h (like Coin Inventory)
+        # Get symbols that are complete for BOTH 15m AND 1h from training_data table
         cur.execute('''
             SELECT symbol
             FROM (
@@ -40,7 +40,7 @@ def get_training_features_symbols(timeframe: str) -> list:
                     symbol,
                     SUM(CASE WHEN timeframe = '15m' THEN 1 ELSE 0 END) as candles_15m,
                     SUM(CASE WHEN timeframe = '1h' THEN 1 ELSE 0 END) as candles_1h
-                FROM historical_ohlcv
+                FROM training_data
                 GROUP BY symbol
             )
             WHERE 
@@ -57,14 +57,14 @@ def get_training_features_symbols(timeframe: str) -> list:
 
 
 def get_training_features_data(symbol: str, timeframe: str) -> pd.DataFrame:
-    """Load data from historical_ohlcv for a specific symbol"""
+    """Load data from training_data for a specific symbol"""
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
     try:
-        # Use historical_ohlcv table (the actual data source)
+        # Use training_data table (the actual data source with indicators)
         df = pd.read_sql_query('''
-            SELECT * FROM historical_ohlcv 
+            SELECT * FROM training_data 
             WHERE symbol=? AND timeframe=?
             ORDER BY timestamp
         ''', conn, params=(symbol, timeframe))

@@ -74,9 +74,9 @@ def main():
     # Tabs FIRST, then content
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Top",
-        "📈 Charts",
+        "📈 Charts", 
         "🔄 Test",
-        "🎓 Train"
+        "🎓 ML"
     ])
 
     with tab1:

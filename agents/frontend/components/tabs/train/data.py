@@ -20,6 +20,7 @@ from database import (
     get_historical_inventory,
     get_historical_symbols_by_volume,
     trigger_backfill,
+    trigger_backfill_with_dates,
     check_backfill_running,
     clear_historical_data,
     retry_failed_downloads
@@ -27,13 +28,14 @@ from database import (
 
 
 # === CACHED FUNCTIONS ===
-@st.cache_data(ttl=120)
+# Note: No cache for stats when downloading - use fragment auto-refresh instead
 def cached_get_stats():
+    """Get stats without cache during active download for real-time updates"""
     return get_historical_stats()
 
 
-@st.cache_data(ttl=60)
 def cached_get_backfill_status():
+    """Get backfill status without cache for real-time updates"""
     return get_backfill_status_all()
 
 
@@ -55,33 +57,91 @@ def cached_get_ohlcv(symbol, timeframe, limit):
 def render_data_step():
     """Render Step 1: Historical Data (full integrated version)"""
     
-    # Header with actions
-    col1, col2 = st.columns([3, 2])
+    # Header with cyan style
+    st.markdown("""
+    <div style="padding: 10px 0;">
+        <h3 style="color: #00d4aa; margin: 0;">📊 Step 1: Historical Data</h3>
+        <p style="color: #888; font-size: 14px; margin-top: 5px;">
+            Download OHLCV data for ML training • 100 top coins by volume
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    with col1:
-        st.markdown("### 📊 Step 1: Historical Data")
-        st.caption("ML Training Data • 12 months OHLCV • 100 coins")
+    # === DATE RANGE SELECTION ===
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+                padding: 20px; border-radius: 10px; margin: 10px 0;
+                border: 1px solid #00d4aa33;">
+        <h4 style="color: #00d4aa; margin: 0 0 15px 0;">📅 Select Date Range</h4>
+    </div>
+    """, unsafe_allow_html=True)
     
-    with col2:
-        b1, b2, b3 = st.columns(3)
-        is_running = check_backfill_running()
-        
-        with b1:
-            if is_running:
-                st.button("⏳ Running...", disabled=True, use_container_width=True, key="data_run_btn")
-            else:
-                if st.button("🚀 Start", type="primary", use_container_width=True, key="data_start_btn"):
-                    if trigger_backfill():
-                        st.toast("✅ Backfill started!")
-                        st.cache_data.clear()
-                        st.rerun()
-        with b2:
-            if st.button("🔄 Refresh", type="secondary", use_container_width=True, key="data_refresh_btn"):
-                st.cache_data.clear()
-                st.rerun()
-        with b3:
-            if st.button("🗑️ Clear", type="secondary", use_container_width=True, key="data_clear_btn"):
-                st.session_state['train_confirm_clear'] = True
+    # Default: 12 months of data
+    from datetime import date
+    default_end = date.today()
+    default_start = date(default_end.year - 1, default_end.month, default_end.day)
+    
+    col_dates = st.columns([1, 1, 1])
+    
+    with col_dates[0]:
+        start_date = st.date_input(
+            "📆 Start Date",
+            value=default_start,
+            min_value=date(2020, 1, 1),
+            max_value=default_end,
+            key="data_start_date"
+        )
+    
+    with col_dates[1]:
+        end_date = st.date_input(
+            "📆 End Date", 
+            value=default_end,
+            min_value=start_date,
+            max_value=default_end,
+            key="data_end_date"
+        )
+    
+    with col_dates[2]:
+        # Calculate duration
+        days_diff = (end_date - start_date).days
+        months_diff = days_diff / 30
+        st.markdown(f"""
+        <div style="background: #00d4aa22; padding: 15px; border-radius: 8px; 
+                    border-left: 4px solid #00d4aa; margin-top: 28px;">
+            <div style="color: #00d4aa; font-weight: bold; font-size: 16px;">
+                ⏱️ {days_diff} days
+            </div>
+            <div style="color: #888; font-size: 12px;">
+                ~{months_diff:.1f} months of data
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # === ACTION BUTTONS ===
+    b1, b2, b3 = st.columns(3)
+    is_running = check_backfill_running()
+    
+    with b1:
+        if is_running:
+            st.button("⏳ Downloading...", disabled=True, use_container_width=True, key="data_run_btn")
+        else:
+            if st.button("🚀 Start Download", type="primary", use_container_width=True, key="data_start_btn"):
+                # Save date range to trigger file
+                if trigger_backfill_with_dates(start_date, end_date):
+                    st.toast("✅ Download started!")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to start download")
+    with b2:
+        if st.button("🔄 Refresh", use_container_width=True, key="data_refresh_btn"):
+            st.cache_data.clear()
+            st.rerun()
+    with b3:
+        if st.button("🗑️ Clear All Data", use_container_width=True, key="data_clear_btn"):
+            st.session_state['train_confirm_clear'] = True
     
     # Clear confirmation
     if st.session_state.get('train_confirm_clear'):
@@ -97,26 +157,9 @@ def render_data_step():
             st.rerun()
         return
     
-    # Get stats
-    stats = cached_get_stats()
-    
-    if not stats.get('exists'):
-        st.warning("⚠️ No historical data available")
-        st.info("Click **🚀 Start** to download 12 months of data for 100 coins")
-        return
-    
-    # === OVERVIEW METRICS ===
+    # === OVERVIEW METRICS (Auto-refresh) ===
     st.divider()
-    
-    m1, m2, m3 = st.columns(3)
-    m1.metric("📈 Symbols", stats.get('symbols', 0))
-    m2.metric("🕯️ Total Candles", f"{stats.get('total_candles', 0):,}")
-    m3.metric("💾 Database Size", f"{stats.get('db_size_mb', 0):.1f} MB")
-    
-    # Date range
-    min_d = stats.get('min_date', '')[:10] if stats.get('min_date') else '—'
-    max_d = stats.get('max_date', '')[:10] if stats.get('max_date') else '—'
-    st.caption(f"📅 Data range: **{min_d}** → **{max_d}**")
+    render_overview_metrics()
     
     # === SECTIONS ===
     tab_progress, tab_inventory, tab_preview = st.tabs([
@@ -135,7 +178,43 @@ def render_data_step():
         render_chart_preview()
 
 
-@st.fragment(run_every="15s")
+@st.fragment(run_every="10s")
+def render_overview_metrics():
+    """Auto-refresh overview metrics every 10 seconds during download"""
+    stats = get_historical_stats()
+    
+    if not stats.get('exists'):
+        st.warning("⚠️ No historical data available")
+        st.info("Click **🚀 Start** to download 12 months of data for 100 coins")
+        return
+    
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("📈 Symbols", stats.get('symbols', 0))
+    m2.metric("🕯️ Total Candles", f"{stats.get('total_candles', 0):,}")
+    m3.metric("💾 Database Size", f"{stats.get('db_size_mb', 0):.1f} MB")
+    
+    # Check if download is running and show target dates
+    is_running = check_backfill_running()
+    if is_running:
+        m4.metric("⏳ Status", "Downloading")
+    else:
+        m4.metric("✅ Status", "Ready")
+    
+    # Date range - show actual data in DB
+    min_d = stats.get('min_date', '')[:10] if stats.get('min_date') else '—'
+    max_d = stats.get('max_date', '')[:10] if stats.get('max_date') else '—'
+    
+    # Get download target dates from session state if available
+    start_date = st.session_state.get('data_start_date')
+    end_date = st.session_state.get('data_end_date')
+    
+    if start_date and end_date and is_running:
+        st.caption(f"🎯 **Download Target:** {start_date} → {end_date} | 📊 **DB Actual:** {min_d} → {max_d} | 🔄 Auto-refresh 10s")
+    else:
+        st.caption(f"📅 **Data in DB:** {min_d} → {max_d} | 🔄 Auto-refresh every 10s")
+
+
+@st.fragment(run_every="10s")
 def render_download_progress():
     """Show download progress with clear 15m/1h separation"""
     
@@ -402,14 +481,49 @@ def render_chart_preview():
     
     all_cols = list(df.columns)
     base_cols = {'open', 'high', 'low', 'close', 'volume'}
-    indicator_count = len([c for c in all_cols if c.lower() not in base_cols])
+    indicator_cols = [c for c in all_cols if c.lower() not in base_cols]
     
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Total Columns", len(all_cols))
-    c2.metric("Indicators", indicator_count)
+    c2.metric("Indicators", len(indicator_cols))
+    c3.metric("Rows Shown", 10)
     
-    # Show last 5 rows
-    st.dataframe(df.tail(5), use_container_width=True)
+    # Show available columns
+    with st.expander("📊 Available Columns", expanded=False):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**OHLCV (Base):**")
+            st.code("open, high, low, close, volume")
+        with col_b:
+            st.markdown("**Indicators:**")
+            st.code(", ".join(indicator_cols) if indicator_cols else "None")
+    
+    # Show last 10 rows with better styling
+    st.markdown("**Last 10 candles:**")
+    
+    # Format dataframe for display
+    df_display = df.tail(10).copy()
+    
+    # Round numeric columns for better display
+    for col in df_display.columns:
+        if df_display[col].dtype in ['float64', 'float32']:
+            if col in ['open', 'high', 'low', 'close']:
+                df_display[col] = df_display[col].apply(lambda x: f"{x:,.4f}")
+            elif col == 'volume':
+                df_display[col] = df_display[col].apply(lambda x: f"{x:,.0f}")
+            else:
+                df_display[col] = df_display[col].apply(lambda x: f"{x:.4f}" if abs(x) < 1000 else f"{x:,.2f}")
+    
+    # Reset index for display
+    df_display = df_display.reset_index()
+    df_display.rename(columns={'index': 'timestamp'}, inplace=True)
+    df_display['timestamp'] = df_display['timestamp'].astype(str).str[:19]
+    
+    st.dataframe(
+        df_display,
+        use_container_width=True,
+        height=400
+    )
 
 
 __all__ = ['render_data_step']

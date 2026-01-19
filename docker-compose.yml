@@ -44,7 +44,7 @@ services:
       context: ./agents/historical-data
       dockerfile: Dockerfile
     container_name: crypto-historical-data
-    command: python main.py --backfill
+    command: python main.py
     volumes:
       - shared-data:/app/shared
     environment:

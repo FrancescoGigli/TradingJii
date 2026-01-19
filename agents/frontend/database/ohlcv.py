@@ -1,5 +1,7 @@
 """
 OHLCV data access functions
+
+Reads from realtime_ohlcv table (OHLCV + 16 technical indicators)
 """
 
 import streamlit as st
@@ -53,14 +55,14 @@ def get_symbols():
         cur.execute('''
             SELECT ts.symbol 
             FROM top_symbols ts
-            INNER JOIN (SELECT DISTINCT symbol FROM ohlcv_data) od ON ts.symbol = od.symbol
+            INNER JOIN (SELECT DISTINCT symbol FROM realtime_ohlcv) rt ON ts.symbol = rt.symbol
             ORDER BY ts.rank ASC
         ''')
         symbols = [r[0] for r in cur.fetchall()]
         
         # Fallback to alphabetical if no top_symbols
         if not symbols:
-            cur.execute('SELECT DISTINCT symbol FROM ohlcv_data ORDER BY symbol')
+            cur.execute('SELECT DISTINCT symbol FROM realtime_ohlcv ORDER BY symbol')
             symbols = [r[0] for r in cur.fetchall()]
         
         return symbols
@@ -79,7 +81,7 @@ def get_timeframes(symbol):
     try:
         cur = conn.cursor()
         cur.execute(
-            'SELECT DISTINCT timeframe FROM ohlcv_data WHERE symbol=? ORDER BY timeframe',
+            'SELECT DISTINCT timeframe FROM realtime_ohlcv WHERE symbol=? ORDER BY timeframe',
             (symbol,)
         )
         return [r[0] for r in cur.fetchall()]
@@ -90,14 +92,48 @@ def get_timeframes(symbol):
 
 
 def get_ohlcv(symbol, timeframe, limit=CANDLES_LIMIT):
-    """Get OHLCV data for a symbol and timeframe"""
+    """
+    Get OHLCV data for a symbol and timeframe.
+    Reads from realtime_ohlcv table (includes indicators).
+    """
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
     try:
         query = '''
             SELECT timestamp, open, high, low, close, volume
-            FROM ohlcv_data WHERE symbol=? AND timeframe=?
+            FROM realtime_ohlcv WHERE symbol=? AND timeframe=?
+            ORDER BY timestamp DESC LIMIT ?
+        '''
+        df = pd.read_sql_query(query, conn, params=(symbol, timeframe, limit))
+        if len(df) > 0:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
+            df.set_index('timestamp', inplace=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_ohlcv_with_indicators(symbol, timeframe, limit=CANDLES_LIMIT):
+    """
+    Get OHLCV data WITH all pre-calculated indicators.
+    Returns DataFrame with OHLCV + 16 indicator columns.
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+    try:
+        query = '''
+            SELECT timestamp, open, high, low, close, volume,
+                   sma_20, sma_50, ema_12, ema_26,
+                   bb_upper, bb_mid, bb_lower,
+                   macd, macd_signal, macd_hist,
+                   rsi, stoch_k, stoch_d, atr,
+                   volume_sma, obv
+            FROM realtime_ohlcv WHERE symbol=? AND timeframe=?
             ORDER BY timestamp DESC LIMIT ?
         '''
         df = pd.read_sql_query(query, conn, params=(symbol, timeframe, limit))
@@ -123,7 +159,7 @@ def get_stats():
         cur.execute('''
             SELECT COUNT(DISTINCT symbol), COUNT(DISTINCT timeframe), 
                    COUNT(*), MAX(timestamp)
-            FROM ohlcv_data
+            FROM realtime_ohlcv
         ''')
         r = cur.fetchone()
         

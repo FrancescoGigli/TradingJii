@@ -14,6 +14,7 @@ from termcolor import colored
 from typing import List, Dict, Optional, Tuple
 
 import config
+from core.indicators import calculate_all_indicators, INDICATOR_COLUMNS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -314,16 +315,19 @@ async def fetch_candles_for_symbols(exchange, db_cache, symbols: List[str] = Non
             for symbol, df in data.items():
                 if df is not None and len(df) > 0:
                     try:
-                        db_cache.save_data_to_db(symbol, tf, df)
+                        # Calculate indicators and save to realtime_ohlcv table
+                        df_with_indicators = calculate_all_indicators(df)
+                        saved = db_cache.save_realtime_data(symbol, tf, df_with_indicators)
+                        
                         stats['symbols_processed'] += 1
-                        stats['candles_saved'] += len(df)
+                        stats['candles_saved'] += saved
                         if symbol not in stats['downloaded_symbols']:
                             stats['downloaded_symbols'].append(symbol)
                     except Exception as e:
                         logging.error(f"Save error {symbol}[{tf}]: {e}")
                         stats['errors'] += 1
             
-            print(colored(f"💾 Saved {len(data)} symbols to database", "green"))
+            print(colored(f"💾 Saved {len(data)} symbols to realtime_ohlcv (OHLCV + 16 indicators)", "green"))
         
         fetcher.print_downloaded_summary()
     
