@@ -34,8 +34,22 @@ class DatabaseCache:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
     
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection"""
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        """
+        Get database connection with optimized settings for concurrent access.
+        
+        Features:
+        - timeout=30: Wait up to 30 seconds if database is locked
+        - WAL mode: Allow concurrent reads during writes
+        - busy_timeout: SQLite-level timeout for locked operations
+        """
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
+        
+        # Enable WAL mode for better concurrency
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")  # 30 seconds in milliseconds
+        conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes, still safe with WAL
+        
+        return conn
     
     def _init_db(self):
         """Initialize database tables"""

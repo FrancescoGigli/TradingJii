@@ -15,8 +15,22 @@ logger = logging.getLogger(__name__)
 
 
 def get_connection():
-    """Get database connection"""
-    return sqlite3.connect(DATABASE_PATH, timeout=30)
+    """
+    Get database connection with optimized settings for concurrent access.
+    
+    Features:
+    - timeout=30: Wait up to 30 seconds if database is locked
+    - WAL mode: Allow concurrent reads during writes
+    - busy_timeout: SQLite-level timeout for locked operations
+    """
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
+    
+    # Enable WAL mode for better concurrency
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")  # 30 seconds in milliseconds
+    conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes, still safe with WAL
+    
+    return conn
 
 
 def init_ml_signals_table():

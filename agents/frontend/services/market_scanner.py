@@ -117,7 +117,10 @@ class MarketScannerService:
         if not DB_PATH.exists():
             return signals
         
-        conn = sqlite3.connect(str(DB_PATH))
+        # Connect with timeout and WAL mode for better concurrency
+        conn = sqlite3.connect(str(DB_PATH), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         
         try:
             # Get top symbols by volume

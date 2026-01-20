@@ -39,7 +39,7 @@ class TrailingLabelConfig:
     
     # 1h timeframe  
     trailing_stop_pct_1h: float = 0.025    # 2.5% trailing stop (più largo per 1h)
-    max_bars_1h: int = 24                   # 24 ore (24 * 1h)
+    max_bars_1h: int = 12                   # 12 ore (aligned con 15m: 48 * 15min = 12h)
     
     # ═══════════════════════════════════════════════════════════════════════════
     # TIME PENALTY SETTINGS

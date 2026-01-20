@@ -353,7 +353,7 @@ def get_ml_labels(symbol: str, timeframe: str, limit: int = 5000):
 def get_ml_training_dataset(symbol: str = None, timeframe: str = None, 
                             symbols: list = None, limit: int = None):
     """
-    Get complete ML training dataset with JOIN between historical_ohlcv (features) 
+    Get complete ML training dataset with JOIN between training_data (features) 
     and ml_training_labels (labels/targets).
     
     This is the main function for exporting data ready for ML training.
@@ -379,16 +379,16 @@ def get_ml_training_dataset(symbol: str = None, timeframe: str = None,
         errors = []
         
         # Check if tables exist
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='historical_ohlcv'")
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='training_data'")
         if not cur.fetchone():
-            return pd.DataFrame(), {'error': 'historical_ohlcv table not found'}, ['historical_ohlcv table not found']
+            return pd.DataFrame(), {'error': 'training_data table not found'}, ['training_data table not found']
         
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ml_training_labels'")
         if not cur.fetchone():
             return pd.DataFrame(), {'error': 'ml_training_labels table not found'}, ['ml_training_labels table not found']
         
-        # Get column names from historical_ohlcv (indicators)
-        cur.execute("PRAGMA table_info(historical_ohlcv)")
+        # Get column names from training_data (indicators)
+        cur.execute("PRAGMA table_info(training_data)")
         historical_cols = [row[1] for row in cur.fetchall()]
         
         # Columns to exclude from historical (will get OHLCV from labels, avoid duplicates)
@@ -437,7 +437,7 @@ def get_ml_training_dataset(symbol: str = None, timeframe: str = None,
                 l.trading_cost
                 
             FROM ml_training_labels l
-            INNER JOIN historical_ohlcv h 
+            INNER JOIN training_data h 
                 ON l.symbol = h.symbol 
                 AND l.timeframe = h.timeframe 
                 AND l.timestamp = h.timestamp
@@ -611,7 +611,7 @@ def get_dataset_availability():
         cur = conn.cursor()
         
         # Check if tables exist
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='historical_ohlcv'")
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='training_data'")
         if not cur.fetchone():
             return []
         
@@ -628,7 +628,7 @@ def get_dataset_availability():
                     COUNT(*) as historical_candles,
                     MIN(timestamp) as h_from,
                     MAX(timestamp) as h_to
-                FROM historical_ohlcv
+                FROM training_data
                 GROUP BY symbol, timeframe
             ),
             labels_stats AS (
@@ -646,7 +646,7 @@ def get_dataset_availability():
                     h.symbol,
                     h.timeframe,
                     COUNT(*) as joinable_rows
-                FROM historical_ohlcv h
+                FROM training_data h
                 INNER JOIN ml_training_labels l 
                     ON h.symbol = l.symbol 
                     AND h.timeframe = l.timeframe 

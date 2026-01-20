@@ -128,48 +128,20 @@ def get_sample_data(table: str, symbol: str = None, timeframe: str = None, limit
         return pd.DataFrame()
 
 
-def style_dataframe(df: pd.DataFrame) -> str:
-    """Apply consistent styling to dataframe"""
+def render_html_table(df: pd.DataFrame) -> str:
+    """Render dataframe as HTML table with consistent styling (same as historical_data.py)"""
+    html_table = df.to_html(index=False, classes='dataframe')
     
-    def style_numeric(val):
-        try:
-            if isinstance(val, (int, float)):
-                if val > 0:
-                    return 'color: #00ff88'
-                elif val < 0:
-                    return 'color: #ff4444'
-            return 'color: #ffffff'
-        except:
-            return 'color: #ffffff'
-    
-    styled = df.style.applymap(
-        style_numeric
-    ).set_properties(**{
-        'background-color': '#1a1a2e',
-        'color': '#ffffff',
-        'border-color': '#333355',
-        'font-size': '11px'
-    }).set_table_styles([
-        {'selector': '', 'props': [('width', '100%'), ('overflow-x', 'auto')]},
-        {'selector': 'th', 'props': [
-            ('background-color', '#252540'),
-            ('color', '#ffffff'),
-            ('font-weight', 'bold'),
-            ('padding', '6px 8px'),
-            ('border-bottom', '2px solid #00ff88'),
-            ('font-size', '11px'),
-            ('text-align', 'center'),
-            ('white-space', 'nowrap')
-        ]},
-        {'selector': 'td', 'props': [
-            ('padding', '4px 6px'),
-            ('border-bottom', '1px solid #333355'),
-            ('text-align', 'right'),
-            ('white-space', 'nowrap')
-        ]}
-    ]).format(precision=4)
-    
-    return styled.to_html(escape=False)
+    return f"""
+    <div style="overflow-x: auto; max-width: 100%;">
+        <style>
+            .dataframe {{ font-size: 11px; border-collapse: collapse; width: 100%; }}
+            .dataframe th {{ background-color: #1e1e1e; color: #00ff88; padding: 6px; text-align: left; border: 1px solid #333; white-space: nowrap; }}
+            .dataframe td {{ padding: 4px; border: 1px solid #333; color: #ffffff; background-color: #0e1117; white-space: nowrap; }}
+        </style>
+        {html_table}
+    </div>
+    """
 
 
 def render_training_explorer():
@@ -229,7 +201,7 @@ def render_training_explorer():
                     'Avg ATR': inv_df['avg_atr'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "-"),
                 })
                 
-                st.markdown(style_dataframe(display_df), unsafe_allow_html=True)
+                st.markdown(render_html_table(display_df), unsafe_allow_html=True)
                 
                 # Download
                 st.download_button(
@@ -273,7 +245,7 @@ def render_training_explorer():
                     '% Trailing': inv_df['pct_trailing'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "-"),
                 })
                 
-                st.markdown(style_dataframe(display_df), unsafe_allow_html=True)
+                st.markdown(render_html_table(display_df), unsafe_allow_html=True)
                 
                 # Download
                 st.download_button(
@@ -331,7 +303,8 @@ def render_training_explorer():
                 for col in sample_df.select_dtypes(include=['float64']).columns:
                     sample_df[col] = sample_df[col].apply(lambda x: f"{x:.6f}" if pd.notna(x) else "")
                 
-                st.dataframe(sample_df, use_container_width=True, height=400)
+                # Use HTML table with scroll
+                st.markdown(render_html_table(sample_df), unsafe_allow_html=True)
                 
                 # Download
                 st.download_button(

@@ -35,6 +35,7 @@ from .historical import (
     get_backfill_errors,
     clear_historical_data,
     retry_failed_downloads,
+    cleanup_no_data_errors,
 )
 
 # ML Labels functions
@@ -88,6 +89,7 @@ __all__ = [
     'get_backfill_errors',
     'clear_historical_data',
     'retry_failed_downloads',
+    'cleanup_no_data_errors',
     
     # ML Labels
     'create_ml_labels_table',

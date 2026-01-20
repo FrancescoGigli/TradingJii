@@ -23,7 +23,8 @@ from database import (
     trigger_backfill_with_dates,
     check_backfill_running,
     clear_historical_data,
-    retry_failed_downloads
+    retry_failed_downloads,
+    cleanup_no_data_errors
 )
 
 
@@ -231,8 +232,12 @@ def render_download_progress():
     df_1h = df[df['timeframe'] == '1h']
     
     def count_status(df_tf):
+        complete = len(df_tf[df_tf['status'] == 'COMPLETE'])
+        skipped = len(df_tf[df_tf['status'] == 'SKIPPED'])
         return {
-            'complete': len(df_tf[df_tf['status'] == 'COMPLETE']),
+            'complete': complete,
+            'skipped': skipped,
+            'done': complete + skipped,  # Both count as "done"
             'in_progress': len(df_tf[df_tf['status'] == 'IN_PROGRESS']),
             'pending': len(df_tf[df_tf['status'] == 'PENDING']),
             'error': len(df_tf[df_tf['status'] == 'ERROR']),
@@ -249,7 +254,8 @@ def render_download_progress():
     
     with col_15m:
         st.markdown("#### ⏱️ 15 Minutes")
-        pct_15m = stats_15m['complete'] / stats_15m['total'] if stats_15m['total'] > 0 else 0
+        # Progress uses 'done' = complete + skipped
+        pct_15m = stats_15m['done'] / stats_15m['total'] if stats_15m['total'] > 0 else 0
         st.progress(pct_15m)
         
         c1, c2, c3 = st.columns(3)
@@ -259,12 +265,15 @@ def render_download_progress():
             c3.metric("Errors", stats_15m['error'])
         elif stats_15m['in_progress'] > 0:
             c3.metric("Status", "🔄 Downloading")
+        elif stats_15m['pending'] > 0:
+            c3.metric("Status", "⏳ Pending")
         else:
-            c3.metric("Status", "✅ Done" if pct_15m == 1 else "⏳ Pending")
+            c3.metric("Status", "✅ Done")
     
     with col_1h:
         st.markdown("#### ⏱️ 1 Hour")
-        pct_1h = stats_1h['complete'] / stats_1h['total'] if stats_1h['total'] > 0 else 0
+        # Progress uses 'done' = complete + skipped
+        pct_1h = stats_1h['done'] / stats_1h['total'] if stats_1h['total'] > 0 else 0
         st.progress(pct_1h)
         
         c1, c2, c3 = st.columns(3)
@@ -274,8 +283,10 @@ def render_download_progress():
             c3.metric("Errors", stats_1h['error'])
         elif stats_1h['in_progress'] > 0:
             c3.metric("Status", "🔄 Downloading")
+        elif stats_1h['pending'] > 0:
+            c3.metric("Status", "⏳ Pending")
         else:
-            c3.metric("Status", "✅ Done" if pct_1h == 1 else "⏳ Pending")
+            c3.metric("Status", "✅ Done")
     
     # Current download
     in_progress = df[df['status'] == 'IN_PROGRESS']
@@ -290,13 +301,24 @@ def render_download_progress():
     errors = df[df['status'] == 'ERROR']
     if len(errors) > 0:
         with st.expander(f"❌ {len(errors)} Errors", expanded=True):
-            if st.button("🔄 Retry Failed Downloads", type="primary", use_container_width=True, key="retry_failed"):
-                count = retry_failed_downloads()
-                if count > 0:
-                    st.toast(f"✅ Reset {count} failed downloads")
-                    trigger_backfill()
-                    st.cache_data.clear()
-                    st.rerun()
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🔄 Retry Failed Downloads", type="primary", use_container_width=True, key="retry_failed"):
+                    count = retry_failed_downloads()
+                    if count > 0:
+                        st.toast(f"✅ Reset {count} failed downloads")
+                        trigger_backfill()
+                        st.cache_data.clear()
+                        st.rerun()
+            with c2:
+                if st.button("🗑️ Remove 'No Data' Coins", use_container_width=True, key="cleanup_no_data"):
+                    converted, removed = cleanup_no_data_errors()
+                    if converted > 0 or removed > 0:
+                        st.toast(f"✅ Fixed {converted} errors, removed {removed} coins from list")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.toast("ℹ️ No 'no data' errors found to clean up")
             
             st.divider()
             for _, row in errors.iterrows():
@@ -305,9 +327,9 @@ def render_download_progress():
                 st.error(f"**{sym}** [{row['timeframe']}]: {msg}")
 
 
-@st.fragment(run_every="30s")
+@st.fragment(run_every="60s")
 def render_coin_inventory():
-    """Show table with 15m and 1h data per coin"""
+    """Show table with 15m and 1h data per coin (optimized with dataframe)"""
     
     inventory = get_historical_inventory()
     
@@ -368,15 +390,24 @@ def render_coin_inventory():
     if rows:
         df = pd.DataFrame(rows)
         df = df.sort_values('Rank')
-        df = df.set_index('Rank')
         
+        # Format columns
         df['15m%'] = df['15m%'].apply(lambda x: f"{x:.0f}%")
         df['1h%'] = df['1h%'].apply(lambda x: f"{x:.0f}%")
         df['15m'] = df['15m'].apply(lambda x: f"{x:,}")
         df['1h'] = df['1h'].apply(lambda x: f"{x:,}")
         
-        st.markdown(f"**📋 All {len(rows)} Coins:**")
-        st.table(df)
+        st.markdown(f"**📋 All {len(rows)} Coins (Full Details):**")
+        
+        # Build full Markdown table
+        md_table = "| # | Symbol | From | To | 15m Candles | 15m % | 1h Candles | 1h % | Status |\n"
+        md_table += "|:--:|:-----:|:----:|:--:|:----------:|:-----:|:---------:|:----:|:------:|\n"
+        
+        for _, row in df.iterrows():
+            md_table += f"| {row['Rank']} | **{row['Symbol']}** | {row['From']} | {row['To']} | {row['15m']} | {row['15m%']} | {row['1h']} | {row['1h%']} | {row['Status']} |\n"
+        
+        # Display in scrollable container
+        st.markdown(md_table)
 
 
 def render_chart_preview():
@@ -486,7 +517,7 @@ def render_chart_preview():
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Columns", len(all_cols))
     c2.metric("Indicators", len(indicator_cols))
-    c3.metric("Rows Shown", 10)
+    c3.metric("Rows Shown", "20 (10+10)")
     
     # Show available columns
     with st.expander("📊 Available Columns", expanded=False):
@@ -498,32 +529,49 @@ def render_chart_preview():
             st.markdown("**Indicators:**")
             st.code(", ".join(indicator_cols) if indicator_cols else "None")
     
-    # Show last 10 rows with better styling
-    st.markdown("**Last 10 candles:**")
+    # Get display columns
+    display_cols = ['timestamp'] + [c for c in all_cols]
     
-    # Format dataframe for display
-    df_display = df.tail(10).copy()
+    # === FIRST 10 CANDLES (Oldest) ===
+    st.markdown("**🔼 First 10 Candles (oldest data) - ALL COLUMNS**")
+    first_df = df.head(10).copy()
+    first_df = first_df.reset_index()
+    first_df.rename(columns={'index': 'timestamp'}, inplace=True)
+    first_df['timestamp'] = first_df['timestamp'].astype(str).str[:19]
+    first_df = first_df.round(4)
     
-    # Round numeric columns for better display
-    for col in df_display.columns:
-        if df_display[col].dtype in ['float64', 'float32']:
-            if col in ['open', 'high', 'low', 'close']:
-                df_display[col] = df_display[col].apply(lambda x: f"{x:,.4f}")
-            elif col == 'volume':
-                df_display[col] = df_display[col].apply(lambda x: f"{x:,.0f}")
-            else:
-                df_display[col] = df_display[col].apply(lambda x: f"{x:.4f}" if abs(x) < 1000 else f"{x:,.2f}")
+    # Convert to HTML with horizontal scroll
+    html_first = first_df.to_html(index=False, classes='dataframe')
+    st.markdown(f"""
+    <div style="overflow-x: auto; max-width: 100%;">
+        <style>
+            .dataframe {{ font-size: 11px; border-collapse: collapse; width: 100%; }}
+            .dataframe th {{ background-color: #1e1e1e; color: #00ff88; padding: 6px; text-align: left; border: 1px solid #333; white-space: nowrap; }}
+            .dataframe td {{ padding: 4px; border: 1px solid #333; color: #ffffff; background-color: #0e1117; white-space: nowrap; }}
+        </style>
+        {html_first}
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Reset index for display
-    df_display = df_display.reset_index()
-    df_display.rename(columns={'index': 'timestamp'}, inplace=True)
-    df_display['timestamp'] = df_display['timestamp'].astype(str).str[:19]
+    st.divider()
     
-    st.dataframe(
-        df_display,
-        use_container_width=True,
-        height=400
-    )
+    # === LAST 10 CANDLES (Newest) ===
+    st.markdown("**🔽 Last 10 Candles (newest data) - ALL COLUMNS**")
+    last_df = df.tail(10).copy()
+    last_df = last_df.reset_index()
+    last_df.rename(columns={'index': 'timestamp'}, inplace=True)
+    last_df['timestamp'] = last_df['timestamp'].astype(str).str[:19]
+    last_df = last_df.round(4)
+    
+    html_last = last_df.to_html(index=False, classes='dataframe')
+    st.markdown(f"""
+    <div style="overflow-x: auto; max-width: 100%;">
+        {html_last}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Show total column count
+    st.success(f"📊 **{len(all_cols)} total columns** ({len(indicator_cols)} indicators + OHLCV)")
 
 
 __all__ = ['render_data_step']

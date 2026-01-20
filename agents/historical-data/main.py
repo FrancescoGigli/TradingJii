@@ -47,6 +47,10 @@ def signal_handler(signum, frame):
     shutdown_requested = True
 
 
+# Target number of successful downloads per timeframe
+TARGET_SUCCESSFUL_DOWNLOADS = 100
+
+
 class TrainingDataAgent:
     """
     Agent for downloading ML training data.
@@ -55,7 +59,8 @@ class TrainingDataAgent:
     - Downloads OHLCV + 16 technical indicators
     - Aligns dates between 15m and 1h timeframes  
     - Discards warmup candles (no NULL values in final data)
-    - One-shot download (no incremental updates)
+    - Stops at TARGET_SUCCESSFUL_DOWNLOADS (100) per timeframe
+    - Skips coins without historical data (SKIPPED status, not ERROR)
     """
     
     def __init__(self):
@@ -121,10 +126,30 @@ class TrainingDataAgent:
                     # 200 candles × 60 min = 12000 min = 200 hours
                     tf_warmup_start = warmup_start
                 
+                # Track successful downloads for this timeframe
+                tf_successful = 0
+                tf_skipped = 0
+                
                 for i, symbol in enumerate(symbols):
                     if shutdown_requested:
                         logger.info("🛑 Shutdown requested, stopping download...")
                         return
+                    
+                    # Stop if we reached TARGET (100 successful downloads)
+                    if tf_successful >= TARGET_SUCCESSFUL_DOWNLOADS:
+                        print(colored(f"\n✅ Reached {TARGET_SUCCESSFUL_DOWNLOADS} successful downloads for {tf}. Moving to next timeframe.", "green", attrs=['bold']))
+                        
+                        # Mark remaining symbols as SKIPPED (target reached)
+                        remaining_symbols = symbols[i:]
+                        for remaining_symbol in remaining_symbols:
+                            self.db.update_backfill_status(
+                                symbol=remaining_symbol,
+                                timeframe=tf,
+                                status=BackfillStatus.SKIPPED,
+                                error_message="Target 100 reached - not processed"
+                            )
+                        print(colored(f"   ⏭️ Marked {len(remaining_symbols)} remaining symbols as SKIPPED", "yellow"))
+                        break
                     
                     # Initialize backfill status
                     self.db.init_backfill_status(symbol, tf)
@@ -137,7 +162,7 @@ class TrainingDataAgent:
                     )
                     
                     try:
-                        print(colored(f"\n[{i+1}/{len(symbols)}] {symbol}", "yellow"))
+                        print(colored(f"\n[{i+1}/{len(symbols)}] {symbol} (success: {tf_successful}/{TARGET_SUCCESSFUL_DOWNLOADS})", "yellow"))
                         
                         # Download with warmup (extra candles before aligned_start)
                         df = await fetcher.fetch_historical_ohlcv(
@@ -203,20 +228,38 @@ class TrainingDataAgent:
                         )
                         
                         successful += 1
+                        tf_successful += 1  # Track per-timeframe success
                         total_candles_saved += saved
                         
                     except Exception as e:
-                        logger.error(f"❌ {symbol}[{tf}]: {e}")
+                        error_msg = str(e)
                         
-                        # Update backfill status to ERROR
-                        self.db.update_backfill_status(
-                            symbol=symbol,
-                            timeframe=tf,
-                            status=BackfillStatus.ERROR,
-                            error_message=str(e)[:200]
-                        )
+                        # Determine if this is a "no data" issue (SKIPPED) or actual error (ERROR)
+                        no_data_keywords = ["No valid data", "No data received", "may not be listed"]
+                        is_no_data = any(kw.lower() in error_msg.lower() for kw in no_data_keywords)
                         
-                        failed += 1
+                        if is_no_data:
+                            # SKIPPED - Coin doesn't have historical data (not an error)
+                            print(colored(f"   ⏭️ {symbol}[{tf}]: Skipped (no historical data)", "yellow"))
+                            self.db.update_backfill_status(
+                                symbol=symbol,
+                                timeframe=tf,
+                                status=BackfillStatus.SKIPPED,
+                                error_message=error_msg[:200]
+                            )
+                            # Remove from top_symbols to clean up dashboard
+                            self.db.remove_from_top_symbols(symbol)
+                            tf_skipped += 1
+                        else:
+                            # ERROR - Actual technical error
+                            logger.error(f"❌ {symbol}[{tf}]: {error_msg}")
+                            self.db.update_backfill_status(
+                                symbol=symbol,
+                                timeframe=tf,
+                                status=BackfillStatus.ERROR,
+                                error_message=error_msg[:200]
+                            )
+                            failed += 1
         
         total_duration = time.time() - total_start
         

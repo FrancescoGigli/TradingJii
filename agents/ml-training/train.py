@@ -185,7 +185,10 @@ def load_dataset(db_path: Path, symbol: str = None, timeframe: str = None) -> pd
         print(f"❌ Database not found at {db_path}")
         sys.exit(1)
     
-    conn = sqlite3.connect(str(db_path))
+    # Connect with timeout and WAL mode for better concurrency
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     
     try:
         # Check tables exist

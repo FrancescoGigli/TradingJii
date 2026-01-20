@@ -408,8 +408,9 @@ def clear_historical_data():
 # BACKFILL STATUS (for progress tracking)
 # =========================================
 
+@st.cache_data(ttl=5, show_spinner=False)
 def get_backfill_status_all():
-    """Get all backfill status records for progress display"""
+    """Get all backfill status records for progress display (cached 5s)"""
     conn = get_connection()
     if not conn:
         return []
@@ -538,5 +539,60 @@ def retry_failed_downloads():
         return count
     except Exception:
         return 0
+    finally:
+        conn.close()
+
+
+def cleanup_no_data_errors():
+    """
+    Convert 'no data' ERROR records to SKIPPED and remove from top_symbols.
+    These are coins that don't have historical data (not actual errors).
+    
+    Returns:
+        Tuple of (converted_count, removed_from_top_symbols_count)
+    """
+    conn = get_connection()
+    if not conn:
+        return 0, 0
+    try:
+        cur = conn.cursor()
+        
+        # Check if table exists
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='backfill_status'")
+        if not cur.fetchone():
+            return 0, 0
+        
+        # Find ERROR records with "no data" messages
+        cur.execute("""
+            SELECT DISTINCT symbol FROM backfill_status 
+            WHERE status = 'ERROR' 
+            AND (error_message LIKE '%No valid data%' 
+                 OR error_message LIKE '%No data received%'
+                 OR error_message LIKE '%may not be listed%')
+        """)
+        symbols_to_remove = [row[0] for row in cur.fetchall()]
+        
+        # Convert ERROR → SKIPPED for these records
+        cur.execute("""
+            UPDATE backfill_status 
+            SET status = 'SKIPPED'
+            WHERE status = 'ERROR' 
+            AND (error_message LIKE '%No valid data%' 
+                 OR error_message LIKE '%No data received%'
+                 OR error_message LIKE '%may not be listed%')
+        """)
+        converted = cur.rowcount
+        
+        # Remove these symbols from top_symbols
+        removed = 0
+        for symbol in symbols_to_remove:
+            cur.execute("DELETE FROM top_symbols WHERE symbol = ?", (symbol,))
+            removed += cur.rowcount
+        
+        conn.commit()
+        return converted, removed
+    except Exception as e:
+        print(f"Error in cleanup_no_data_errors: {e}")
+        return 0, 0
     finally:
         conn.close()

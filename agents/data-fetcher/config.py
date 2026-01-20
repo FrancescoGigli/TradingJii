@@ -65,7 +65,8 @@ WARMUP_CANDLES = 100
 TOTAL_CANDLES_TO_FETCH = CANDLES_LIMIT + WARMUP_CANDLES
 
 # Numero di simboli da analizzare (top per volume)
-TOP_SYMBOLS_COUNT = 100
+# Nota: Scarichiamo 150 per avere margine - historical-data si ferma a 100 successi
+TOP_SYMBOLS_COUNT = 150
 
 # Giorni di dati massimi da mantenere nel database
 DATA_RETENTION_DAYS = 90

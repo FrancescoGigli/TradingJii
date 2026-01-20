@@ -92,7 +92,10 @@ def get_available_training_data() -> Dict[str, Any]:
     if not db_path.exists():
         return {'error': f'Database not found: {db_path}'}
     
-    conn = sqlite3.connect(str(db_path))
+    # Connect with timeout and WAL mode for better concurrency
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     
     try:
         # Get symbols
@@ -186,7 +189,10 @@ def load_training_data(symbols: list, timeframes: list, progress_callback: Calla
         DataFrame with training data
     """
     db_path, _ = get_paths()
-    conn = sqlite3.connect(str(db_path))
+    # Connect with timeout and WAL mode for better concurrency
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     
     if progress_callback:
         progress_callback(0.1, "Loading data from database...")

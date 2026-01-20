@@ -20,6 +20,16 @@ from database import (
     get_ml_labels_inventory,
 )
 
+
+def clear_ml_labels_cache():
+    """Clear all cached ML labels data to force refresh"""
+    try:
+        get_ml_labels_stats.clear()
+        get_ml_labels_by_symbol.clear()
+        get_ml_labels_inventory.clear()
+    except Exception:
+        pass  # Cache might not exist yet
+
 # Import label generator
 try:
     from ai.core.labels import TrailingStopLabeler, TrailingLabelConfig
@@ -288,6 +298,9 @@ def render_generate_all_labels():
         # Store results in session state to persist after any interaction
         st.session_state['last_generation_results'] = results
         
+        # Clear cache to force refresh of data
+        clear_ml_labels_cache()
+        
         # Rerun to update the table with new labels
         st.rerun()
     
@@ -537,6 +550,10 @@ def render_generate_all_labels():
                             st.text(err)
                 
                 st.balloons()
+                
+                # Clear cache to force refresh
+                clear_ml_labels_cache()
+                
                 st.rerun()
         else:
             st.success("✅ All coins have labels for all timeframes!")
@@ -557,6 +574,10 @@ def render_generate_all_labels():
                 from database import clear_ml_labels
                 deleted = clear_ml_labels()
                 st.success(f"✅ Deleted {deleted:,} labels from database")
+                
+                # Clear cache to force refresh
+                clear_ml_labels_cache()
+                
                 st.rerun()
             else:
                 st.error("Please type 'DELETE' to confirm")

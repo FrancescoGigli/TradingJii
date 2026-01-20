@@ -32,7 +32,8 @@ class BackfillStatus(Enum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETE = "COMPLETE"
-    ERROR = "ERROR"
+    SKIPPED = "SKIPPED"  # Coin without historical data (not an error)
+    ERROR = "ERROR"      # Actual technical error
 
 
 @dataclass
@@ -72,9 +73,22 @@ class TrainingDatabase:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
     
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection with row factory"""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        """
+        Get database connection with row factory and optimized settings.
+        
+        Features:
+        - timeout=30: Wait up to 30 seconds if database is locked
+        - WAL mode: Allow concurrent reads during writes
+        - busy_timeout: SQLite-level timeout for locked operations
+        """
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30)
         conn.row_factory = sqlite3.Row
+        
+        # Enable WAL mode for better concurrency
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")  # 30 seconds in milliseconds
+        conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes, still safe with WAL
+        
         return conn
     
     def _init_db(self):
@@ -682,6 +696,27 @@ class TrainingDatabase:
         
         conn.close()
         return symbols
+    
+    def remove_from_top_symbols(self, symbol: str):
+        """
+        Remove a symbol from the top_symbols table.
+        Called when a coin has no historical data (SKIPPED status).
+        This prevents the coin from appearing in the dashboard and ML training lists.
+        """
+        conn = self._get_connection()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute('DELETE FROM top_symbols WHERE symbol = ?', (symbol,))
+            deleted = cur.rowcount
+            conn.commit()
+            
+            if deleted > 0:
+                logger.info(f"🗑️ Removed {symbol} from top_symbols (no historical data)")
+        except sqlite3.OperationalError as e:
+            logger.warning(f"Could not remove {symbol} from top_symbols: {e}")
+        
+        conn.close()
 
 
 def align_date_to_hour(dt: datetime) -> datetime:
