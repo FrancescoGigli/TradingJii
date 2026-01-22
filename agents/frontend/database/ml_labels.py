@@ -7,6 +7,97 @@ import pandas as pd
 from .connection import get_connection
 
 
+def get_training_labels(timeframe: str = None, symbol: str = None, limit: int = None) -> pd.DataFrame:
+    """
+    Get training labels from training_labels table (created by labeling pipeline).
+    
+    Args:
+        timeframe: Filter by timeframe ('15m' or '1h')
+        symbol: Filter by symbol (optional)
+        limit: Max rows to return (optional)
+    
+    Returns:
+        DataFrame with labels indexed by timestamp
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+    
+    try:
+        # Build query
+        query = '''
+            SELECT 
+                timestamp,
+                symbol,
+                timeframe,
+                score_long,
+                score_short,
+                realized_return_long,
+                realized_return_short,
+                mfe_long,
+                mfe_short,
+                mae_long,
+                mae_short,
+                bars_held_long,
+                bars_held_short,
+                exit_type_long,
+                exit_type_short,
+                atr_pct
+            FROM training_labels
+        '''
+        
+        conditions = []
+        params = []
+        
+        if timeframe:
+            conditions.append('timeframe = ?')
+            params.append(timeframe)
+        
+        if symbol:
+            conditions.append('symbol = ?')
+            params.append(symbol)
+        
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
+        
+        query += ' ORDER BY timestamp'
+        
+        if limit:
+            query += f' LIMIT {int(limit)}'
+        
+        df = pd.read_sql_query(query, conn, params=params if params else None)
+        
+        if len(df) > 0:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.set_index('timestamp', inplace=True)
+            
+            # Rename columns to match expected format for analysis
+            tf = timeframe if timeframe else '15m'
+            rename_map = {
+                'score_long': f'score_long_{tf}',
+                'score_short': f'score_short_{tf}',
+                'realized_return_long': f'realized_return_long_{tf}',
+                'realized_return_short': f'realized_return_short_{tf}',
+                'mfe_long': f'mfe_long_{tf}',
+                'mfe_short': f'mfe_short_{tf}',
+                'mae_long': f'mae_long_{tf}',
+                'mae_short': f'mae_short_{tf}',
+                'bars_held_long': f'bars_held_long_{tf}',
+                'bars_held_short': f'bars_held_short_{tf}',
+                'exit_type_long': f'exit_type_long_{tf}',
+                'exit_type_short': f'exit_type_short_{tf}',
+                'atr_pct': f'atr_pct_{tf}'
+            }
+            df = df.rename(columns=rename_map)
+        
+        return df
+    except Exception as e:
+        print(f"Error getting training labels: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
 def create_ml_labels_table():
     """Create table for ML training labels if not exists"""
     conn = get_connection()

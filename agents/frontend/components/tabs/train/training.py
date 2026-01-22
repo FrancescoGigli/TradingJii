@@ -32,19 +32,24 @@ except ImportError:
     SKLEARN_AVAILABLE = False
 
 
-# Feature columns to use for training (OHLCV + Technical Indicators from training_data)
+# Feature columns from v_xgb_training VIEW (NO LOOK-AHEAD BIAS!)
+# Only indicators available at entry time: rsi, atr, macd
 FEATURE_COLUMNS_OHLCV = ['open', 'high', 'low', 'close', 'volume']
 
-# Technical indicators from training_data
-FEATURE_COLUMNS_INDICATORS = [
-    'sma_20', 'sma_50', 'ema_12', 'ema_26',
-    'bb_upper', 'bb_middle', 'bb_lower',
-    'rsi', 'macd', 'macd_signal', 'macd_hist',
-    'atr', 'adx', 'cci', 'willr', 'obv'
-]
+# Technical indicators from VIEW (limited to avoid look-ahead)
+FEATURE_COLUMNS_INDICATORS = ['rsi', 'atr', 'macd']
 
-# All features (OHLCV + Indicators)
+# All features (OHLCV + Available Indicators)
 FEATURE_COLUMNS = FEATURE_COLUMNS_OHLCV + FEATURE_COLUMNS_INDICATORS
+
+# Optional: Extended features if using training_data directly
+EXTENDED_FEATURE_COLUMNS = [
+    'sma_20', 'sma_50', 'ema_12', 'ema_26',
+    'bb_upper', 'bb_mid', 'bb_lower',
+    'macd', 'macd_signal', 'macd_hist',
+    'rsi', 'stoch_k', 'stoch_d',
+    'atr', 'volume_sma', 'obv'
+]
 
 
 def get_model_dir() -> Path:
@@ -80,11 +85,12 @@ def get_training_labels_count(timeframe: str) -> int:
 
 def load_training_data(timeframe: str, progress_callback: Callable = None) -> pd.DataFrame:
     """
-    Load training data by JOINing training_data (features+indicators) 
-    with training_labels (labels).
+    Load training data from v_xgb_training VIEW.
     
-    training_data (master) has: OHLCV + 16 technical indicators
-    training_labels has: labels (score_long, score_short, mfe, mae, bars_held, exit_type)
+    This VIEW contains:
+    - OHLCV: open, high, low, close, volume
+    - Indicators: rsi, atr, macd (NO LOOK-AHEAD!)
+    - Labels: score_long, score_short, mfe, mae, bars_held, exit_type
     """
     conn = get_connection()
     if not conn:
@@ -92,43 +98,31 @@ def load_training_data(timeframe: str, progress_callback: Callable = None) -> pd
     
     try:
         if progress_callback:
-            progress_callback(0.1, "Loading data (JOIN training_data + training_labels)...")
+            progress_callback(0.1, "Loading data from v_xgb_training VIEW (no look-ahead)...")
         
-        # JOIN: training_data (features) + training_labels (labels)
-        # training_data comanda (master) perché ha gli indicatori corretti
+        # Use the pre-defined VIEW for training - NO LOOK-AHEAD BIAS!
         df = pd.read_sql_query('''
             SELECT 
-                td.timestamp,
-                td.symbol,
-                td.timeframe,
-                -- OHLCV from training_data
-                td.open, td.high, td.low, td.close, td.volume,
-                -- Technical indicators from training_data
-                td.sma_20, td.sma_50, td.ema_12, td.ema_26,
-                td.bb_upper, td.bb_middle, td.bb_lower,
-                td.rsi, td.macd, td.macd_signal, td.macd_hist,
-                td.atr, td.adx, td.cci, td.willr, td.obv,
-                -- Labels from training_labels
-                tl.score_long, tl.score_short,
-                tl.realized_return_long, tl.realized_return_short,
-                tl.mfe_long, tl.mfe_short,
-                tl.mae_long, tl.mae_short,
-                tl.bars_held_long, tl.bars_held_short,
-                tl.exit_type_long, tl.exit_type_short
-            FROM training_data td
-            INNER JOIN training_labels tl ON 
-                td.symbol = tl.symbol AND 
-                td.timeframe = tl.timeframe AND 
-                td.timestamp = tl.timestamp
-            WHERE td.timeframe = ?
-            ORDER BY td.symbol, td.timestamp
+                timestamp, symbol, timeframe,
+                open, high, low, close, volume,
+                rsi, atr, macd,
+                score_long, score_short,
+                realized_return_long, realized_return_short,
+                mfe_long, mfe_short,
+                mae_long, mae_short,
+                bars_held_long, bars_held_short,
+                exit_type_long, exit_type_short,
+                atr_pct
+            FROM v_xgb_training
+            WHERE timeframe = ?
+            ORDER BY symbol, timestamp
         ''', conn, params=(timeframe,))
         
         if len(df) > 0:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
         
         if progress_callback:
-            progress_callback(0.2, f"Loaded {len(df):,} samples (features + labels joined)")
+            progress_callback(0.2, f"Loaded {len(df):,} samples from VIEW (8 features, no look-ahead)")
         
         return df
     except Exception as e:

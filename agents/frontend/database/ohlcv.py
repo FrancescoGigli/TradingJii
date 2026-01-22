@@ -181,6 +181,14 @@ def get_stats():
         conn.close()
 
 
+def get_ohlcv_from_db(symbol, timeframe, limit=CANDLES_LIMIT):
+    """
+    Alias for get_ohlcv - used by visualizer.
+    Get OHLCV data for a symbol and timeframe.
+    """
+    return get_ohlcv(symbol, timeframe, limit)
+
+
 @st.cache_data(ttl=10, show_spinner=False)
 def get_update_status():
     """Get current update status from data-fetcher (cached 10s)"""

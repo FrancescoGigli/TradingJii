@@ -1,354 +1,335 @@
 """
-🏷️ Train Tab - Step 2: Labeling
+🏷️ Train Tab - Step 2: Labeling (ATR-Based)
 
-Generate training labels using Trailing Stop simulation:
-- Load data from training_features
-- Configure trailing stop parameters
-- Generate score_long / score_short labels
-- Remove last N rows (lookahead) - 15m comanda
-- Save to training_labels table
+Main orchestrator for ATR-based label generation.
+Uses modular components for clean separation of concerns.
+
+Structure:
+┌────────────────────────────────────────────────────────────────┐
+│ Step 2: Labeling                                                │
+├────────────────────────────────────────────────────────────────┤
+│ ⚙️ ATR Configuration (sliders)                                  │
+│ [🏷️ Generate Labels] ← single action button                    │
+├────────────────────────────────────────────────────────────────┤
+│ 📤 Status (auto - shows existing labels count)                 │
+├────────────────────────────────────────────────────────────────┤
+│ 🔍 Symbol/Timeframe Selector                                    │
+├────────────────────────────────────────────────────────────────┤
+│ 📊 Statistics (auto)                                           │
+├────────────────────────────────────────────────────────────────┤
+│ 📋 Labels Table Preview (First 50 + ... + Last 50)             │
+├────────────────────────────────────────────────────────────────┤
+│ 📈 Analysis Dashboard (auto)                                    │
+├────────────────────────────────────────────────────────────────┤
+│ 🔍 Stability Report (auto)                                      │
+├────────────────────────────────────────────────────────────────┤
+│ 👁️ Visualizer (candlestick + markers - auto)                   │
+└────────────────────────────────────────────────────────────────┘
+
+Modules used:
+- labeling_config: ATR configuration UI
+- labeling_db: Database operations
+- labeling_pipeline: Label generation
+- labeling_table: Labels table preview
+- labeling_analysis: Charts and diagnostics
+- labeling_visualizer: Candlestick visualization
 """
 
 import streamlit as st
-import pandas as pd
-import numpy as np
-from datetime import datetime
-from database import get_connection
 
-# Import the TrailingStopLabeler
-from ai.core.labels import TrailingStopLabeler, TrailingLabelConfig
+# Import configuration module
+from .labeling_config import render_atr_config_section
 
+# Import database operations
+from .labeling_db import (
+    get_training_features_symbols,
+    get_training_labels_stats,
+    get_label_statistics
+)
 
-def get_training_features_symbols(timeframe: str) -> list:
-    """Get only symbols with >= 95% data completeness for BOTH timeframes from training_data"""
-    conn = get_connection()
-    if not conn:
-        return []
-    try:
-        cur = conn.cursor()
-        
-        # Expected candles (approx 12 months)
-        expected_15m = 35000
-        expected_1h = 8760
-        threshold = 0.95  # 95% completeness required
-        
-        # Get symbols that are complete for BOTH 15m AND 1h from training_data table
-        cur.execute('''
-            SELECT symbol
-            FROM (
-                SELECT 
-                    symbol,
-                    SUM(CASE WHEN timeframe = '15m' THEN 1 ELSE 0 END) as candles_15m,
-                    SUM(CASE WHEN timeframe = '1h' THEN 1 ELSE 0 END) as candles_1h
-                FROM training_data
-                GROUP BY symbol
-            )
-            WHERE 
-                CAST(candles_15m AS REAL) / ? >= ? 
-                AND CAST(candles_1h AS REAL) / ? >= ?
-            ORDER BY symbol
-        ''', (expected_15m, threshold, expected_1h, threshold))
-        
-        return [r[0] for r in cur.fetchall()]
-    except Exception as e:
-        return []
-    finally:
-        conn.close()
+# Import pipeline
+from .labeling_pipeline import run_labeling_pipeline_both
+
+# Import table preview
+from .labeling_table import render_labels_table_preview
+
+# Import visualizer
+from .labeling_visualizer import get_available_symbols_with_labels
 
 
-def get_training_features_data(symbol: str, timeframe: str) -> pd.DataFrame:
-    """Load data from training_data for a specific symbol"""
-    conn = get_connection()
-    if not conn:
-        return pd.DataFrame()
-    try:
-        # Use training_data table (the actual data source with indicators)
-        df = pd.read_sql_query('''
-            SELECT * FROM training_data 
-            WHERE symbol=? AND timeframe=?
-            ORDER BY timestamp
-        ''', conn, params=(symbol, timeframe))
-        
-        if len(df) > 0:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df.set_index('timestamp', inplace=True)
-        
-        return df
-    except Exception as e:
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-
-def get_training_labels_stats():
-    """Get stats from training_labels table"""
-    conn = get_connection()
-    if not conn:
-        return None
-    try:
-        cur = conn.cursor()
-        
-        # Check if table exists
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='training_labels'")
-        if not cur.fetchone():
-            return None
-        
-        cur.execute('''
-            SELECT 
-                COUNT(DISTINCT symbol) as symbols,
-                COUNT(*) as total_rows,
-                MIN(timestamp) as min_date,
-                MAX(timestamp) as max_date,
-                timeframe,
-                AVG(score_long) as avg_score_long,
-                AVG(score_short) as avg_score_short
-            FROM training_labels
-            GROUP BY timeframe
-        ''')
-        
-        results = {}
-        for row in cur.fetchall():
-            results[row[4]] = {
-                'symbols': row[0],
-                'total_rows': row[1],
-                'min_date': row[2],
-                'max_date': row[3],
-                'avg_score_long': row[5],
-                'avg_score_short': row[6]
-            }
-        return results
-    except Exception as e:
-        return None
-    finally:
-        conn.close()
-
-
-def create_training_labels_table():
-    """Create training_labels table if not exists - SIMPLIFIED (OHLCV + labels only)"""
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        
-        # Drop old table if exists (schema changed)
-        cur.execute('DROP TABLE IF EXISTS training_labels')
-        
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS training_labels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                timeframe TEXT NOT NULL,
-                -- OHLCV
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume REAL,
-                -- LABELS (trailing stop based)
-                score_long REAL,
-                score_short REAL,
-                realized_return_long REAL,
-                realized_return_short REAL,
-                mfe_long REAL,
-                mfe_short REAL,
-                mae_long REAL,
-                mae_short REAL,
-                bars_held_long INTEGER,
-                bars_held_short INTEGER,
-                exit_type_long TEXT,
-                exit_type_short TEXT,
-                UNIQUE(symbol, timeframe, timestamp)
-            )
-        ''')
-        
-        # Create indexes
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_tl_symbol_tf_ts ON training_labels(symbol, timeframe, timestamp)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_tl_score_long ON training_labels(score_long)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_tl_score_short ON training_labels(score_short)')
-        
-        conn.commit()
+def render_status_section() -> bool:
+    """
+    Render existing labels status.
+    
+    Returns:
+        True if labels exist, False otherwise
+    """
+    st.markdown("#### 📤 Labels Status")
+    
+    labels_stats = get_training_labels_stats()
+    
+    if labels_stats:
+        for tf, data in labels_stats.items():
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Timeframe", tf)
+            col2.metric("Symbols", data['symbols'])
+            col3.metric("Rows", f"{data['total_rows']:,}")
+            col4.metric("Avg Score (Long)", f"{data['avg_score_long']:.4f}" if data['avg_score_long'] else "N/A")
+        st.success("✅ Training labels exist")
         return True
-    except Exception as e:
+    else:
+        st.warning("⚠️ No training labels generated yet")
         return False
-    finally:
-        conn.close()
 
 
-def generate_and_save_labels(
-    symbol: str, 
-    timeframe: str, 
-    config: TrailingLabelConfig,
-    max_bars: int
-) -> tuple:
-    """Generate labels for a symbol and save to training_labels"""
+def render_symbol_timeframe_selector() -> tuple:
+    """
+    Render symbol and timeframe selector.
     
-    # Load features data
-    df = get_training_features_data(symbol, timeframe)
-    if df is None or len(df) == 0:
-        return False, 0, "No data available"
+    Returns:
+        Tuple of (selected_symbol, selected_timeframe)
+    """
+    st.markdown("#### 🔍 Symbol Selector")
     
-    # Generate labels using TrailingStopLabeler
-    labeler = TrailingStopLabeler(config)
-    labels_df = labeler.generate_labels_for_timeframe(df, timeframe)
+    # Default to 15m - can be changed if needed
+    selected_tf = '15m'
     
-    # Merge features with labels
-    result_df = df.join(labels_df)
+    # Get available symbols for timeframe
+    symbols = get_available_symbols_with_labels(selected_tf)
     
-    # Remove last max_bars rows (lookahead - invalid labels)
-    valid_mask = result_df[f'exit_type_long_{timeframe}'] != 'invalid'
-    result_df = result_df[valid_mask]
-    
-    # Drop rows with any NULL in label columns
-    label_cols = [f'score_long_{timeframe}', f'score_short_{timeframe}']
-    result_df = result_df.dropna(subset=label_cols)
-    
-    if len(result_df) == 0:
-        return False, 0, "No valid labels generated"
-    
-    # Save to database
-    conn = get_connection()
-    if not conn:
-        return False, 0, "Database connection failed"
-    
-    try:
-        cur = conn.cursor()
-        
-        # Delete existing data for this symbol/timeframe
-        cur.execute('DELETE FROM training_labels WHERE symbol=? AND timeframe=?', (symbol, timeframe))
-        
-        # Reset index for iteration
-        result_df = result_df.reset_index()
-        
-        # Insert rows - SIMPLIFIED (OHLCV + labels only)
-        for _, row in result_df.iterrows():
-            cur.execute('''
-                INSERT INTO training_labels 
-                (timestamp, symbol, timeframe, open, high, low, close, volume,
-                 score_long, score_short, 
-                 realized_return_long, realized_return_short,
-                 mfe_long, mfe_short, mae_long, mae_short,
-                 bars_held_long, bars_held_short,
-                 exit_type_long, exit_type_short)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                str(row['timestamp']),
-                symbol,
-                timeframe,
-                row['open'], row['high'], row['low'], row['close'], row['volume'],
-                row[f'score_long_{timeframe}'],
-                row[f'score_short_{timeframe}'],
-                row[f'realized_return_long_{timeframe}'],
-                row[f'realized_return_short_{timeframe}'],
-                row[f'mfe_long_{timeframe}'],
-                row[f'mfe_short_{timeframe}'],
-                row[f'mae_long_{timeframe}'],
-                row[f'mae_short_{timeframe}'],
-                int(row[f'bars_held_long_{timeframe}']),
-                int(row[f'bars_held_short_{timeframe}']),
-                row[f'exit_type_long_{timeframe}'],
-                row[f'exit_type_short_{timeframe}']
-            ))
-        
-        conn.commit()
-        return True, len(result_df), "Success"
-        
-    except Exception as e:
-        return False, 0, str(e)
-    finally:
-        conn.close()
-
-
-def run_labeling_pipeline(timeframe: str, config: TrailingLabelConfig, progress_callback=None):
-    """Run labeling for all symbols in training_features"""
-    
-    # Create table
-    if not create_training_labels_table():
-        return False, "Failed to create training_labels table"
-    
-    # Get symbols
-    symbols = get_training_features_symbols(timeframe)
     if not symbols:
-        return False, "No symbols found in training_features"
+        st.warning(f"No labels available for {selected_tf}")
+        return None, selected_tf
     
-    # Get max_bars for lookahead removal
-    max_bars = config.get_max_bars(timeframe)
+    # Default to BTC if available
+    btc_symbols = [s for s in symbols if 'BTC' in s]
+    default_idx = symbols.index(btc_symbols[0]) if btc_symbols else 0
     
-    total_rows = 0
-    errors = []
+    selected_symbol = st.selectbox(
+        "Symbol",
+        symbols,
+        index=default_idx,
+        format_func=lambda x: x.replace('/USDT:USDT', ''),
+        key="labeling_symbol_selector"
+    )
     
-    for i, symbol in enumerate(symbols):
-        if progress_callback:
-            progress_callback(i + 1, len(symbols), symbol)
-        
-        success, rows, message = generate_and_save_labels(symbol, timeframe, config, max_bars)
-        
-        if success:
-            total_rows += rows
-        else:
-            errors.append(f"{symbol}: {message}")
-    
-    if errors and len(errors) == len(symbols):
-        return False, f"All symbols failed. First error: {errors[0]}"
-    
-    return True, f"Generated labels for {len(symbols) - len(errors)} symbols, {total_rows:,} total rows"
+    return selected_symbol, selected_tf
 
 
-def get_label_statistics(timeframe: str) -> dict:
-    """Get statistics about generated labels"""
-    conn = get_connection()
-    if not conn:
-        return {}
+def render_statistics_section(timeframe: str):
+    """Render label statistics for selected timeframe."""
+    st.markdown("#### 📊 Statistics")
+    
+    stats = get_label_statistics(timeframe)
+    if stats:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Samples", f"{stats['total_samples']:,}")
+        c2.metric("Avg Score (Long)", f"{stats['avg_score_long']:.5f}")
+        c3.metric("Avg Score (Short)", f"{stats['avg_score_short']:.5f}")
+        c4.metric("% Positive (Long)", f"{stats['pct_positive_long']:.1f}%")
+    else:
+        st.info(f"No statistics available for {timeframe}")
+
+
+def render_analysis_dashboard(symbol: str, timeframe: str):
+    """Render analysis dashboard with charts."""
+    st.markdown("#### 📈 Analysis Dashboard")
+    
     try:
-        cur = conn.cursor()
+        from .labeling_analysis import (
+            create_score_distribution,
+            create_atr_analysis,
+            create_exit_type_pie,
+            create_mae_histogram,
+            create_mae_vs_score_scatter,
+            create_bars_held_histogram
+        )
+        from database.ml_labels import get_training_labels
         
-        cur.execute('''
-            SELECT 
-                COUNT(*) as total,
-                AVG(score_long) as avg_score_long,
-                AVG(score_short) as avg_score_short,
-                SUM(CASE WHEN score_long > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct_positive_long,
-                SUM(CASE WHEN score_short > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as pct_positive_short,
-                AVG(realized_return_long) as avg_return_long,
-                AVG(realized_return_short) as avg_return_short,
-                AVG(bars_held_long) as avg_bars_long,
-                AVG(bars_held_short) as avg_bars_short,
-                SUM(CASE WHEN exit_type_long = 'trailing' THEN 1 ELSE 0 END) as trailing_exits_long,
-                SUM(CASE WHEN exit_type_long = 'time' THEN 1 ELSE 0 END) as time_exits_long
-            FROM training_labels
-            WHERE timeframe = ?
-        ''', (timeframe,))
+        labels_df = get_training_labels(timeframe, symbol)
         
-        row = cur.fetchone()
-        if row and row[0] > 0:
-            return {
-                'total_samples': row[0],
-                'avg_score_long': row[1],
-                'avg_score_short': row[2],
-                'pct_positive_long': row[3],
-                'pct_positive_short': row[4],
-                'avg_return_long': row[5] * 100,  # Convert to percentage
-                'avg_return_short': row[6] * 100,
-                'avg_bars_long': row[7],
-                'avg_bars_short': row[8],
-                'trailing_exits_long': row[9],
-                'time_exits_long': row[10]
-            }
-        return {}
+        if labels_df is None or len(labels_df) == 0:
+            st.warning("No labels available for analysis")
+            return
+        
+        # Row 1: Score distribution and ATR
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = create_score_distribution(labels_df, timeframe)
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = create_atr_analysis(labels_df, timeframe)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Row 2: Exit type pie charts
+        st.markdown("##### Exit Type Analysis")
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = create_exit_type_pie(labels_df, timeframe, 'long')
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = create_exit_type_pie(labels_df, timeframe, 'short')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Row 3: MAE analysis
+        st.markdown("##### MAE Histograms (LONG / SHORT)")
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = create_mae_histogram(labels_df, timeframe, 'long')
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = create_mae_histogram(labels_df, timeframe, 'short')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Row 4: MAE vs Score scatter
+        st.markdown("##### MAE vs Score Scatter")
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = create_mae_vs_score_scatter(labels_df, timeframe, 'long')
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = create_mae_vs_score_scatter(labels_df, timeframe, 'short')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Row 5: Bars held
+        st.markdown("##### Bars Held Analysis")
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = create_bars_held_histogram(labels_df, timeframe, 'long')
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = create_bars_held_histogram(labels_df, timeframe, 'short')
+            st.plotly_chart(fig, use_container_width=True)
+        
     except Exception as e:
-        return {}
-    finally:
-        conn.close()
+        st.error(f"Error loading analysis: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def render_stability_report(symbol: str, timeframe: str):
+    """Render stability report."""
+    st.markdown("#### 🔍 Stability Report")
+    
+    try:
+        from .labeling_analysis import get_stability_report
+        from database.ml_labels import get_training_labels
+        
+        labels_df = get_training_labels(timeframe, symbol)
+        
+        if labels_df is None or len(labels_df) == 0:
+            st.warning("No labels available for stability report")
+            return
+        
+        report = get_stability_report(labels_df, timeframe)
+        
+        if not report.get('valid', False):
+            st.error(f"Cannot generate report: {report.get('reason', 'Unknown error')}")
+            return
+        
+        # Overall status
+        if report.get('is_stable', False):
+            st.success("✅ Parameters appear STABLE - good for ML training")
+        else:
+            st.warning("⚠️ Parameters may need adjustment")
+            for warning in report.get('warnings', []):
+                st.warning(warning)
+        
+        # Metrics
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**LONG Labels:**")
+            st.write(f"- Score Mean: {report.get('long_score_mean', 0):.5f}")
+            st.write(f"- Score Std: {report.get('long_score_std', 0):.5f}")
+            st.write(f"- Positive: {report.get('long_positive_pct', 0):.1f}%")
+            st.write(f"- Avg MAE: {report.get('long_mae_mean', 0):.2f}%")
+            st.write(f"- Exit: fixed_sl {report.get('long_fixed_sl_pct', 0):.1f}% | trailing {report.get('long_trailing_pct', 0):.1f}% | time {report.get('long_time_pct', 0):.1f}%")
+        
+        with col2:
+            st.markdown("**SHORT Labels:**")
+            st.write(f"- Score Mean: {report.get('short_score_mean', 0):.5f}")
+            st.write(f"- Score Std: {report.get('short_score_std', 0):.5f}")
+            st.write(f"- Positive: {report.get('short_positive_pct', 0):.1f}%")
+            st.write(f"- Avg MAE: {report.get('short_mae_mean', 0):.2f}%")
+            st.write(f"- Exit: fixed_sl {report.get('short_fixed_sl_pct', 0):.1f}% | trailing {report.get('short_trailing_pct', 0):.1f}% | time {report.get('short_time_pct', 0):.1f}%")
+        
+    except Exception as e:
+        st.error(f"Error loading stability report: {e}")
+
+
+def render_visualizer(selected_symbol: str, timeframe: str):
+    """Render candlestick visualizer for the SELECTED symbol/timeframe."""
+    st.markdown("#### 👁️ Visualizer")
+    
+    try:
+        from .labeling_visualizer import get_labels_with_prices, create_labels_chart
+        
+        # Get last 200 candles
+        df = get_labels_with_prices(selected_symbol, timeframe, 200)
+        
+        if df is None or len(df) == 0:
+            st.warning(f"No OHLCV data available for visualizer")
+            return
+        
+        # Main chart
+        symbol_short = selected_symbol.replace('/USDT:USDT', '')
+        fig = create_labels_chart(df, timeframe)
+        fig.update_layout(title=f"📊 {symbol_short} ({timeframe}) - Last {len(df)} candles")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Legend
+        st.markdown("""
+        **📖 How to read:**
+        🟢 Triangle Up = LONG+ | 🔴 Triangle Down = SHORT+ | Score Bars: Green = profit, Red = loss
+        """)
+        
+    except Exception as e:
+        st.error(f"Error loading visualizer: {e}")
+
+
+def run_labeling_process(config, symbols_15m: list, symbols_1h: list):
+    """Run ATR-based labeling with progress display."""
+    st.markdown("#### 🔄 Generating ATR-Based Labels")
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    current_tf_text = st.empty()
+    
+    total_symbols = len(symbols_15m) + len(symbols_1h)
+    
+    def update_progress(current, total, symbol, timeframe):
+        if timeframe == '15m':
+            overall = current
+        else:
+            overall = len(symbols_15m) + current
+        progress_bar.progress(overall / total_symbols if total_symbols > 0 else 0)
+        current_tf_text.markdown(f"**Processing: {timeframe}**")
+        status_text.text(f"Symbol {overall}/{total_symbols}: {symbol.replace('/USDT:USDT', '')}")
+    
+    success, message = run_labeling_pipeline_both(config, update_progress)
+    
+    if success:
+        st.success(f"✅ {message}")
+        st.cache_data.clear()
+    else:
+        st.error(f"❌ {message}")
 
 
 def render_labeling_step():
-    """Render Step 2: Label generation"""
+    """
+    Main entry point: Render Step 2 Labeling.
     
-    st.markdown("### 🏷️ Step 2: Labeling")
-    st.caption("Generate training labels using Trailing Stop simulation")
+    Flow:
+    1. Check prerequisites (training features available)
+    2. Show ATR configuration
+    3. Single Generate Labels button
+    4. Auto-display all sections when labels exist
+    """
+    st.markdown("### 🏷️ Step 2: Labeling (ATR-Based)")
+    st.caption("Generate training labels using ATR-based Trailing Stop simulation")
     
-    # === CHECK PREREQUISITE ===
+    # === CHECK PREREQUISITES ===
     symbols_15m = get_training_features_symbols('15m')
     symbols_1h = get_training_features_symbols('1h')
     
@@ -357,174 +338,73 @@ def render_labeling_step():
         st.info("Complete **Step 1 (Data)** first to prepare training features.")
         return
     
-    # Show available COMPLETE data clearly
+    # Show available data
     st.markdown("#### 📥 Available Data (COMPLETE downloads only)")
     c1, c2 = st.columns(2)
     c1.metric("15m Symbols (COMPLETE)", len(symbols_15m))
     c2.metric("1h Symbols (COMPLETE)", len(symbols_1h))
     
-    st.info(f"ℹ️ **Labeling will use {len(symbols_15m)} symbols for 15m and {len(symbols_1h)} symbols for 1h** (only fully downloaded coins)")
+    st.info(f"ℹ️ **ATR-based labels will be generated for BOTH timeframes:** {len(symbols_15m)} symbols for 15m and {len(symbols_1h)} symbols for 1h")
     
-    # === EXISTING LABELS ===
+    # === ATR CONFIGURATION ===
     st.divider()
-    st.markdown("#### 📤 Training Labels Status")
+    config = render_atr_config_section()
     
-    labels_stats = get_training_labels_stats()
-    
-    if labels_stats:
-        for tf, data in labels_stats.items():
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric(f"Timeframe", tf)
-            col2.metric("Symbols", data['symbols'])
-            col3.metric("Rows", f"{data['total_rows']:,}")
-            col4.metric("Avg Score (Long)", f"{data['avg_score_long']:.4f}")
-        
-        st.success("✅ Training labels exist")
-    else:
-        st.warning("⚠️ No training labels generated yet")
-    
-    # === CONFIGURATION ===
-    st.divider()
-    st.markdown("#### ⚙️ Label Configuration")
-    
-    # Timeframe selection
-    selected_tf = st.selectbox("Select Timeframe", ["15m", "1h"], key="label_tf_select")
-    
-    # Configuration expander
-    with st.expander("🔧 Trailing Stop Parameters", expanded=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Trailing Stop %**")
-            trailing_pct = st.slider(
-                f"Trailing Stop ({selected_tf})",
-                min_value=0.5,
-                max_value=5.0,
-                value=1.5 if selected_tf == '15m' else 2.5,
-                step=0.1,
-                format="%.1f%%",
-                key="trailing_pct"
-            )
-            
-            max_bars = st.slider(
-                f"Max Bars ({selected_tf})",
-                min_value=12,
-                max_value=96,
-                value=48 if selected_tf == '15m' else 24,
-                key="max_bars"
-            )
-        
-        with col2:
-            st.markdown("**Cost & Penalty**")
-            time_penalty = st.slider(
-                "Time Penalty λ",
-                min_value=0.0001,
-                max_value=0.01,
-                value=0.001,
-                step=0.0001,
-                format="%.4f",
-                key="time_penalty"
-            )
-            
-            trading_cost = st.slider(
-                "Trading Cost",
-                min_value=0.0,
-                max_value=0.005,
-                value=0.001,
-                step=0.0001,
-                format="%.4f",
-                key="trading_cost"
-            )
-        
-        # Show formula
-        st.markdown("---")
-        st.markdown("**Score Formula:**")
-        st.code("score = R - λ*log(1+D) - costs", language="text")
-        st.caption("Where R = realized return, D = bars held, λ = time penalty")
-    
-    # === ACTION BUTTONS ===
+    # === SINGLE ACTION BUTTON ===
     st.divider()
     
-    col1, col2 = st.columns(2)
+    if st.button("🏷️ Generate Labels", use_container_width=True, type="primary"):
+        st.session_state['start_labeling'] = True
     
-    with col1:
-        if st.button("🏷️ Generate Labels", use_container_width=True, type="primary"):
-            st.session_state['start_labeling'] = True
-    
-    with col2:
-        if st.button("📊 View Statistics", use_container_width=True, type="secondary"):
-            st.session_state['show_label_stats'] = True
-    
-    # === LABELING PROCESS ===
+    # === RUN LABELING ===
     if st.session_state.get('start_labeling'):
         st.divider()
-        st.markdown(f"#### 🔄 Generating Labels ({selected_tf})")
-        
-        # Create config
-        config = TrailingLabelConfig()
-        if selected_tf == '15m':
-            config.trailing_stop_pct_15m = trailing_pct / 100
-            config.max_bars_15m = max_bars
-        else:
-            config.trailing_stop_pct_1h = trailing_pct / 100
-            config.max_bars_1h = max_bars
-        config.time_penalty_lambda = time_penalty
-        config.trading_cost = trading_cost
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        def update_progress(current, total, symbol):
-            progress_bar.progress(current / total)
-            status_text.text(f"Processing {current}/{total}: {symbol.replace('/USDT:USDT', '')}")
-        
-        success, message = run_labeling_pipeline(selected_tf, config, update_progress)
-        
-        if success:
-            st.success(f"✅ {message}")
-            st.cache_data.clear()
-        else:
-            st.error(f"❌ {message}")
-        
+        run_labeling_process(config, symbols_15m, symbols_1h)
         st.session_state['start_labeling'] = False
     
-    # === STATISTICS ===
-    if st.session_state.get('show_label_stats'):
+    # === AUTO SECTIONS (only if labels exist) ===
+    st.divider()
+    labels_exist = render_status_section()
+    
+    if labels_exist:
+        # GLOBAL LABEL QUALITY ANALYSIS
         st.divider()
-        st.markdown(f"#### 📊 Label Statistics ({selected_tf})")
+        st.markdown("#### 🎯 Global Label Quality Analysis")
+        st.caption("Aggregated analysis across ALL symbols and timeframes - reactive to your data")
         
-        stats = get_label_statistics(selected_tf)
+        with st.expander("📊 View Deep Dive Quality Analysis", expanded=False):
+            try:
+                from .labeling_analysis import render_label_quality_analysis
+                render_label_quality_analysis()
+            except Exception as e:
+                st.error(f"Error loading quality analysis: {e}")
+                import traceback
+                st.code(traceback.format_exc())
         
-        if stats:
-            # Main metrics
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Samples", f"{stats['total_samples']:,}")
-            c2.metric("Avg Score (Long)", f"{stats['avg_score_long']:.5f}")
-            c3.metric("Avg Score (Short)", f"{stats['avg_score_short']:.5f}")
-            c4.metric("% Positive (Long)", f"{stats['pct_positive_long']:.1f}%")
-            
-            # Detailed metrics
-            st.markdown("---")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**LONG Labels:**")
-                st.write(f"- Avg Return: {stats['avg_return_long']:.2f}%")
-                st.write(f"- Avg Bars Held: {stats['avg_bars_long']:.1f}")
-                st.write(f"- Trailing Exits: {stats['trailing_exits_long']:,}")
-                st.write(f"- Time Exits: {stats['time_exits_long']:,}")
-            
-            with col2:
-                st.markdown("**SHORT Labels:**")
-                st.write(f"- Avg Return: {stats['avg_return_short']:.2f}%")
-                st.write(f"- Avg Bars Held: {stats['avg_bars_short']:.1f}")
-                st.write(f"- % Positive: {stats['pct_positive_short']:.1f}%")
-        else:
-            st.warning("No label statistics available. Generate labels first.")
+        # Symbol/Timeframe Selector
+        st.divider()
+        selected_symbol, selected_tf = render_symbol_timeframe_selector()
         
-        if st.button("Close Statistics"):
-            st.session_state['show_label_stats'] = False
-            st.rerun()
+        if selected_symbol:
+            # Statistics
+            st.divider()
+            render_statistics_section(selected_tf)
+            
+            # Labels Table Preview
+            st.divider()
+            render_labels_table_preview(selected_symbol, selected_tf)
+            
+            # Analysis Dashboard
+            st.divider()
+            render_analysis_dashboard(selected_symbol, selected_tf)
+            
+            # Stability Report
+            st.divider()
+            render_stability_report(selected_symbol, selected_tf)
+            
+            # Visualizer
+            st.divider()
+            render_visualizer(selected_symbol, selected_tf)
 
 
 __all__ = ['render_labeling_step']
