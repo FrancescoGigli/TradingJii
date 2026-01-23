@@ -13,6 +13,8 @@ import streamlit as st
 import pandas as pd
 from typing import Optional
 
+from styles.tables import render_html_table
+
 from ai.optimizer.trailing_optimizer import (
     TrailingStopOptimizer,
     TrailingOptimizationResult,
@@ -335,10 +337,9 @@ def _render_ranking_table_native(results, max_rows: int = 10):
         })
     
     df = pd.DataFrame(data)
-    df = df.set_index("Rank")
     
-    # Display using st.table (same as xgb_models.py)
-    st.table(df)
+    # Display using styled HTML table (dark theme compatible)
+    render_html_table(df, height=400)
 
 
 def _display_optimization_results(result: TrailingOptimizationResult, symbol_name: str):
@@ -482,7 +483,7 @@ def _display_optimization_results(result: TrailingOptimizationResult, symbol_nam
         # Show DataFrame
         df_results = result.to_dataframe()
         if not df_results.empty:
-            st.table(df_results.head(50))  # Limit to 50 rows for performance
+            render_html_table(df_results.head(50), height=500)  # Limit to 50 rows
             
             # Download button
             csv = df_results.to_csv(index=False)

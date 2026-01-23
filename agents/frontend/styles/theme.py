@@ -494,6 +494,62 @@ def _generate_css() -> str:
     }}
     
     /* ═══════════════════════════════════════════════════════════════════════════
+       MARKDOWN TABLES - GLOBAL DARK THEME (for st.markdown HTML tables)
+       ═══════════════════════════════════════════════════════════════════════════ */
+    
+    /* All HTML tables from st.markdown with unsafe_allow_html=True */
+    .stMarkdown table,
+    .element-container table,
+    div[data-testid="stMarkdownContainer"] table {{
+        background: {bg_s} !important;
+        background-color: {bg_s} !important;
+        border-collapse: collapse !important;
+        width: 100% !important;
+        border: 1px solid {border} !important;
+        border-radius: 8px !important;
+    }}
+    
+    .stMarkdown table th,
+    .element-container table th,
+    div[data-testid="stMarkdownContainer"] table th {{
+        background: {bg_t} !important;
+        background-color: {bg_t} !important;
+        color: {cyan} !important;
+        padding: 12px 16px !important;
+        text-align: left !important;
+        border-bottom: 2px solid {border} !important;
+        font-weight: 600 !important;
+    }}
+    
+    .stMarkdown table td,
+    .element-container table td,
+    div[data-testid="stMarkdownContainer"] table td {{
+        background: {bg_s} !important;
+        background-color: {bg_s} !important;
+        color: {text_s} !important;
+        padding: 10px 16px !important;
+        border-bottom: 1px solid {rgba(cyan, 0.1)} !important;
+    }}
+    
+    .stMarkdown table tr:hover td,
+    .element-container table tr:hover td,
+    div[data-testid="stMarkdownContainer"] table tr:hover td {{
+        background: {rgba(cyan, 0.1)} !important;
+        background-color: {rgba(cyan, 0.1)} !important;
+    }}
+    
+    /* Code blocks inside tables */
+    .stMarkdown table code,
+    .element-container table code,
+    div[data-testid="stMarkdownContainer"] table code {{
+        background: {rgba(cyan, 0.15)} !important;
+        color: {cyan} !important;
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+        font-family: 'Courier New', monospace !important;
+    }}
+    
+    /* ═══════════════════════════════════════════════════════════════════════════
        MULTISELECT - DARK THEME WITH CYAN TAGS
        ═══════════════════════════════════════════════════════════════════════════ */
     

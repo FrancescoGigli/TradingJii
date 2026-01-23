@@ -158,7 +158,7 @@ def create_training_labels_table():
 
 
 def create_xgb_training_view():
-    """Create VIEW v_xgb_training for XGBoost training - only uses existing columns"""
+    """Create VIEW v_xgb_training for XGBoost training - includes ALL 21 features"""
     conn = get_connection()
     if not conn:
         return False
@@ -167,13 +167,22 @@ def create_xgb_training_view():
         
         cur.execute('DROP VIEW IF EXISTS v_xgb_training')
         
-        # Use only basic columns that definitely exist
+        # Include ALL 21 features: 5 OHLCV + 16 technical indicators
         cur.execute('''
             CREATE VIEW v_xgb_training AS
             SELECT
                 d.symbol, d.timeframe, d.timestamp,
+                -- OHLCV (5 features)
                 d.open, d.high, d.low, d.close, d.volume,
-                d.rsi, d.atr, d.macd,
+                -- Moving Averages (4 features)
+                d.sma_20, d.sma_50, d.ema_12, d.ema_26,
+                -- Bollinger Bands (3 features)
+                d.bb_upper, d.bb_middle, d.bb_lower,
+                -- Momentum indicators (4 features)
+                d.rsi, d.macd, d.macd_signal, d.macd_hist,
+                -- Other indicators (5 features)
+                d.atr, d.adx, d.cci, d.willr, d.obv,
+                -- Labels
                 l.score_long, l.score_short,
                 l.realized_return_long, l.realized_return_short,
                 l.mfe_long, l.mfe_short, l.mae_long, l.mae_short,

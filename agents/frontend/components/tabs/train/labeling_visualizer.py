@@ -13,6 +13,7 @@ from plotly.subplots import make_subplots
 from typing import Optional
 import logging
 from database import get_connection
+from styles.tables import render_html_table
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +351,7 @@ def render_visualizer_ui(ohlcv_df: pd.DataFrame = None, labels_df: pd.DataFrame 
         available = [c for c in cols_to_show if c in df.columns]
         display_df = df.tail(20)[available]
         display_df = display_df.round(5)
-        st.dataframe(display_df, use_container_width=True)
+        render_html_table(display_df.reset_index(), height=400)
 
 
 def render_quick_preview(ohlcv_df: pd.DataFrame = None, labels_df: pd.DataFrame = None, timeframe: str = '15m'):

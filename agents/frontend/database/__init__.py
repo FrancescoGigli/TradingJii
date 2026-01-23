@@ -38,13 +38,14 @@ from .historical import (
     cleanup_no_data_errors,
 )
 
-# ML Labels functions
+# ML Labels functions (from modularized package)
 from .ml_labels import (
     create_ml_labels_table,
     save_ml_labels_to_db,
     get_ml_labels_stats,
     get_ml_labels_by_symbol,
     get_ml_labels,
+    get_training_labels,
     clear_ml_labels,
     get_ml_labels_table_schema,
     get_available_symbols_for_labels,

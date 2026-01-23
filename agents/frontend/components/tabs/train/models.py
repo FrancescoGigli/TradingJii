@@ -1,323 +1,555 @@
 """
-📊 Train Tab - Step 4: Models
+📊 Train Tab - Step 4: ML Models Dashboard
 
-View and manage trained models:
-- List all available models
-- View metrics and metadata
-- Compare versions
-- Delete old models
+Complete model viewer with:
+- Model summary with quality badge
+- Training analytics charts (optimization, metrics, precision@K)
+- Feature importance visualization
+- Saved AI analysis (from GPT-4o, no API call needed)
+- Real-time inference on last 200 candles
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import json
 from pathlib import Path
-from datetime import datetime
 import os
+from typing import Dict, Any, Optional
+
+from .models_inference import (
+    get_model_dir, load_model_for_timeframe,
+    get_realtime_symbols, fetch_realtime_data, compute_missing_indicators,
+    run_inference, create_inference_chart, PLOTLY_AVAILABLE
+)
+
+# Import training charts
+try:
+    from ai.visualizations.training_charts import (
+        create_dual_optimization_chart,
+        create_metrics_comparison,
+        create_precision_at_k_chart,
+        create_training_summary_card
+    )
+    import plotly.graph_objects as go
+    CHARTS_AVAILABLE = True
+except ImportError:
+    CHARTS_AVAILABLE = False
 
 
-def get_model_dir() -> Path:
-    """Get models directory path"""
-    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
-    
-    if Path(shared_path).exists():
-        model_dir = Path(shared_path) / "models"
-    else:
-        # Local development
-        base = Path(__file__).parent.parent.parent.parent.parent
-        model_dir = base / "shared" / "models"
-    
-    return model_dir
+# ============================================================
+# METADATA LOADING
+# ============================================================
 
-
-def get_available_models() -> list:
-    """Get list of available model versions"""
+def get_available_models_by_timeframe() -> dict:
+    """Get available models grouped by timeframe (15m, 1h) with full metadata."""
     model_dir = get_model_dir()
     
     if not model_dir.exists():
-        return []
+        return {'15m': None, '1h': None}
     
-    # Find all metadata files
-    metadata_files = list(model_dir.glob("metadata_*.json"))
+    models = {'15m': None, '1h': None}
     
-    models = []
-    for f in metadata_files:
-        if f.name == "metadata_latest.json":
-            continue
-        
-        try:
-            with open(f, 'r') as file:
-                meta = json.load(file)
-                
-                # Extract version from filename
-                version = f.stem.replace("metadata_", "")
-                
-                models.append({
-                    'version': version,
-                    'created_at': meta.get('created_at', ''),
-                    'timeframe': meta.get('timeframe', meta.get('timeframes', ['?'])),
-                    'n_features': meta.get('n_features', 0),
-                    'n_train': meta.get('n_train_samples', 0),
-                    'n_test': meta.get('n_test_samples', 0),
-                    'r2_long': meta.get('metrics_long', {}).get('test_r2', 0),
-                    'r2_short': meta.get('metrics_short', {}).get('test_r2', 0),
-                    'spearman_long': meta.get('metrics_long', {}).get('ranking', {}).get('spearman_corr', 
-                                     meta.get('metrics_long', {}).get('test_spearman', 0)),
-                    'spearman_short': meta.get('metrics_short', {}).get('ranking', {}).get('spearman_corr',
-                                      meta.get('metrics_short', {}).get('test_spearman', 0)),
-                    'is_optuna': 'optuna' in version.lower(),
-                    'file_path': str(f)
-                })
-        except Exception as e:
-            continue
-    
-    # Sort by creation date (newest first)
-    models.sort(key=lambda x: x['created_at'], reverse=True)
+    for tf in ['15m', '1h']:
+        metadata_path = model_dir / f"metadata_{tf}_latest.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r') as f:
+                    models[tf] = json.load(f)
+            except Exception:
+                continue
     
     return models
 
 
-def load_model_metadata(version: str) -> dict:
-    """Load full metadata for a specific version"""
-    model_dir = get_model_dir()
-    metadata_path = model_dir / f"metadata_{version}.json"
-    
-    if not metadata_path.exists():
-        return {}
-    
-    try:
-        with open(metadata_path, 'r') as f:
-            return json.load(f)
-    except:
-        return {}
+# ============================================================
+# RENDERING COMPONENTS
+# ============================================================
 
-
-def delete_model(version: str) -> bool:
-    """Delete a model version"""
-    model_dir = get_model_dir()
+def _render_model_summary(models: dict):
+    """Render model summary for 15m and 1h with tabs."""
+    st.markdown("#### 📋 Trained Models")
     
-    files_to_delete = [
-        f"model_long_{version}.pkl",
-        f"model_short_{version}.pkl",
-        f"scaler_{version}.pkl",
-        f"metadata_{version}.json"
-    ]
+    available_tfs = [tf for tf in ['15m', '1h'] if models[tf] is not None]
     
-    try:
-        for filename in files_to_delete:
-            file_path = model_dir / filename
-            if file_path.exists():
-                file_path.unlink()
-        return True
-    except Exception as e:
-        return False
-
-
-def render_models_step():
-    """Render Step 4: Model viewer"""
-    
-    st.markdown("### 📊 Step 4: Models")
-    st.caption("View and manage trained XGBoost models")
-    
-    # Get available models
-    models = get_available_models()
-    
-    if not models:
-        st.warning("⚠️ **No trained models found!**")
-        st.info("Complete **Step 3 (Training)** first to train a model.")
+    if not available_tfs:
+        st.warning("⚠️ **No trained models found.** Complete Step 3 (Training) first.")
         return
     
-    # === MODELS LIST ===
-    st.markdown("#### 📋 Available Models")
+    # Create tabs for each timeframe
+    tabs = st.tabs([f"{'🔵' if tf == '15m' else '🟢'} {tf.upper()} Model" for tf in available_tfs])
     
-    # Create summary table
-    df_models = pd.DataFrame(models)
-    df_display = df_models[['version', 'created_at', 'timeframe', 'n_features', 
-                            'r2_long', 'spearman_long', 'is_optuna']].copy()
+    for idx, tf in enumerate(available_tfs):
+        with tabs[idx]:
+            meta = models[tf]
+            _render_single_model_summary(meta, tf)
+
+
+def _render_single_model_summary(meta: Dict[str, Any], tf: str):
+    """Render summary for a single timeframe model."""
+    if not meta:
+        return
     
-    # Format columns
-    df_display['created_at'] = df_display['created_at'].str[:19]
-    df_display['r2_long'] = df_display['r2_long'].apply(lambda x: f"{x:.4f}")
-    df_display['spearman_long'] = df_display['spearman_long'].apply(lambda x: f"{x:.4f}")
-    df_display['is_optuna'] = df_display['is_optuna'].apply(lambda x: "🔮 Optuna" if x else "⚙️ Manual")
+    # Summary card
+    if CHARTS_AVAILABLE:
+        result_dict = {
+            'success': True,
+            'timeframe': tf,
+            'version': meta.get('version', 'Unknown'),
+            'metrics_long': meta.get('metrics_long', {}),
+            'metrics_short': meta.get('metrics_short', {}),
+            'n_features': meta.get('n_features', 0),
+            'n_train': meta.get('n_train_samples', 0),
+            'n_test': meta.get('n_test_samples', 0),
+            'n_trials': meta.get('n_trials', 0),
+            'error': ''
+        }
+        summary_html = create_training_summary_card(result_dict, tf)
+        st.markdown(summary_html, unsafe_allow_html=True)
     
-    df_display.columns = ['Version', 'Created', 'Timeframe', 'Features', 'R² (Long)', 'Spearman', 'Type']
+    # Quick stats
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("📊 Features", meta.get('n_features', 0))
+    col2.metric("📚 Train", f"{meta.get('n_train_samples', 0):,}")
+    col3.metric("🧪 Test", f"{meta.get('n_test_samples', 0):,}")
+    col4.metric("🎯 Trials", meta.get('n_trials', 0))
     
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
-    
-    st.caption(f"Total: {len(models)} model(s)")
-    
-    # === MODEL DETAILS ===
+    # Training date and version
+    created_at = meta.get('created_at', 'Unknown')
+    version = meta.get('version', 'Unknown')
+    st.caption(f"📅 Trained: `{created_at[:19].replace('T', ' ')}` | Version: `{version[:20]}...`")
+
+
+def _render_training_analytics(models: dict):
+    """Render training analytics section with charts."""
     st.divider()
-    st.markdown("#### 🔍 Model Details")
+    st.markdown("#### 📈 Training Analytics")
     
-    # Select model
-    version_options = [m['version'] for m in models]
-    selected_version = st.selectbox(
-        "Select Model Version",
-        version_options,
-        key="model_version_select"
+    available_tfs = [tf for tf in ['15m', '1h'] if models[tf] is not None]
+    
+    if not available_tfs:
+        return
+    
+    # Timeframe selector
+    selected_tf = st.selectbox(
+        "Select Model", 
+        available_tfs, 
+        format_func=lambda x: f"{'🔵' if x == '15m' else '🟢'} {x.upper()} Model",
+        key="analytics_tf"
     )
     
-    if selected_version:
-        metadata = load_model_metadata(selected_version)
+    meta = models[selected_tf]
+    if not meta:
+        return
+    
+    # Metrics comparison charts
+    metrics_long = meta.get('metrics_long', {})
+    metrics_short = meta.get('metrics_short', {})
+    
+    if CHARTS_AVAILABLE and metrics_long and metrics_short:
+        col1, col2 = st.columns(2)
         
-        if metadata:
-            # Header info
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Version", selected_version[:15] + "...")
-            col2.metric("Created", metadata.get('created_at', '')[:10])
-            
-            tf = metadata.get('timeframe', metadata.get('timeframes', '?'))
-            if isinstance(tf, list):
-                tf = ', '.join(tf)
-            col3.metric("Timeframe", tf)
-            
-            # Training info
+        with col1:
+            fig = create_metrics_comparison(metrics_long, metrics_short)
+            st.plotly_chart(fig, use_container_width=True, key=f"metrics_comp_{selected_tf}")
+        
+        with col2:
+            fig = create_precision_at_k_chart(metrics_long, metrics_short)
+            st.plotly_chart(fig, use_container_width=True, key=f"precision_k_{selected_tf}")
+    
+    # Optimization history
+    trials_long = meta.get('trials_long', [])
+    trials_short = meta.get('trials_short', [])
+    
+    if CHARTS_AVAILABLE and trials_long and trials_short:
+        st.markdown("##### 🔄 Optimization History")
+        fig = create_dual_optimization_chart(trials_long, trials_short)
+        st.plotly_chart(fig, use_container_width=True, key=f"opt_history_{selected_tf}")
+
+
+def _render_feature_importance(models: dict):
+    """Render feature importance charts."""
+    st.divider()
+    st.markdown("#### 🔬 Feature Importance")
+    
+    available_tfs = [tf for tf in ['15m', '1h'] if models[tf] is not None]
+    
+    if not available_tfs:
+        return
+    
+    selected_tf = st.selectbox(
+        "Select Model", 
+        available_tfs,
+        format_func=lambda x: f"{'🔵' if x == '15m' else '🟢'} {x.upper()} Model",
+        key="importance_tf"
+    )
+    
+    meta = models[selected_tf]
+    if not meta:
+        return
+    
+    fi_long = meta.get('feature_importance_long', {})
+    fi_short = meta.get('feature_importance_short', {})
+    
+    if not fi_long and not fi_short:
+        st.info("⚠️ Feature importance not available. Re-train the model to generate it.")
+        return
+    
+    if CHARTS_AVAILABLE and fi_long and fi_short:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig = _create_feature_importance_chart(fi_long, "LONG Model")
+            st.plotly_chart(fig, use_container_width=True, key=f"fi_long_{selected_tf}")
+        
+        with col2:
+            fig = _create_feature_importance_chart(fi_short, "SHORT Model")
+            st.plotly_chart(fig, use_container_width=True, key=f"fi_short_{selected_tf}")
+    
+    # Feature list in expander
+    features = meta.get('feature_names', [])
+    if features:
+        with st.expander(f"📋 Features List ({len(features)} total)"):
+            st.write(", ".join(features))
+
+
+def _create_feature_importance_chart(importance: Dict[str, float], title: str) -> 'go.Figure':
+    """Create feature importance bar chart."""
+    if not CHARTS_AVAILABLE:
+        return None
+    
+    # Sort by importance
+    sorted_items = sorted(importance.items(), key=lambda x: x[1], reverse=True)
+    features = [x[0] for x in sorted_items[:15]]  # Top 15
+    values = [x[1] for x in sorted_items[:15]]
+    
+    # Colors
+    colors = {
+        'primary': '#00ffff',
+        'secondary': '#ff6b6b',
+        'background': '#0a0a1a',
+        'card': '#1a1a2e',
+        'text': '#e0e0ff',
+        'grid': '#2a2a4a'
+    }
+    
+    color = colors['primary'] if 'LONG' in title else colors['secondary']
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        y=features[::-1],
+        x=values[::-1],
+        orientation='h',
+        marker_color=color,
+        text=[f'{v:.3f}' for v in values[::-1]],
+        textposition='outside'
+    ))
+    
+    fig.update_layout(
+        title=dict(text=f"📊 {title}", font=dict(size=14, color=colors['text'])),
+        plot_bgcolor=colors['card'],
+        paper_bgcolor=colors['background'],
+        font=dict(color=colors['text']),
+        xaxis=dict(gridcolor=colors['grid'], title="Importance"),
+        yaxis=dict(gridcolor=colors['grid']),
+        height=400,
+        margin=dict(l=120, r=60)
+    )
+    
+    return fig
+
+
+def _render_ai_analysis(models: dict):
+    """Render saved AI analysis from metadata."""
+    st.divider()
+    st.markdown("#### 🤖 AI Analysis")
+    st.caption("Pre-computed analysis from training (no API call needed)")
+    
+    available_tfs = [tf for tf in ['15m', '1h'] if models[tf] is not None]
+    
+    if not available_tfs:
+        return
+    
+    # Check if any model has AI analysis
+    has_analysis = any(
+        models[tf].get('ai_analysis') is not None 
+        for tf in available_tfs
+    )
+    
+    if not has_analysis:
+        st.info("⚠️ No AI analysis saved. Enable AI Analysis during training to generate it.")
+        return
+    
+    for tf in available_tfs:
+        analysis = models[tf].get('ai_analysis')
+        if analysis:
+            st.markdown(f"##### {'🔵' if tf == '15m' else '🟢'} {tf.upper()} Analysis")
+            _render_analysis_card(analysis)
             st.markdown("---")
-            st.markdown("**📈 Training Overview:**")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Features", metadata.get('n_features', 0))
-            c2.metric("Train Samples", f"{metadata.get('n_train_samples', 0):,}")
-            c3.metric("Test Samples", f"{metadata.get('n_test_samples', 0):,}")
-            c4.metric("Train Ratio", f"{metadata.get('train_ratio', 0.8)*100:.0f}%")
-            
-            # Data range
-            data_range = metadata.get('data_range', {})
-            if data_range:
-                st.markdown("---")
-                st.markdown("**📅 Data Range:**")
-                
-                c1, c2 = st.columns(2)
-                c1.write(f"**Train:** {data_range.get('train_start', '')[:10]} → {data_range.get('train_end', '')[:10]}")
-                c2.write(f"**Test:** {data_range.get('test_start', '')[:10]} → {data_range.get('test_end', '')[:10]}")
-            
-            # Metrics
-            st.markdown("---")
-            st.markdown("**📊 Model Metrics:**")
-            
-            metrics_long = metadata.get('metrics_long', {})
-            metrics_short = metadata.get('metrics_short', {})
-            
+
+
+def _render_analysis_card(analysis: Dict[str, Any]):
+    """Render AI analysis as HTML card."""
+    rating_colors = {
+        'excellent': ('#4ade80', 'Excellent'),
+        'good': ('#fbbf24', 'Good'),
+        'acceptable': ('#f97316', 'Acceptable'),
+        'poor': ('#ff6b6b', 'Poor')
+    }
+    
+    rating = analysis.get('quality_rating', 'unknown')
+    emoji = analysis.get('quality_emoji', '⚪')
+    color, label = rating_colors.get(rating, ('#888', 'Unknown'))
+    
+    strengths = analysis.get('strengths', [])
+    weaknesses = analysis.get('weaknesses', [])
+    recommendations = analysis.get('recommendations', [])
+    summary = analysis.get('summary', '')
+    comparison = analysis.get('comparison_note', '')
+    
+    strengths_html = ''.join([f"<li style='color: #4ade80;'>✅ {s}</li>" for s in strengths])
+    weaknesses_html = ''.join([f"<li style='color: #ff6b6b;'>⚠️ {w}</li>" for w in weaknesses])
+    recommendations_html = ''.join([f"<li style='color: #00ffff;'>💡 {r}</li>" for r in recommendations])
+    
+    html = f"""
+    <div style="
+        background: linear-gradient(135deg, #1a1a2e, #2a2a4a);
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid {color};
+        color: white;
+    ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <span style="font-size: 14px; color: #e0e0ff;">{summary}</span>
+            <span style="
+                background: {color};
+                color: black;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-weight: bold;
+            ">{emoji} {label}</span>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px;">
+            <div>
+                <h4 style="color: #4ade80; margin: 0 0 10px 0;">Strengths</h4>
+                <ul style="margin: 0; padding-left: 20px; font-size: 13px;">{strengths_html}</ul>
+            </div>
+            <div>
+                <h4 style="color: #ff6b6b; margin: 0 0 10px 0;">Weaknesses</h4>
+                <ul style="margin: 0; padding-left: 20px; font-size: 13px;">{weaknesses_html}</ul>
+            </div>
+        </div>
+        
+        <div style="margin-top: 15px;">
+            <h4 style="color: #00ffff; margin: 0 0 10px 0;">Recommendations</h4>
+            <ul style="margin: 0; padding-left: 20px; font-size: 13px;">{recommendations_html}</ul>
+        </div>
+        
+        {f'<div style="margin-top: 15px; padding: 10px; background: rgba(0,255,255,0.1); border-radius: 8px;"><strong>📊 Comparison:</strong> {comparison}</div>' if comparison else ''}
+    </div>
+    """
+    
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _render_model_details(models: dict):
+    """Render detailed model parameters section."""
+    st.divider()
+    
+    with st.expander("🛠️ Model Details & Parameters"):
+        available_tfs = [tf for tf in ['15m', '1h'] if models[tf] is not None]
+        
+        if not available_tfs:
+            st.info("No models available")
+            return
+        
+        selected_tf = st.selectbox(
+            "Select Model", 
+            available_tfs,
+            format_func=lambda x: f"{x.upper()} Model",
+            key="details_tf"
+        )
+        
+        meta = models[selected_tf]
+        if not meta:
+            return
+        
+        # Data range
+        data_range = meta.get('data_range', {})
+        if data_range:
+            st.markdown("**📊 Data Range:**")
+            st.markdown(f"""
+            - Train: `{data_range.get('train_start', 'N/A')[:10]}` → `{data_range.get('train_end', 'N/A')[:10]}`
+            - Test: `{data_range.get('test_start', 'N/A')[:10]}` → `{data_range.get('test_end', 'N/A')[:10]}`
+            """)
+        
+        # XGBoost parameters
+        params_long = meta.get('best_params_long', {})
+        params_short = meta.get('best_params_short', {})
+        
+        if params_long or params_short:
+            st.markdown("**⚙️ XGBoost Parameters:**")
             col1, col2 = st.columns(2)
             
             with col1:
                 st.markdown("**LONG Model:**")
-                
-                # Regression metrics
-                r2 = metrics_long.get('test_r2', 0)
-                rmse = metrics_long.get('test_rmse', 0)
-                mae = metrics_long.get('test_mae', metrics_long.get('test_rmse', 0))
-                
-                st.write(f"- R²: **{r2:.4f}**")
-                st.write(f"- RMSE: **{rmse:.6f}**")
-                st.write(f"- MAE: **{mae:.6f}**")
-                
-                # Ranking metrics
-                ranking = metrics_long.get('ranking', {})
-                if ranking:
-                    st.write(f"- Spearman: **{ranking.get('spearman_corr', 0):.4f}**")
-                elif 'test_spearman' in metrics_long:
-                    st.write(f"- Spearman: **{metrics_long['test_spearman']:.4f}**")
+                for k in ['n_estimators', 'max_depth', 'learning_rate', 'subsample']:
+                    if k in params_long:
+                        st.write(f"- {k}: `{params_long[k]}`")
             
             with col2:
                 st.markdown("**SHORT Model:**")
-                
-                r2 = metrics_short.get('test_r2', 0)
-                rmse = metrics_short.get('test_rmse', 0)
-                mae = metrics_short.get('test_mae', metrics_short.get('test_rmse', 0))
-                
-                st.write(f"- R²: **{r2:.4f}**")
-                st.write(f"- RMSE: **{rmse:.6f}**")
-                st.write(f"- MAE: **{mae:.6f}**")
-                
-                ranking = metrics_short.get('ranking', {})
-                if ranking:
-                    st.write(f"- Spearman: **{ranking.get('spearman_corr', 0):.4f}**")
-                elif 'test_spearman' in metrics_short:
-                    st.write(f"- Spearman: **{metrics_short['test_spearman']:.4f}**")
-            
-            # Precision@K Analysis
-            ranking_long = metrics_long.get('ranking', {})
-            if ranking_long:
-                st.markdown("---")
-                st.markdown("**🎯 Precision@K (LONG):**")
-                
-                prec_data = []
-                for k in [1, 5, 10, 20]:
-                    avg_key = f'top{k}pct_avg_score'
-                    pos_key = f'top{k}pct_positive'
-                    
-                    if avg_key in ranking_long:
-                        prec_data.append({
-                            'Top K%': f"{k}%",
-                            'Avg Score': f"{ranking_long[avg_key]:.5f}",
-                            '% Positive': f"{ranking_long.get(pos_key, 0):.1f}%"
-                        })
-                
-                if prec_data:
-                    st.dataframe(pd.DataFrame(prec_data), use_container_width=True, hide_index=True)
-            
-            # XGBoost Parameters
-            xgb_params = metadata.get('xgboost_params', metadata.get('best_params_long', {}))
-            if xgb_params:
-                with st.expander("⚙️ XGBoost Parameters"):
-                    # Filter out non-param keys
-                    param_keys = ['n_estimators', 'max_depth', 'learning_rate', 'min_child_weight',
-                                  'subsample', 'colsample_bytree', 'reg_alpha', 'reg_lambda']
-                    
-                    for key in param_keys:
-                        if key in xgb_params:
-                            st.write(f"- {key}: **{xgb_params[key]}**")
-            
-            # Feature list
-            features = metadata.get('feature_names', [])
-            if features:
-                with st.expander(f"📋 Features ({len(features)})"):
-                    st.write(", ".join(features))
-            
-            # Model files
-            with st.expander("📁 Model Files"):
-                model_dir = get_model_dir()
-                files = [
-                    f"model_long_{selected_version}.pkl",
-                    f"model_short_{selected_version}.pkl",
-                    f"scaler_{selected_version}.pkl",
-                    f"metadata_{selected_version}.json"
-                ]
-                
-                for f in files:
-                    fpath = model_dir / f
-                    if fpath.exists():
-                        size_kb = fpath.stat().st_size / 1024
-                        st.write(f"✅ `{f}` ({size_kb:.1f} KB)")
-                    else:
-                        st.write(f"❌ `{f}` (missing)")
-            
-            # Delete button
-            st.markdown("---")
-            
-            if st.button("🗑️ Delete This Model", type="secondary", use_container_width=True):
-                st.session_state['confirm_delete'] = selected_version
-            
-            if st.session_state.get('confirm_delete') == selected_version:
-                st.warning(f"⚠️ Are you sure you want to delete version `{selected_version}`?")
-                
-                c1, c2 = st.columns(2)
-                if c1.button("✅ Yes, Delete", type="primary"):
-                    if delete_model(selected_version):
-                        st.success("✅ Model deleted!")
-                        st.session_state['confirm_delete'] = None
-                        st.rerun()
-                    else:
-                        st.error("❌ Failed to delete model")
-                
-                if c2.button("❌ Cancel"):
-                    st.session_state['confirm_delete'] = None
-                    st.rerun()
-        else:
-            st.error("❌ Could not load metadata for this version")
+                for k in ['n_estimators', 'max_depth', 'learning_rate', 'subsample']:
+                    if k in params_short:
+                        st.write(f"- {k}: `{params_short[k]}`")
+
+
+def _render_inference_section(models: dict):
+    """Render real-time inference section."""
+    st.divider()
+    st.markdown("#### 🔮 Real-Time Inference")
+    st.caption("Run predictions on the last 200 candles from real-time data")
+    
+    available_tfs = [tf for tf in ['15m', '1h'] if models[tf] is not None]
+    
+    if not available_tfs:
+        st.error("❌ No models available for inference")
+        return
+    
+    # Controls
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        symbols = get_realtime_symbols()
+        if not symbols:
+            for tf in available_tfs:
+                if models[tf] and models[tf].get('symbols'):
+                    symbols = models[tf]['symbols']
+                    break
+        
+        if not symbols:
+            st.error("No symbols found in database")
+            return
+        
+        symbol_map = {s.replace('/USDT:USDT', '').replace('USDT', ''): s for s in symbols}
+        symbol_names = list(symbol_map.keys())[:50]
+        
+        selected_name = st.selectbox("🪙 Select Coin", symbol_names, key="inf_sym")
+        selected_symbol = symbol_map[selected_name]
+    
+    with col2:
+        inference_tf = st.selectbox("⏱️ Timeframe", available_tfs, key="inf_tf")
+    
+    with col3:
+        num_candles = st.selectbox("🕯️ Candles", [100, 150, 200, 300], index=2, key="inf_candles")
+    
+    model_info = models[inference_tf]
+    st.info(f"📦 Model: **{model_info.get('version', 'Unknown')[:20]}...** ({model_info.get('n_features', 0)} features)")
+    
+    # Run inference
+    if st.button("🚀 Run Inference", use_container_width=True, type="primary", key="run_inf"):
+        _execute_inference(selected_symbol, selected_name, inference_tf, num_candles, model_info)
+
+
+def _execute_inference(symbol: str, name: str, tf: str, candles: int, model_info: dict):
+    """Execute and display inference results."""
+    with st.spinner("Fetching data and running inference..."):
+        model_long, model_short, scaler, metadata = load_model_for_timeframe(tf)
+        
+        if model_long is None:
+            st.error(f"❌ Could not load model for {tf}")
+            return
+        
+        feature_names = metadata.get('feature_names', [])
+        df = fetch_realtime_data(symbol, tf, candles + 50)
+        
+        if df.empty:
+            st.error("❌ No data available for this selection")
+            return
+        
+        st.success(f"✅ Fetched {len(df)} candles")
+        
+        df = compute_missing_indicators(df)
+        df_pred = run_inference(df, model_long, model_short, scaler, feature_names)
+        df_pred = df_pred.tail(candles)
+        
+        # Latest predictions
+        st.markdown("##### 🎯 Latest Predictions")
+        
+        latest = df_pred.iloc[-1]
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("💰 Price", f"${latest['close']:,.4f}")
+        with col2:
+            long_score = latest['pred_long_norm']
+            color = "🟢" if long_score > 30 else "🔴" if long_score < -30 else "⚪"
+            st.metric(f"{color} LONG", f"{long_score:.1f}")
+        with col3:
+            short_score = latest['pred_short_norm']
+            color = "🔴" if short_score > 30 else "🟢" if short_score < -30 else "⚪"
+            st.metric(f"{color} SHORT", f"{short_score:.1f}")
+        with col4:
+            if long_score > 50:
+                signal = "🚀 STRONG LONG"
+            elif long_score > 30:
+                signal = "📈 LONG"
+            elif short_score > 50:
+                signal = "🔻 STRONG SHORT"
+            elif short_score > 30:
+                signal = "📉 SHORT"
+            else:
+                signal = "⏸️ NEUTRAL"
+            st.metric("Signal", signal)
+        
+        # Chart
+        st.markdown("##### 📊 Inference Chart")
+        fig = create_inference_chart(df_pred, name, tf)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Statistics
+        with st.expander("📈 Score Statistics"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**LONG Scores:**")
+                st.write(f"- Mean: {df_pred['pred_long_norm'].mean():.2f}")
+                st.write(f"- Max: {df_pred['pred_long_norm'].max():.2f}")
+                st.write(f"- % Positive: {(df_pred['pred_long_norm'] > 0).mean()*100:.1f}%")
+            with col2:
+                st.markdown("**SHORT Scores:**")
+                st.write(f"- Mean: {df_pred['pred_short_norm'].mean():.2f}")
+                st.write(f"- Max: {df_pred['pred_short_norm'].max():.2f}")
+                st.write(f"- % Positive: {(df_pred['pred_short_norm'] > 0).mean()*100:.1f}%")
+
+
+# ============================================================
+# MAIN ENTRY POINT
+# ============================================================
+
+def render_models_step():
+    """Render Step 4: Complete ML Models Dashboard."""
+    
+    st.markdown("### 📊 Step 4: ML Models")
+    st.caption("View trained models, analytics, feature importance, and run real-time inference")
+    
+    models = get_available_models_by_timeframe()
+    
+    if models['15m'] is None and models['1h'] is None:
+        st.warning("⚠️ **No trained models found!**")
+        st.info("Complete **Step 3 (Training)** first to train a model.")
+        st.caption(f"Looking in: `{get_model_dir()}`")
+        return
+    
+    # Render all sections
+    _render_model_summary(models)
+    _render_training_analytics(models)
+    _render_feature_importance(models)
+    _render_ai_analysis(models)
+    _render_model_details(models)
+    _render_inference_section(models)
 
 
 __all__ = ['render_models_step']

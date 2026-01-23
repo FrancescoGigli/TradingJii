@@ -29,6 +29,13 @@ from .components import (
 # Theme injection
 from .theme import inject_theme
 
+# HTML Tables (dark theme compatible)
+from .tables import (
+    render_html_table,
+    render_metrics_table,
+    render_ranking_table
+)
+
 __all__ = [
     # Colors
     'PALETTE',
@@ -49,4 +56,8 @@ __all__ = [
     'get_signal_color',
     # Theme
     'inject_theme',
+    # Tables (HTML)
+    'render_html_table',
+    'render_metrics_table',
+    'render_ranking_table',
 ]

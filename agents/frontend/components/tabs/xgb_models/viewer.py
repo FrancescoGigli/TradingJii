@@ -15,6 +15,8 @@ import plotly.graph_objects as go
 import shutil
 from pathlib import Path
 
+from styles.tables import render_html_table
+
 from .utils import (
     MODELS_DIR, load_metadata, get_available_models, 
     get_signal_quality, format_date, format_version, is_optuna_model
@@ -248,8 +250,7 @@ def _render_regression_metrics(metadata: dict):
     
     if regression_data:
         df_regression = pd.DataFrame(regression_data)
-        df_regression = df_regression.set_index(['Metric', 'Split'])
-        st.table(df_regression)
+        render_html_table(df_regression, height=250)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -331,8 +332,7 @@ def _render_precision_analysis(metadata: dict):
         })
     
     df_precision = pd.DataFrame(precision_rows)
-    df_precision = df_precision.set_index('Top K%')
-    st.table(df_precision)
+    render_html_table(df_precision, height=200)
     
     # Visualization
     st.markdown("#### 📈 Top K% Average Score Comparison")
@@ -446,8 +446,7 @@ def _render_complete_summary(metadata: dict):
         })
     
     df_summary = pd.DataFrame(summary_rows)
-    df_summary = df_summary.set_index(['Category', 'Metric'])
-    st.table(df_summary)
+    render_html_table(df_summary, height=500)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -490,8 +489,7 @@ def _render_features_list(metadata: dict):
     
     if feature_rows:
         df_features = pd.DataFrame(feature_rows)
-        df_features = df_features.set_index('Category')
-        st.table(df_features)
+        render_html_table(df_features, height=300)
     
     # Full feature list
     with st.expander("🔍 View All Features"):
@@ -526,8 +524,7 @@ def _render_model_files(selected_version: str):
     
     if model_files:
         df_files = pd.DataFrame(model_files)
-        df_files = df_files.set_index('File')
-        st.table(df_files)
+        render_html_table(df_files, height=200)
     else:
         st.info("No model files found for this version")
     
@@ -577,8 +574,7 @@ def _render_parameters(metadata: dict):
                 })
             
             df_params = pd.DataFrame(params_rows)
-            df_params = df_params.set_index('Parameter')
-            st.table(df_params)
+            render_html_table(df_params, height=300)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
