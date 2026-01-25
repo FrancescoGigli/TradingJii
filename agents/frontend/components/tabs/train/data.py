@@ -24,8 +24,13 @@ from database import (
     check_backfill_running,
     clear_historical_data,
     retry_failed_downloads,
-    cleanup_no_data_errors
+    cleanup_no_data_errors,
+    get_training_data_stats,
+    EXPECTED_FEATURE_COUNT
 )
+
+# Data model display component
+from .data_model_display import render_step_data_model
 
 
 # === CACHED FUNCTIONS ===
@@ -67,6 +72,9 @@ def render_data_step():
         </p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # === DATA MODEL DISPLAY ===
+    render_step_data_model('step1_data')
     
     # === DATE RANGE SELECTION ===
     st.markdown("""
@@ -213,6 +221,31 @@ def render_overview_metrics():
         st.caption(f"🎯 **Download Target:** {start_date} → {end_date} | 📊 **DB Actual:** {min_d} → {max_d} | 🔄 Auto-refresh 10s")
     else:
         st.caption(f"📅 **Data in DB:** {min_d} → {max_d} | 🔄 Auto-refresh every 10s")
+    
+    # === FEATURE REMINDER BOX ===
+    feature_stats = get_training_data_stats()
+    if feature_stats.get('exists'):
+        feat_count = feature_stats.get('feature_count', 0)
+        expected = EXPECTED_FEATURE_COUNT
+        is_ok = feat_count >= expected - 5
+        
+        status_icon = "✅" if is_ok else "⚠️"
+        color = "#00d4aa" if is_ok else "#ffaa00"
+        
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+                    padding: 12px 16px; border-radius: 8px; margin: 10px 0;
+                    border-left: 4px solid {color};">
+            <span style="font-size: 14px; color: {color}; font-weight: bold;">
+                {status_icon} Phase 1 Output: <code style="background: #333; padding: 2px 6px; border-radius: 4px;">training_data</code>
+            </span>
+            <span style="color: #888; margin-left: 15px;">
+                📊 <b>{feat_count}</b> features (expected: {expected}) | 
+                📁 {feature_stats.get('row_count', 0):,} rows | 
+                🪙 {feature_stats.get('symbol_count', 0)} symbols
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 @st.fragment(run_every="10s")

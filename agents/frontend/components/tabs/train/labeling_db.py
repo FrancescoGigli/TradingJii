@@ -158,7 +158,7 @@ def create_training_labels_table():
 
 
 def create_xgb_training_view():
-    """Create VIEW v_xgb_training for XGBoost training - includes ALL 21 features"""
+    """Create VIEW v_xgb_training for XGBoost training - includes ALL available features"""
     conn = get_connection()
     if not conn:
         return False
@@ -167,7 +167,8 @@ def create_xgb_training_view():
         
         cur.execute('DROP VIEW IF EXISTS v_xgb_training')
         
-        # Include ALL 21 features: 5 OHLCV + 16 technical indicators
+        # Include ALL available features from training_data (18 features)
+        # 5 OHLCV + 13 technical indicators actually available in database
         cur.execute('''
             CREATE VIEW v_xgb_training AS
             SELECT
@@ -176,12 +177,14 @@ def create_xgb_training_view():
                 d.open, d.high, d.low, d.close, d.volume,
                 -- Moving Averages (4 features)
                 d.sma_20, d.sma_50, d.ema_12, d.ema_26,
-                -- Bollinger Bands (3 features)
-                d.bb_upper, d.bb_middle, d.bb_lower,
+                -- Bollinger Bands (3 features) - bb_mid is the actual column name
+                d.bb_upper, d.bb_mid AS bb_middle, d.bb_lower,
                 -- Momentum indicators (4 features)
                 d.rsi, d.macd, d.macd_signal, d.macd_hist,
-                -- Other indicators (5 features)
-                d.atr, d.adx, d.cci, d.willr, d.obv,
+                -- Stochastic (2 features)
+                d.stoch_k, d.stoch_d,
+                -- Other indicators (3 features)
+                d.atr, d.volume_sma, d.obv,
                 -- Labels
                 l.score_long, l.score_short,
                 l.realized_return_long, l.realized_return_short,

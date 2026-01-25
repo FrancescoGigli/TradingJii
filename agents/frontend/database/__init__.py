@@ -61,6 +61,18 @@ from .explorer import (
     ML_LABELS_EXAMPLE_QUERIES,
 )
 
+# Feature statistics (for pipeline feature count reminders)
+from .feature_stats import (
+    EXPECTED_FEATURES,
+    EXPECTED_FEATURE_COUNT,
+    get_table_columns,
+    get_training_data_stats,
+    get_training_labels_stats,
+    get_xgb_view_stats,
+    get_pipeline_feature_summary,
+    format_feature_reminder,
+)
+
 # Export all
 __all__ = [
     # Connection
@@ -109,4 +121,14 @@ __all__ = [
     # Explorer
     'execute_custom_query',
     'ML_LABELS_EXAMPLE_QUERIES',
+    
+    # Feature Statistics
+    'EXPECTED_FEATURES',
+    'EXPECTED_FEATURE_COUNT',
+    'get_table_columns',
+    'get_training_data_stats',
+    'get_training_labels_stats',
+    'get_xgb_view_stats',
+    'get_pipeline_feature_summary',
+    'format_feature_reminder',
 ]

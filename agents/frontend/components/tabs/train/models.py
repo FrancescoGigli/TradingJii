@@ -23,6 +23,12 @@ from .models_inference import (
     run_inference, create_inference_chart, PLOTLY_AVAILABLE
 )
 
+# Import feature stats for reminder
+from database import EXPECTED_FEATURE_COUNT
+
+# Data model display component
+from .data_model_display import render_step_data_model
+
 # Import training charts
 try:
     from ai.visualizations.training_charts import (
@@ -118,6 +124,39 @@ def _render_single_model_summary(meta: Dict[str, Any], tf: str):
     created_at = meta.get('created_at', 'Unknown')
     version = meta.get('version', 'Unknown')
     st.caption(f"📅 Trained: `{created_at[:19].replace('T', ' ')}` | Version: `{version[:20]}...`")
+    
+    # === FEATURE REMINDER BOX (Phase 4 Output) ===
+    n_features = meta.get('n_features', 0)
+    expected = EXPECTED_FEATURE_COUNT
+    is_ok = n_features >= expected - 5
+    
+    status_icon = "✅" if is_ok else "⚠️"
+    color = "#00d4aa" if is_ok else "#ffaa00"
+    
+    feature_names = meta.get('feature_names', [])
+    features_list = ", ".join(feature_names[:10])
+    if len(feature_names) > 10:
+        features_list += f", ... +{len(feature_names)-10} more"
+    
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+                padding: 12px 16px; border-radius: 8px; margin: 10px 0;
+                border-left: 4px solid {color};">
+        <span style="font-size: 14px; color: {color}; font-weight: bold;">
+            {status_icon} Phase 4: Model trained with <code style="background: #333; padding: 2px 6px; border-radius: 4px;">{n_features}</code> features
+        </span>
+        <span style="color: #888; margin-left: 15px;">
+            (expected: {expected})
+        </span>
+        <div style="color: #666; font-size: 12px; margin-top: 6px;">
+            📊 <b>Features:</b> {features_list}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Warning if fewer features than expected
+    if n_features < expected - 5:
+        st.warning(f"⚠️ Model trained with only **{n_features}** features. Re-generate labels (Phase 2) and re-train (Phase 3) for **{expected}** features!")
 
 
 def _render_training_analytics(models: dict):
@@ -535,6 +574,9 @@ def render_models_step():
     st.markdown("### 📊 Step 4: ML Models")
     st.caption("View trained models, analytics, feature importance, and run real-time inference")
     
+    # === DATA MODEL DISPLAY ===
+    render_step_data_model('step4_models')
+    
     models = get_available_models_by_timeframe()
     
     if models['15m'] is None and models['1h'] is None:
@@ -544,12 +586,24 @@ def render_models_step():
         return
     
     # Render all sections
+    # Model summary - always show (lightweight)
     _render_model_summary(models)
-    _render_training_analytics(models)
-    _render_feature_importance(models)
-    _render_ai_analysis(models)
-    _render_model_details(models)
-    _render_inference_section(models)
+    
+    # Heavy sections wrapped in expanders for lazy loading
+    with st.expander("📈 Training Analytics (Charts)", expanded=False):
+        _render_training_analytics(models)
+    
+    with st.expander("🔬 Feature Importance", expanded=False):
+        _render_feature_importance(models)
+    
+    with st.expander("🤖 AI Analysis", expanded=False):
+        _render_ai_analysis(models)
+    
+    with st.expander("🛠️ Model Details & Parameters", expanded=False):
+        _render_model_details(models)
+    
+    with st.expander("🔮 Real-Time Inference", expanded=False):
+        _render_inference_section(models)
 
 
 __all__ = ['render_models_step']

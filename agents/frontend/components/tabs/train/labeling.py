@@ -47,6 +47,13 @@ from .labeling_db import (
     get_label_statistics
 )
 
+# Import feature stats
+from database import (
+    get_training_labels_stats as get_training_labels_stats_full,
+    get_xgb_view_stats,
+    EXPECTED_FEATURE_COUNT
+)
+
 # Import pipeline
 from .labeling_pipeline import run_labeling_pipeline_both
 
@@ -55,6 +62,9 @@ from .labeling_table import render_labels_table_preview
 
 # Import visualizer
 from .labeling_visualizer import get_available_symbols_with_labels
+
+# Data model display component
+from .data_model_display import render_step_data_model
 
 
 def render_status_section() -> bool:
@@ -76,6 +86,37 @@ def render_status_section() -> bool:
             col3.metric("Rows", f"{data['total_rows']:,}")
             col4.metric("Avg Score (Long)", f"{data['avg_score_long']:.4f}" if data['avg_score_long'] else "N/A")
         st.success("✅ Training labels exist")
+        
+        # === FEATURE REMINDER BOX (Phase 2 Output) ===
+        view_stats = get_xgb_view_stats()
+        if view_stats.get('exists'):
+            feat_count = view_stats.get('feature_count', 0)
+            expected = EXPECTED_FEATURE_COUNT
+            is_ok = feat_count >= expected - 5
+            missing = view_stats.get('missing_features', [])
+            
+            status_icon = "✅" if is_ok else "⚠️"
+            color = "#00d4aa" if is_ok else "#ffaa00"
+            
+            missing_text = f" | ⚠️ Missing: {', '.join(missing)}" if missing else ""
+            
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+                        padding: 12px 16px; border-radius: 8px; margin: 10px 0;
+                        border-left: 4px solid {color};">
+                <span style="font-size: 14px; color: {color}; font-weight: bold;">
+                    {status_icon} Phase 2 Output: <code style="background: #333; padding: 2px 6px; border-radius: 4px;">v_xgb_training</code> (VIEW)
+                </span>
+                <span style="color: #888; margin-left: 15px;">
+                    📊 <b>{feat_count}</b> features (expected: {expected}) | 
+                    🏷️ {len(view_stats.get('label_columns', []))} label columns | 
+                    📁 {view_stats.get('row_count', 0):,} joinable rows{missing_text}
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning(f"⚠️ View v_xgb_training not found: {view_stats.get('error', 'Unknown')}")
+        
         return True
     else:
         st.warning("⚠️ No training labels generated yet")
@@ -329,6 +370,9 @@ def render_labeling_step():
     st.markdown("### 🏷️ Step 2: Labeling (ATR-Based)")
     st.caption("Generate training labels using ATR-based Trailing Stop simulation")
     
+    # === DATA MODEL DISPLAY ===
+    render_step_data_model('step2_labeling')
+    
     # === CHECK PREREQUISITES ===
     symbols_15m = get_training_features_symbols('15m')
     symbols_1h = get_training_features_symbols('1h')
@@ -386,25 +430,26 @@ def render_labeling_step():
         selected_symbol, selected_tf = render_symbol_timeframe_selector()
         
         if selected_symbol:
-            # Statistics
+            # Statistics (lightweight - always show)
             st.divider()
             render_statistics_section(selected_tf)
             
-            # Labels Table Preview
+            # Labels Table Preview (wrapped in expander for lazy loading)
             st.divider()
-            render_labels_table_preview(selected_symbol, selected_tf)
+            with st.expander("📋 Labels Table Preview", expanded=False):
+                render_labels_table_preview(selected_symbol, selected_tf)
             
-            # Analysis Dashboard
-            st.divider()
-            render_analysis_dashboard(selected_symbol, selected_tf)
+            # Analysis Dashboard (12 charts - wrapped for lazy loading)
+            with st.expander("📈 Analysis Dashboard (12 charts)", expanded=False):
+                render_analysis_dashboard(selected_symbol, selected_tf)
             
-            # Stability Report
-            st.divider()
-            render_stability_report(selected_symbol, selected_tf)
+            # Stability Report (wrapped for lazy loading)
+            with st.expander("🔍 Stability Report", expanded=False):
+                render_stability_report(selected_symbol, selected_tf)
             
-            # Visualizer
-            st.divider()
-            render_visualizer(selected_symbol, selected_tf)
+            # Visualizer (heavy candlestick chart - wrapped for lazy loading)
+            with st.expander("👁️ Candlestick Visualizer", expanded=False):
+                render_visualizer(selected_symbol, selected_tf)
 
 
 __all__ = ['render_labeling_step']

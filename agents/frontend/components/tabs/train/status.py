@@ -15,6 +15,7 @@ from datetime import datetime
 from database import get_connection
 
 
+@st.cache_data(ttl=60)
 def get_pipeline_status() -> dict:
     """Get status of all pipeline steps"""
     status = {
