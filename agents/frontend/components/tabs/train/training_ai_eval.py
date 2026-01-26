@@ -10,45 +10,11 @@ Uses OpenAI GPT-4o to analyze training results and provide:
 
 import streamlit as st
 import json
-from pathlib import Path
 from typing import Dict, Any, Optional
-import os
 
-
-# Color scheme (dark theme)
-COLORS = {
-    'primary': '#00ffff',
-    'secondary': '#ff6b6b',
-    'success': '#4ade80',
-    'warning': '#fbbf24',
-    'info': '#60a5fa',
-    'background': '#0d1117',
-    'card': '#1e2130',
-    'text': '#e0e0ff',
-    'muted': '#9ca3af',
-    'border': '#2d3748'
-}
-
-
-def _get_models_dir() -> Path:
-    """Get the models directory path."""
-    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
-    return Path(shared_path) / "models"
-
-
-def _load_metadata(timeframe: str) -> Optional[Dict[str, Any]]:
-    """Load metadata for a specific timeframe."""
-    models_dir = _get_models_dir()
-    metadata_path = models_dir / f"metadata_{timeframe}_latest.json"
-    
-    if not metadata_path.exists():
-        return None
-    
-    try:
-        with open(metadata_path, 'r') as f:
-            return json.load(f)
-    except Exception:
-        return None
+# Import from shared modules (centralized, no duplication)
+from .shared import COLORS
+from .shared.model_loader import load_metadata
 
 
 def render_ai_evaluation_section():
@@ -57,8 +23,8 @@ def render_ai_evaluation_section():
     st.caption("Get AI-powered analysis of your model's training quality")
     
     # Check if any model exists
-    meta_15m = _load_metadata('15m')
-    meta_1h = _load_metadata('1h')
+    meta_15m = load_metadata('15m')
+    meta_1h = load_metadata('1h')
     
     if not meta_15m and not meta_1h:
         st.info("⚠️ No trained models found. Train a model first to get AI evaluation.")

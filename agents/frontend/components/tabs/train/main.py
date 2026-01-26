@@ -16,7 +16,6 @@ from .training import render_training_step
 from .models import render_models_step
 from .status import render_pipeline_status
 from .explorer import render_training_explorer
-from .training_results import render_training_results_dashboard
 
 
 def render_train_tab():
@@ -64,17 +63,13 @@ def render_train_tab():
     st.divider()
     
     # === SUB-TABS ===
-    tab_results, tab_data, tab_labeling, tab_training, tab_models, tab_explorer = st.tabs([
-        "📊 Results",
+    tab_data, tab_labeling, tab_training, tab_models, tab_explorer = st.tabs([
         "📂 1. Data",
         "🏷️ 2. Labeling",
         "🚀 3. Training",
         "📈 4. Models",
         "🗄️ 5. Explorer"
     ])
-    
-    with tab_results:
-        render_training_results_dashboard()
     
     with tab_data:
         render_data_step()

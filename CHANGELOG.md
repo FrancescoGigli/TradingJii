@@ -1,5 +1,160 @@
 # Changelog
 
+## [2026-01-26] v2.3.1 - UI Cleanup & Refactoring Plan
+
+### Removed
+- **`status.py`**: Removed "Validation Checklist" section from ML Pipeline Status
+  - Removed 4 disabled checkbox validations (data volume, labels, model exists, model quality)
+  - Removed success/info messages at the end
+  - Kept only the 3 status cards and detailed status expander
+
+### Added
+- **`docs/modules/TABS_REFACTORING_PLAN.md`**: Comprehensive analysis of tab structure
+  - Documents all 3 main tabs and their components
+  - Identifies 4 critical duplications in ML/Training tab
+  - Provides detailed action plan with priorities
+  - Lists files needing modification vs files OK
+
+### Identified Duplications (for future refactoring)
+| Duplication | Files Affected |
+|-------------|----------------|
+| `_get_models_dir()` | training_model_details.py, training_io_tables.py (should use shared/model_loader.py) |
+| `COLORS` dict | 4+ files (should use shared/colors.py) |
+| Model metadata loading | 3 files (should use shared/model_loader.py) |
+| Step 3 vs Step 4 overlap | training_model_details.py duplicates models.py functionality |
+
+---
+
+## [2026-01-26] v2.3.0 - ML Tab Refactoring & Dead Code Removal
+
+### Removed
+- **DELETED `labeling_optuna.py`**: Dead code, never imported anywhere
+- **DELETED `training_results.py`** (~600 lines): 
+  - Was a duplicate of `models.py` functionality
+  - Both showed feature importance, metrics, AI analysis, BTC inference
+  - Removed to eliminate confusion and code duplication
+
+### Added
+- **New shared modules** (`components/tabs/train/shared/`):
+  - `__init__.py`: Module exports
+  - `model_loader.py`: Centralized model path and metadata loading
+    - `get_model_dir()`: Get models directory path
+    - `load_metadata()`: Load model metadata for a timeframe
+    - `get_available_models()`: Get all available models
+    - `model_exists()`: Check if model exists
+    - `get_available_timeframes()`: Get list of trained timeframes
+  - `colors.py`: Centralized dark theme color scheme
+    - `COLORS`: Main color dictionary
+    - `RATING_COLORS`: AI analysis quality badge colors
+    - `SIGNAL_COLORS`: Trading signal colors
+
+### Changed
+- **`main.py`**: Removed "Results" tab (was duplicate of "Models")
+  - Reduced from 6 sub-tabs to 5 sub-tabs
+  - New structure: Data → Labeling → Training → Models → Explorer
+
+- **`training_ai_eval.py`**: Refactored to use shared modules
+  - Removed duplicated `COLORS` dict (now imports from `shared.colors`)
+  - Removed duplicated `_get_models_dir()` and `_load_metadata()` (now imports from `shared.model_loader`)
+  - Reduced file size by ~50 lines
+
+- **`training_btc_inference.py`**: Refactored to use shared modules
+  - Removed duplicated `COLORS` dict (now imports from `shared.colors`)
+  - Removed duplicated `_get_models_dir()` (now imports from `shared.model_loader`)
+  - Reduced file size by ~35 lines
+
+### Technical Details
+**Before (Duplicated code):**
+```
+training_results.py:  ~600 lines (DELETED)
+training_ai_eval.py:  ~320 lines → ~270 lines
+training_btc_inference.py: ~300 lines → ~265 lines
+labeling_optuna.py:   ~200 lines (DELETED - never used)
+```
+
+**Shared modules created:**
+```
+train/shared/
+├── __init__.py      (~15 lines)
+├── model_loader.py  (~85 lines)
+└── colors.py        (~65 lines)
+```
+
+**Total lines removed:** ~1,100+ lines of dead/duplicated code
+
+---
+
+## [2026-01-26] v2.2.0 - Tab Restructuring & Consolidation
+
+### Changed
+- **App reduced from 4 tabs to 3 tabs**:
+  - Removed separate "Charts" tab
+  - Merged Charts content into "Top 100 Coins" tab
+  - New tab structure: `Top 100 Coins` | `Test` | `Backtest` | `ML`
+
+- **Removed "Crypto Dashboard Pro" header** from app.py
+  - Cleaner interface without redundant branding
+
+- **Top Coins tab modularized** (`components/tabs/top_coins/`):
+  | File | Content | Lines |
+  |------|---------|-------|
+  | `__init__.py` | Re-exports | ~10 |
+  | `main.py` | Entry point | ~30 |
+  | `coins_table.py` | Top 100 list + volume chart | ~85 |
+  | `analysis.py` | Coin analysis (from Charts) | ~210 |
+  | `styles.py` | CSS for tables | ~100 |
+
+### Removed
+- **DELETED `components/tabs/top_coins.py`** (~300 lines):
+  - Content split into `top_coins/` package modules
+  - XGB Market Scanner removed (unused feature)
+
+- **DELETED `components/tabs/analysis.py`** (~200 lines):
+  - Content moved to `top_coins/analysis.py`
+  - Integrated into Top 100 Coins tab
+
+### Current Tab Structure (Clean)
+| Tab | Directory | Status |
+|-----|-----------|--------|
+| 📊 Top 100 Coins | `top_coins/` | ✅ Active (includes analysis) |
+| 🔄 Test | `backtest/` | ✅ Active |
+| 🎓 ML | `train/` | ✅ Active |
+
+---
+
+## [2026-01-26] v2.1.3 - Dead Code Removal & Project Cleanup
+
+### Removed
+- **DELETED `components/tabs/xgb_models/` directory** (5 files, ~850+ lines of dead code):
+  - `__init__.py` - Module exports (never imported)
+  - `main.py` - Tab renderer (never called)
+  - `training.py` - Training UI (~400 lines, duplicate of train/training.py)
+  - `viewer.py` - Model viewer (~400 lines, duplicate of train/models.py)
+  - `utils.py` - Utility functions
+
+- **DELETED `components/tabs/train/model_viewer.py`** (~400 lines of dead code):
+  - Never imported anywhere in the codebase
+  - Duplicate functionality of `models.py` which is actively used
+  - Contained: `render_model_viewer()`, metrics tables, feature importance charts
+  
+### Analysis Summary
+The `xgb_models/` directory was identified as completely unused:
+- **Not imported in `app.py`** - The main app only uses 4 tabs: Top, Charts, Test, ML
+- **ML tab** uses `train/` directory which has its own training and models views
+- `xgb_models/` was legacy code that was never integrated or was replaced by `train/`
+
+### Current Tab Structure (Clean)
+| Tab | File | Status |
+|-----|------|--------|
+| 📊 Top | `top_coins.py` | ✅ Active |
+| 📈 Charts | `analysis.py` | ✅ Active |
+| 🔄 Test | `backtest/main.py` | ✅ Active |
+| 🎓 ML | `train/main.py` | ✅ Active |
+
+**Sub-tabs removed**: `xgb_models/` (was dead code)
+
+---
+
 ## [2026-01-25] v2.1.2 - BTC Inference Real-Time Data Fix
 
 ### Fixed

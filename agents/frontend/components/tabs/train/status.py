@@ -236,39 +236,6 @@ def render_pipeline_status():
         else:
             st.warning("No model found")
     
-    # Validation checklist
-    st.divider()
-    st.markdown("### ✅ Validation Checklist")
-    
-    all_ok = True
-    
-    # Check 1: Data volume
-    data_ok = status['step1_data']['details'] and sum(d['rows'] for d in status['step1_data']['details'].values()) >= 10000
-    st.checkbox("Sufficient training data (≥10,000 rows)", value=data_ok, disabled=True)
-    all_ok = all_ok and data_ok
-    
-    # Check 2: Labels generated
-    labels_ok = status['step2_labels']['details'] and sum(d['rows'] for d in status['step2_labels']['details'].values()) >= 10000
-    st.checkbox("Labels generated (≥10,000 labels)", value=labels_ok, disabled=True)
-    all_ok = all_ok and labels_ok
-    
-    # Check 3: Model exists
-    model_exists = '✅' in status['step3_model']['status']
-    st.checkbox("Model trained and saved", value=model_exists, disabled=True)
-    all_ok = all_ok and model_exists
-    
-    # Check 4: Model quality
-    if status['step3_model']['details']:
-        spear = status['step3_model']['details'].get('spearman_long', 0)
-        quality_ok = spear > 0.05  # Soglia minima
-        st.checkbox(f"Model quality check (Spearman > 0.05)", value=quality_ok, disabled=True)
-        all_ok = all_ok and quality_ok
-    
-    if all_ok:
-        st.success("🎉 **Pipeline complete!** All checks passed.")
-    else:
-        st.info("⏳ Complete the remaining steps above.")
-    
     return status
 
 

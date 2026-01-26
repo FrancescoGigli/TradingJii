@@ -1,7 +1,13 @@
 """
-📊 Unified Analysis Tab for the Crypto Dashboard
-Combines: Advanced Charts + Volume Analysis + Technical Analysis
-Uses centralized colors and styled components
+Coin Analysis Component (formerly Charts tab).
+
+Displays:
+- Coin selector and timeframe
+- Price metrics
+- Advanced chart with indicators
+- Volume analysis
+- Technical analysis (RSI, MACD, BB)
+- Signal summary
 """
 
 import streamlit as st
@@ -18,40 +24,36 @@ from indicators import (
 )
 from utils import format_volume
 from styles import (
-    PALETTE, 
     SIGNAL_COLORS,
-    styled_table, 
+    styled_table,
     styled_signal_box,
-    get_signal_color
 )
 
-# Warmup period to skip for display (indicators need this many candles to calculate)
+# Warmup period for indicators calculation
 WARMUP_PERIOD = 50
 
 
-def render_analysis_tab():
-    """Render the unified Analysis tab with Chart, Volume Analysis, and Technical Analysis"""
+def render_analysis_section():
+    """Render the coin analysis section with charts and technical indicators."""
     
     # Get symbols ordered by volume
     symbols = get_symbols()
     if not symbols:
         st.warning("No data available")
-        st.stop()
+        return
     
     # Create symbol map (display name -> full symbol)
     symbol_map = {s.replace('/USDT:USDT', ''): s for s in symbols}
     
-    # ═══════════════════════════════════════════════════════════════════
-    # CONTROLS SECTION
-    # ═══════════════════════════════════════════════════════════════════
+    # === CONTROLS ===
     st.markdown("### 📊 Coin Analysis")
     
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
         selected_name = st.selectbox(
-            "🪙 Select Coin (ordered by volume)", 
-            list(symbol_map.keys()), 
+            "🪙 Select Coin (ordered by volume)",
+            list(symbol_map.keys()),
             key="analysis_coin"
         )
         selected_symbol = symbol_map[selected_name]
@@ -63,7 +65,12 @@ def render_analysis_tab():
         selected_tf = st.selectbox("⏱️ Timeframe", timeframes_sorted, key="analysis_tf")
     
     with col3:
-        num_candles = st.selectbox("🕯️ Candles", [50, 100, 150, 200], index=3, key="analysis_candles")
+        num_candles = st.selectbox(
+            "🕯️ Candles",
+            [50, 100, 150, 200],
+            index=3,
+            key="analysis_candles"
+        )
     
     # Load data with extra warmup
     total_candles_needed = num_candles + WARMUP_PERIOD
@@ -71,15 +78,16 @@ def render_analysis_tab():
     
     if df_full.empty:
         st.error("No data for this selection")
-        st.stop()
+        return
     
-    # ═══════════════════════════════════════════════════════════════════
-    # PRICE METRICS
-    # ═══════════════════════════════════════════════════════════════════
+    # === PRICE METRICS ===
     df_display = df_full.tail(num_candles).copy()
     
     price = df_display['close'].iloc[-1]
-    change = ((df_display['close'].iloc[-1] - df_display['close'].iloc[0]) / df_display['close'].iloc[0]) * 100
+    change = (
+        (df_display['close'].iloc[-1] - df_display['close'].iloc[0])
+        / df_display['close'].iloc[0]
+    ) * 100
     high = df_display['high'].max()
     low = df_display['low'].min()
     vol = df_display['volume'].sum()
@@ -94,17 +102,18 @@ def render_analysis_tab():
     
     st.markdown("---")
     
-    # ═══════════════════════════════════════════════════════════════════
-    # MAIN CHART SECTION
-    # ═══════════════════════════════════════════════════════════════════
+    # === MAIN CHART ===
     st.markdown("### 📈 Advanced Chart")
     
-    fig = create_advanced_chart(df_full, selected_symbol, show_indicators=True, warmup_skip=WARMUP_PERIOD)
+    fig = create_advanced_chart(
+        df_full,
+        selected_symbol,
+        show_indicators=True,
+        warmup_skip=WARMUP_PERIOD
+    )
     st.plotly_chart(fig, use_container_width=True)
     
-    # ═══════════════════════════════════════════════════════════════════
-    # VOLUME ANALYSIS SECTION
-    # ═══════════════════════════════════════════════════════════════════
+    # === VOLUME ANALYSIS ===
     st.markdown("---")
     st.markdown("### 📉 Volume Analysis")
     
@@ -131,9 +140,7 @@ def render_analysis_tab():
     fig_vol = create_volume_analysis_chart(df_display, selected_name)
     st.plotly_chart(fig_vol, use_container_width=True)
     
-    # ═══════════════════════════════════════════════════════════════════
-    # TECHNICAL ANALYSIS SECTION
-    # ═══════════════════════════════════════════════════════════════════
+    # === TECHNICAL ANALYSIS ===
     st.markdown("---")
     st.markdown("### 🔬 Technical Analysis")
     
@@ -143,14 +150,18 @@ def render_analysis_tab():
     upper_bb, sma_bb, lower_bb = calculate_bollinger_bands(df_full)
     atr = calculate_atr(df_full)
     
-    # Current values (last value)
+    # Current values
     st.markdown("#### 📊 Current Indicator Values")
     
     col1, col2, col3, col4 = st.columns(4)
     
     # RSI
     current_rsi = rsi.iloc[-1]
-    rsi_status = "Overbought 🔴" if current_rsi > 70 else "Oversold 🟢" if current_rsi < 30 else "Neutral ⚪"
+    rsi_status = (
+        "Overbought 🔴" if current_rsi > 70
+        else "Oversold 🟢" if current_rsi < 30
+        else "Neutral ⚪"
+    )
     col1.metric("RSI (14)", f"{current_rsi:.1f}", rsi_status)
     
     # MACD
@@ -164,13 +175,20 @@ def render_analysis_tab():
     col3.metric("ATR (14)", f"${current_atr:.2f}")
     
     # BB Position
-    bb_position = (current_price - lower_bb.iloc[-1]) / (upper_bb.iloc[-1] - lower_bb.iloc[-1]) * 100
-    bb_status = "Upper 🔴" if bb_position > 80 else "Lower 🟢" if bb_position < 20 else "Middle ⚪"
+    bb_position = (
+        (current_price - lower_bb.iloc[-1])
+        / (upper_bb.iloc[-1] - lower_bb.iloc[-1]) * 100
+    )
+    bb_status = (
+        "Upper 🔴" if bb_position > 80
+        else "Lower 🟢" if bb_position < 20
+        else "Middle ⚪"
+    )
     col4.metric("BB Position", f"{bb_position:.0f}%", bb_status)
     
     st.markdown("---")
     
-    # Signal Summary
+    # === SIGNAL SUMMARY ===
     st.markdown("#### 🎯 Signal Summary")
     
     signals = []
@@ -199,15 +217,13 @@ def render_analysis_tab():
     else:
         signals.append(("Bollinger", "NEUTRAL", SIGNAL_COLORS['neutral']))
     
-    # Display signals using styled components
+    # Display signals
     cols = st.columns(len(signals))
     for i, (indicator, signal, color) in enumerate(signals):
         with cols[i]:
             st.markdown(styled_signal_box(indicator, signal, color), unsafe_allow_html=True)
     
-    # ═══════════════════════════════════════════════════════════════════
-    # RECENT DATA TABLE (Expandable)
-    # ═══════════════════════════════════════════════════════════════════
+    # === RECENT DATA TABLE ===
     with st.expander("📋 Recent Data Table"):
         table = df_display.tail(20).iloc[::-1].copy()
         table.index = table.index.strftime('%Y-%m-%d %H:%M')
@@ -217,3 +233,6 @@ def render_analysis_tab():
         display_table = table.round(4).reset_index()
         display_table.columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Change %']
         st.markdown(styled_table(display_table), unsafe_allow_html=True)
+
+
+__all__ = ['render_analysis_section']

@@ -50,14 +50,12 @@ def render_portfolio_panel():
             with col1:
                 st.metric(
                     "💵 Total Balance",
-                    f"${balance.total_usdt:,.2f}",
-                    help="Total USDT balance on Bybit"
+                    f"${balance.total_usdt:,.2f}"
                 )
             with col2:
                 st.metric(
                     "🟢 Available",
-                    f"${balance.available_usdt:,.2f}",
-                    help="USDT available for trading"
+                    f"${balance.available_usdt:,.2f}"
                 )
             
             if balance.used_usdt > 0:

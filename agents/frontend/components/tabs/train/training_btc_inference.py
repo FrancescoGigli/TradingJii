@@ -8,10 +8,7 @@ Displays live inference on BTCUSDT with last 200 candles:
 """
 
 import streamlit as st
-import json
-from pathlib import Path
-from typing import Dict, Any, Optional
-import os
+from typing import Dict, Any
 import pandas as pd
 
 try:
@@ -32,39 +29,17 @@ try:
 except ImportError:
     MODELS_SERVICE_AVAILABLE = False
 
-
-# Color scheme (dark theme)
-COLORS = {
-    'primary': '#00ffff',
-    'secondary': '#ff6b6b',
-    'success': '#4ade80',
-    'warning': '#fbbf24',
-    'info': '#60a5fa',
-    'background': '#0d1117',
-    'card': '#1e2130',
-    'text': '#e0e0ff',
-    'muted': '#9ca3af',
-    'border': '#2d3748',
-    'long': '#00ffff',
-    'short': '#ff6b6b',
-    'bullish': '#4ade80',
-    'bearish': '#ff6b6b'
-}
-
-
-def _get_models_dir() -> Path:
-    """Get the models directory path."""
-    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
-    return Path(shared_path) / "models"
+# Import from shared modules (centralized, no duplication)
+from .shared import COLORS
+from .shared.colors import SIGNAL_COLORS
+from .shared.model_loader import model_exists as shared_model_exists
 
 
 def _check_model_exists(timeframe: str) -> bool:
     """Check if model exists for a timeframe."""
     if MODELS_SERVICE_AVAILABLE:
         return model_exists(timeframe)
-    
-    models_dir = _get_models_dir()
-    return (models_dir / f"model_long_{timeframe}_latest.pkl").exists()
+    return shared_model_exists(timeframe)
 
 
 def render_btc_inference_section():

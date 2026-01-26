@@ -2,6 +2,31 @@
 
 This document tracks the modularization of large files (>400 lines) to comply with the project's coding standards.
 
+## 🗑️ Dead Code Removed (2026-01-26)
+
+### `components/tabs/xgb_models/` - DELETED
+The entire `xgb_models/` directory was identified as **dead code** and removed:
+
+| File | Lines | Reason |
+|------|-------|--------|
+| `__init__.py` | ~20 | Never imported in app.py |
+| `main.py` | ~30 | Tab never registered |
+| `training.py` | ~400 | Duplicate of train/training.py |
+| `viewer.py` | ~400 | Duplicate of train/models.py |
+| `utils.py` | ~50 | Unused utilities |
+
+**Total removed**: ~900 lines of dead code
+
+### `components/tabs/train/model_viewer.py` - DELETED
+| File | Lines | Reason |
+|------|-------|--------|
+| `model_viewer.py` | ~400 | Never imported, duplicate of `models.py` |
+
+**Total removed**: ~400 lines of dead code
+
+---
+
+
 ## ✅ Completed Modularizations
 
 ### 1. labeling_analysis.py (1073 → ~250 lines each)
@@ -80,11 +105,12 @@ These files exceed 400 lines but are less critical:
 
 | File | Lines | Notes |
 |------|-------|-------|
-| `agents/frontend/services/ml_training_v2.py` | ~600 | Similar to ml_training.py |
 | `agents/frontend/ai/backtest/engine.py` | ~550 | Backtest engine |
 | `agents/frontend/components/tabs/train/labeling.py` | ~500 | Labeling UI |
 | `agents/frontend/services/market_scanner.py` | ~450 | Market scanner |
 | `agents/historical-data/core/validation.py` | ~420 | Data validation |
+
+> **Note:** `ml_training_v2.py` was removed in a previous cleanup.
 
 ---
 

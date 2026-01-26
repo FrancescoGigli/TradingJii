@@ -437,7 +437,6 @@ def render_sidebar():
     """Render the complete sidebar"""
     render_control_panel()
     render_portfolio_live()
-    render_trading_settings()
     render_refresh_button()
     render_update_list_button()
 
