@@ -310,7 +310,7 @@ def _render_xgb_chart(df_full, xgb_data, selected_name: str, threshold: float):
     """Render XGB-only chart"""
     from ai.visualizations.backtest_charts import create_xgb_chart
     xgb_fig = create_xgb_chart(df_full, xgb_data, selected_name, threshold)
-    st.plotly_chart(xgb_fig, use_container_width=True, key="xgb_chart")
+    st.plotly_chart(xgb_fig, width='stretch', key="xgb_chart")
 
 
 def _render_xgb_statistics(xgb_data, threshold: float):
@@ -378,7 +378,7 @@ def _display_simulation_results(xgb_sim_result, selected_name: str):
         
         # Create and display simulation chart
         xgb_sim_fig = create_xgb_simulation_chart(xgb_sim_result, selected_name)
-        st.plotly_chart(xgb_sim_fig, use_container_width=True, key="xgb_sim_chart")
+        st.plotly_chart(xgb_sim_fig, width='stretch', key="xgb_sim_chart")
         
         # Trade list
         if xgb_sim_result.trades:

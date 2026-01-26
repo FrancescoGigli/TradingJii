@@ -127,7 +127,7 @@ def render_backtest_tab():
     
     # Create and display technical backtest chart
     tech_backtest_fig = create_backtest_chart(result, settings['selected_name'], xgb_data=None, xgb_threshold=0)
-    st.plotly_chart(tech_backtest_fig, use_container_width=True, key="tech_chart")
+    st.plotly_chart(tech_backtest_fig, width='stretch', key="tech_chart")
     
     # ═══════════════════════════════════════════════════════════════════
     # XGB SECTION

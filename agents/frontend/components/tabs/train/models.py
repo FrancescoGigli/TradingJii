@@ -12,9 +12,6 @@ Complete model viewer with:
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
-import json
-from pathlib import Path
-import os
 from typing import Dict, Any, Optional
 
 from .models_inference import (
@@ -22,6 +19,10 @@ from .models_inference import (
     get_realtime_symbols, fetch_realtime_data, compute_missing_indicators,
     run_inference, create_inference_chart, PLOTLY_AVAILABLE
 )
+
+# Import from shared modules (centralized)
+from .shared import COLORS
+from .shared.model_loader import get_available_models
 
 # Import feature stats for reminder
 from database import EXPECTED_FEATURE_COUNT
@@ -41,31 +42,6 @@ try:
     CHARTS_AVAILABLE = True
 except ImportError:
     CHARTS_AVAILABLE = False
-
-
-# ============================================================
-# METADATA LOADING
-# ============================================================
-
-def get_available_models_by_timeframe() -> dict:
-    """Get available models grouped by timeframe (15m, 1h) with full metadata."""
-    model_dir = get_model_dir()
-    
-    if not model_dir.exists():
-        return {'15m': None, '1h': None}
-    
-    models = {'15m': None, '1h': None}
-    
-    for tf in ['15m', '1h']:
-        metadata_path = model_dir / f"metadata_{tf}_latest.json"
-        if metadata_path.exists():
-            try:
-                with open(metadata_path, 'r') as f:
-                    models[tf] = json.load(f)
-            except Exception:
-                continue
-    
-    return models
 
 
 # ============================================================
@@ -190,11 +166,11 @@ def _render_training_analytics(models: dict):
         
         with col1:
             fig = create_metrics_comparison(metrics_long, metrics_short)
-            st.plotly_chart(fig, use_container_width=True, key=f"metrics_comp_{selected_tf}")
+            st.plotly_chart(fig, width='stretch', key=f"metrics_comp_{selected_tf}")
         
         with col2:
             fig = create_precision_at_k_chart(metrics_long, metrics_short)
-            st.plotly_chart(fig, use_container_width=True, key=f"precision_k_{selected_tf}")
+            st.plotly_chart(fig, width='stretch', key=f"precision_k_{selected_tf}")
     
     # Optimization history
     trials_long = meta.get('trials_long', [])
@@ -203,7 +179,7 @@ def _render_training_analytics(models: dict):
     if CHARTS_AVAILABLE and trials_long and trials_short:
         st.markdown("##### 🔄 Optimization History")
         fig = create_dual_optimization_chart(trials_long, trials_short)
-        st.plotly_chart(fig, use_container_width=True, key=f"opt_history_{selected_tf}")
+        st.plotly_chart(fig, width='stretch', key=f"opt_history_{selected_tf}")
 
 
 def _render_feature_importance(models: dict):
@@ -239,11 +215,11 @@ def _render_feature_importance(models: dict):
         
         with col1:
             fig = _create_feature_importance_chart(fi_long, "LONG Model")
-            st.plotly_chart(fig, use_container_width=True, key=f"fi_long_{selected_tf}")
+            st.plotly_chart(fig, width='stretch', key=f"fi_long_{selected_tf}")
         
         with col2:
             fig = _create_feature_importance_chart(fi_short, "SHORT Model")
-            st.plotly_chart(fig, use_container_width=True, key=f"fi_short_{selected_tf}")
+            st.plotly_chart(fig, width='stretch', key=f"fi_short_{selected_tf}")
     
     # Feature list in expander
     features = meta.get('feature_names', [])
@@ -547,7 +523,7 @@ def _execute_inference(symbol: str, name: str, tf: str, candles: int, model_info
         st.markdown("##### 📊 Inference Chart")
         fig = create_inference_chart(df_pred, name, tf)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         
         # Statistics
         with st.expander("📈 Score Statistics"):
@@ -577,7 +553,8 @@ def render_models_step():
     # === DATA MODEL DISPLAY ===
     render_step_data_model('step4_models')
     
-    models = get_available_models_by_timeframe()
+    # Use centralized model loader
+    models = get_available_models()
     
     if models['15m'] is None and models['1h'] is None:
         st.warning("⚠️ **No trained models found!**")

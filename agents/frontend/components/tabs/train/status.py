@@ -1,10 +1,19 @@
-"""
-📊 Train Tab - Pipeline Status Dashboard
+"""agents.frontend.components.tabs.train.status
 
-Mostra lo stato di ogni step del pipeline con verifiche:
-- Step 1: Data - Verifica training_data
-- Step 2: Labeling - Verifica training_labels  
-- Step 3: Training - Verifica modelli salvati
+Purpose
+-------
+Render the Train tab "Pipeline Status" dashboard.
+
+What it shows
+-------------
+- Step 1: Data (training_data table)
+- Step 2: Labels (training_labels table)
+- Step 3: Models (presence of saved model artifacts + latest metadata)
+
+Notes
+-----
+This module intentionally keeps the overview lightweight. Detailed model
+metrics and charts live in the dedicated Models/Training sections.
 """
 
 import streamlit as st
@@ -13,6 +22,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 from database import get_connection
+
+from .shared.model_loader import get_model_dir
 
 
 @st.cache_data(ttl=60)
@@ -109,45 +120,46 @@ def get_pipeline_status() -> dict:
     except Exception as e:
         status['step1_data']['message'] = f'Error: {str(e)}'
     
-    # === STEP 3: Check models ===
-    import os
-    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
-    model_dir = Path(shared_path) / 'models'
-    
-    if not model_dir.exists():
-        model_dir = Path(__file__).parent.parent.parent.parent.parent / 'shared' / 'models'
-    
-    metadata_file = model_dir / 'metadata_latest.json'
-    
-    if metadata_file.exists():
+    # === STEP 3: Check models (presence + metadata info) ===
+    model_dir = get_model_dir()
+
+    metadata_latest = model_dir / 'metadata_latest.json'
+    if not metadata_latest.exists():
+        status['step3_model']['status'] = '❌'
+        status['step3_model']['message'] = 'No model metadata found'
+        return status
+
+    try:
+        meta = json.loads(metadata_latest.read_text(encoding='utf-8'))
+
+        created_at_raw = meta.get('created_at')
+        created_at_str = str(created_at_raw) if created_at_raw else 'Unknown'
         try:
-            with open(metadata_file) as f:
-                meta = json.load(f)
-            
-            r2_long = meta.get('metrics_long', {}).get('test_r2', 0)
-            r2_short = meta.get('metrics_short', {}).get('test_r2', 0)
-            spear_long = meta.get('metrics_long', {}).get('ranking', {}).get('spearman_corr', 0)
-            
-            if r2_long > 0 and spear_long > 0:
-                status['step3_model']['status'] = '✅'
-                status['step3_model']['message'] = f'Model v{meta.get("version", "?")}'
-            else:
-                status['step3_model']['status'] = '⚠️'
-                status['step3_model']['message'] = 'Model exists but metrics low'
-            
-            status['step3_model']['details'] = {
-                'version': meta.get('version'),
-                'timeframe': meta.get('timeframe'),
-                'n_features': meta.get('n_features'),
-                'n_train': meta.get('n_train_samples'),
-                'n_test': meta.get('n_test_samples'),
-                'r2_long': r2_long,
-                'r2_short': r2_short,
-                'spearman_long': spear_long,
-                'spearman_short': meta.get('metrics_short', {}).get('ranking', {}).get('spearman_corr', 0)
-            }
-        except:
+            created_at_dt = pd.to_datetime(created_at_raw)
+            created_at_str = created_at_dt.strftime('%Y-%m-%d %H:%M')
+        except Exception:
             pass
+
+        version = meta.get('version', 'Unknown')
+        timeframe = meta.get('timeframe', 'Unknown')
+        n_features = meta.get('n_features', 0)
+
+        status['step3_model']['status'] = '✅'
+        status['step3_model']['message'] = f"v{version} ({timeframe})"
+        status['step3_model']['details'] = {
+            'version': version,
+            'timeframe': timeframe,
+            'n_features': n_features,
+            'created_at': created_at_str,
+            'metadata_file': metadata_latest.name,
+        }
+    except Exception as e:
+        status['step3_model']['status'] = '⚠️'
+        status['step3_model']['message'] = 'Model metadata is not readable'
+        status['step3_model']['details'] = {
+            'metadata_file': metadata_latest.name,
+            'error': str(e),
+        }
     
     return status
 
@@ -222,17 +234,10 @@ def render_pipeline_status():
             c1, c2 = st.columns(2)
             c1.metric("Version", details3.get('version', 'N/A'))
             c2.metric("Features", details3.get('n_features', 0))
-            
+
             c1, c2 = st.columns(2)
-            c1.metric("Train Samples", f"{details3.get('n_train', 0):,}")
-            c2.metric("Test Samples", f"{details3.get('n_test', 0):,}")
-            
-            st.markdown("**Metrics:**")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("R² Long", f"{details3.get('r2_long', 0):.4f}")
-            col2.metric("R² Short", f"{details3.get('r2_short', 0):.4f}")
-            col3.metric("Spearman Long", f"{details3.get('spearman_long', 0):.4f}")
-            col4.metric("Spearman Short", f"{details3.get('spearman_short', 0):.4f}")
+            c1.metric("Created At", details3.get('created_at', 'N/A'))
+            c2.metric("Metadata File", details3.get('metadata_file', 'N/A'))
         else:
             st.warning("No model found")
     

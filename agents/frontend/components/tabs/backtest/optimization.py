@@ -420,7 +420,7 @@ def _display_optimization_results(result: TrailingOptimizationResult, symbol_nam
                     symbol=config_title,
                     show_trailing_stops=True
                 )
-                st.plotly_chart(trades_fig, use_container_width=True, key="best_config_trades_chart")
+                st.plotly_chart(trades_fig, width='stretch', key="best_config_trades_chart")
                 
                 # Trade summary
                 stats = best_sim_result.get_statistics()
@@ -445,7 +445,7 @@ def _display_optimization_results(result: TrailingOptimizationResult, symbol_nam
         top_results,
         title=f"Top {len(top_results)} Configurations - {symbol_name}"
     )
-    st.plotly_chart(equity_fig, use_container_width=True, key="equity_comparison")
+    st.plotly_chart(equity_fig, width='stretch', key="equity_comparison")
     
     # ═══════════════════════════════════════════════════════════════════
     # METRICS COMPARISON
@@ -457,7 +457,7 @@ def _display_optimization_results(result: TrailingOptimizationResult, symbol_nam
         top_results,
         title=f"Metrics Comparison - Top {len(top_results)}"
     )
-    st.plotly_chart(metrics_fig, use_container_width=True, key="metrics_comparison")
+    st.plotly_chart(metrics_fig, width='stretch', key="metrics_comparison")
     
     # ═══════════════════════════════════════════════════════════════════
     # RISK-RETURN SCATTER
@@ -466,7 +466,7 @@ def _display_optimization_results(result: TrailingOptimizationResult, symbol_nam
     st.markdown("#### 🎯 Risk-Return Analysis")
     
     summary_fig = create_optimization_summary_chart(result)
-    st.plotly_chart(summary_fig, use_container_width=True, key="risk_return_scatter")
+    st.plotly_chart(summary_fig, width='stretch', key="risk_return_scatter")
     
     # ═══════════════════════════════════════════════════════════════════
     # RANKING TABLE

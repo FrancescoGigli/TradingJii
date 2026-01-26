@@ -112,46 +112,33 @@ L'applicazione ha **3 tab principali** definite in `app.py`:
 
 ---
 
-## 🚨 DUPLICAZIONI CRITICHE IDENTIFICATE
+## ✅ DUPLICAZIONI RISOLTE (v2.3.2 - 2026-01-26)
 
-### 1. 🔴 `_get_models_dir()` - Duplicata 3 volte
-Questa funzione è definita in:
+### 1. ✅ `_get_models_dir()` - RISOLTO
 - `shared/model_loader.py` → `get_model_dir()` ✓ (fonte centrale)
-- `training_model_details.py` → `_get_models_dir()` ✗ DUPLICATO
-- `training_io_tables.py` → `_get_models_dir()` ✗ DUPLICATO
+- `training_model_details.py` → ✅ Ora usa `from .shared.model_loader import get_model_dir`
+- `training_io_tables.py` → ✅ Ora usa `from .shared.model_loader import get_model_dir`
 
-**Azione**: Rimuovere le duplicazioni, usare `from .shared.model_loader import get_model_dir`
-
-### 2. 🔴 `COLORS` - Duplicato 4+ volte
-Il dizionario COLORS è definito in:
+### 2. ✅ `COLORS` - RISOLTO
 - `shared/colors.py` → `COLORS` ✓ (fonte centrale)
-- `training_model_details.py` → `COLORS` ✗ DUPLICATO
-- `training_io_tables.py` → `COLORS` ✗ DUPLICATO  
-- `training_commands.py` → `COLORS` ✗ DUPLICATO
-- `models.py` → dentro funzioni ✗ DUPLICATO
+- `training_model_details.py` → ✅ Ora usa `from .shared import COLORS`
+- `training_io_tables.py` → ✅ Ora usa `from .shared import COLORS`
+- `training_commands.py` → ✅ Ora usa `from .shared import COLORS`
+- `models.py` → ✅ Ora usa `from .shared import COLORS`
 
-**Azione**: Rimuovere tutte le definizioni locali, usare `from .shared import COLORS`
+### 3. ✅ Model Metadata Loading - RISOLTO
+| File | Prima | Dopo |
+|------|-------|------|
+| `shared/model_loader.py` | `load_metadata()`, `get_available_models()` | ✓ Fonte centrale |
+| `training_model_details.py` | `_load_metadata()` locale | ✅ Usa `load_metadata()` da shared |
+| `models.py` | `get_available_models_by_timeframe()` locale | ✅ Usa `get_available_models()` da shared |
 
-### 3. 🔴 Model Metadata Loading - Duplicato 3 volte
-| File | Funzione | Stesso scopo |
-|------|----------|--------------|
-| `shared/model_loader.py` | `load_metadata()` | ✓ Fonte centrale |
-| `training_model_details.py` | `_load_metadata()` | ✗ Duplicato |
-| `models.py` | `get_available_models_by_timeframe()` | ✗ Duplicato |
+### 4. ⚠️ Step 3 vs Step 4 - OVERLAP FUNZIONALE (non modificato)
 
-**Azione**: Usare `from .shared.model_loader import load_metadata, get_available_models`
+**Nota**: L'overlap tra Step 3 (Training) e Step 4 (Models) non è stato modificato in questa versione.
+Il focus era sulle duplicazioni di codice (COLORS, model_loader), non sulla differenziazione funzionale.
 
-### 4. 🔴 Step 3 vs Step 4 - OVERLAP FUNZIONALE MAGGIORE
-
-**training.py (Step 3)** mostra:
-- Dettagli modello (metrics, feature importance)
-- AI Evaluation
-- Bitcoin Inference
-
-**models.py (Step 4)** mostra:
-- **Stesso contenuto!** (Model summary, metrics, feature importance, AI analysis, inference)
-
-**Problema**: L'utente vede le STESSE informazioni in due posti diversi.
+Per differenziare i due step, vedere la sezione "Fase 3" del piano di azione raccomandato.
 
 ---
 
@@ -251,12 +238,12 @@ Valutare se `labeling_db.py` può essere unito con `database/ml_labels/`.
 
 ## 🎯 Metriche di Successo
 
-Dopo la rifattorizzazione:
-- [ ] Nessuna definizione locale di `COLORS` (solo in `shared/colors.py`)
-- [ ] Nessuna definizione locale di `get_model_dir()` (solo in `shared/model_loader.py`)
-- [ ] Nessuna definizione locale di `load_metadata()` (solo in `shared/model_loader.py`)
-- [ ] Step 3 e Step 4 con ruoli chiaramente distinti
-- [ ] Tutti i file `train/*.py` importano da `shared/`
+Dopo la rifattorizzazione (v2.3.2):
+- [x] Nessuna definizione locale di `COLORS` (solo in `shared/colors.py`) ✅ COMPLETATO
+- [x] Nessuna definizione locale di `get_model_dir()` (solo in `shared/model_loader.py`) ✅ COMPLETATO
+- [x] Nessuna definizione locale di `load_metadata()` (solo in `shared/model_loader.py`) ✅ COMPLETATO
+- [ ] Step 3 e Step 4 con ruoli chiaramente distinti (non ancora affrontato)
+- [x] `training_model_details.py`, `training_io_tables.py`, `training_commands.py`, `models.py` importano da `shared/` ✅ COMPLETATO
 
 ---
 

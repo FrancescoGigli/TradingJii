@@ -16,6 +16,8 @@ import sqlite3
 from pathlib import Path
 import os
 
+from services.feature_alignment import align_features_dataframe
+
 # For plotting
 try:
     import plotly.graph_objects as go
@@ -193,17 +195,15 @@ def run_inference(df: pd.DataFrame, model_long, model_short, scaler, feature_nam
     """Run inference on dataframe"""
     df = df.copy()
     
-    available_features = [f for f in feature_names if f in df.columns]
-    
-    if len(available_features) < len(feature_names):
-        X = np.zeros((len(df), len(feature_names)))
-        for i, feat in enumerate(feature_names):
-            if feat in df.columns:
-                X[:, i] = df[feat].fillna(0).values
-    else:
-        X = df[available_features].fillna(0).values
-    
-    X_scaled = scaler.transform(X)
+    # Align to expected feature set to avoid sklearn "invalid feature names"
+    # warning and to enforce correct ordering.
+    X_df = align_features_dataframe(
+        df,
+        feature_names,
+        fill_value=0.0,
+        forward_fill=False,
+    )
+    X_scaled = scaler.transform(X_df)
     
     df['pred_long'] = model_long.predict(X_scaled)
     df['pred_short'] = model_short.predict(X_scaled)

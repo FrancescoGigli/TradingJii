@@ -520,7 +520,7 @@ def render_chart_preview():
         legend=dict(orientation='h', y=1.02, x=0.5, xanchor='center')
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # RSI if available
     if 'RSI' in df.columns:
@@ -538,7 +538,7 @@ def render_chart_preview():
             yaxis=dict(range=[0, 100], title='RSI'),
             showlegend=False
         )
-        st.plotly_chart(fig_rsi, use_container_width=True)
+        st.plotly_chart(fig_rsi, width='stretch')
     
     # Data sample
     st.markdown("#### 📋 Data Sample")

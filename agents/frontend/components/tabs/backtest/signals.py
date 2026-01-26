@@ -91,7 +91,7 @@ def _render_technical_signal(current_confidence, level_info, components_data):
     
     # Confidence gauge
     gauge_fig = create_confidence_gauge(current_confidence)
-    st.plotly_chart(gauge_fig, use_container_width=True, key="gauge_tech")
+    st.plotly_chart(gauge_fig, width='stretch', key="gauge_tech")
     
     # Components breakdown
     st.markdown("**📈 Component Scores:**")
@@ -145,7 +145,7 @@ def _render_xgb_signal(ml_service, ml_prediction):
         
         # XGB gauge
         xgb_gauge_fig = create_confidence_gauge(xgb_score_long)
-        st.plotly_chart(xgb_gauge_fig, use_container_width=True, key="gauge_xgb")
+        st.plotly_chart(xgb_gauge_fig, width='stretch', key="gauge_xgb")
         
         # LONG and SHORT scores
         st.markdown("**📈 Model Scores:**")

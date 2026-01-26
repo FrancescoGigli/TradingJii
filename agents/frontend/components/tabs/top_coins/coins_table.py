@@ -49,7 +49,7 @@ def render_coins_section():
     # Market Overview Chart
     fig_overview = create_market_overview_chart(top_symbols)
     if fig_overview:
-        st.plotly_chart(fig_overview, use_container_width=True)
+        st.plotly_chart(fig_overview, width='stretch')
     
     st.markdown("---")
     

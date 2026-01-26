@@ -22,6 +22,8 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
+from services.feature_alignment import align_features_dataframe, align_features_row
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE CALCULATION - Compute all 69 features needed by XGB model
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -433,27 +435,10 @@ class MLInferenceService:
             )
         
         try:
-            # Extract features in correct order
-            features = []
-            missing_features = []
-            
-            for feat in self.feature_names:
-                if feat in df_row.index:
-                    val = df_row[feat]
-                    # Handle NaN
-                    if pd.isna(val):
-                        features.append(0.0)
-                    else:
-                        features.append(float(val))
-                else:
-                    features.append(0.0)
-                    missing_features.append(feat)
-            
-            # Convert to numpy array
-            X = np.array(features).reshape(1, -1)
-            
-            # Scale
-            X_scaled = self.scaler.transform(X)
+            # Build an aligned DataFrame to avoid sklearn warnings about missing
+            # feature names and to enforce the correct feature order.
+            X_df = align_features_row(df_row, self.feature_names, fill_value=0.0)
+            X_scaled = self.scaler.transform(X_df)
             
             # Predict
             score_long = float(self.model_long.predict(X_scaled)[0])
@@ -513,21 +498,15 @@ class MLInferenceService:
             return df
         
         try:
-            # Extract features
-            available_features = [f for f in self.feature_names if f in df.columns]
-            X = df[available_features].fillna(0).values
-            
-            # Pad missing features with zeros
-            if len(available_features) < len(self.feature_names):
-                # Create full feature matrix
-                X_full = np.zeros((len(df), len(self.feature_names)))
-                for i, feat in enumerate(self.feature_names):
-                    if feat in df.columns:
-                        X_full[:, i] = df[feat].fillna(0).values
-                X = X_full
-            
-            # Scale
-            X_scaled = self.scaler.transform(X)
+            # Align to the expected feature set to avoid sklearn warnings and
+            # ensure consistent ordering.
+            X_df = align_features_dataframe(
+                df,
+                self.feature_names,
+                fill_value=0.0,
+                forward_fill=True,
+            )
+            X_scaled = self.scaler.transform(X_df)
             
             # Predict
             df = df.copy()

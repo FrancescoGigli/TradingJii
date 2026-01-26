@@ -9,19 +9,8 @@ Displays the training commands for different scenarios:
 
 import streamlit as st
 
-
-# Color scheme (dark theme)
-COLORS = {
-    'primary': '#00ffff',
-    'secondary': '#ff6b6b',
-    'success': '#4ade80',
-    'warning': '#fbbf24',
-    'background': '#0d1117',
-    'card': '#1e2130',
-    'text': '#e0e0ff',
-    'muted': '#9ca3af',
-    'border': '#2d3748'
-}
+# Import from shared modules (centralized)
+from .shared import COLORS
 
 
 def render_training_commands_section():

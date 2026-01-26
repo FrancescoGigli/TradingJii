@@ -10,10 +10,7 @@ Displays the last trained model details:
 """
 
 import streamlit as st
-import json
-from pathlib import Path
 from typing import Dict, Any, Optional
-import os
 
 try:
     import plotly.graph_objects as go
@@ -22,52 +19,18 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-
-# Color scheme (dark theme)
-COLORS = {
-    'primary': '#00ffff',
-    'secondary': '#ff6b6b',
-    'success': '#4ade80',
-    'warning': '#fbbf24',
-    'info': '#60a5fa',
-    'background': '#0d1117',
-    'card': '#1e2130',
-    'text': '#e0e0ff',
-    'muted': '#9ca3af',
-    'border': '#2d3748',
-    'long': '#00ffff',
-    'short': '#ff6b6b'
-}
-
-
-def _get_models_dir() -> Path:
-    """Get the models directory path."""
-    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
-    return Path(shared_path) / "models"
-
-
-def _load_metadata(timeframe: str) -> Optional[Dict[str, Any]]:
-    """Load metadata for a specific timeframe."""
-    models_dir = _get_models_dir()
-    metadata_path = models_dir / f"metadata_{timeframe}_latest.json"
-    
-    if not metadata_path.exists():
-        return None
-    
-    try:
-        with open(metadata_path, 'r') as f:
-            return json.load(f)
-    except Exception:
-        return None
+# Import from shared modules (centralized)
+from .shared import COLORS
+from .shared.model_loader import load_metadata
 
 
 def render_model_details_section():
     """Render the model details section."""
     st.markdown("### 📦 Last Trained Model")
     
-    # Check which models exist
-    meta_15m = _load_metadata('15m')
-    meta_1h = _load_metadata('1h')
+    # Check which models exist (using centralized loader)
+    meta_15m = load_metadata('15m')
+    meta_1h = load_metadata('1h')
     
     if not meta_15m and not meta_1h:
         st.warning("""
@@ -333,7 +296,7 @@ def _render_precision_chart(meta: Dict[str, Any]):
         margin=dict(l=20, r=20, t=40, b=20)
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_feature_importance_chart(meta: Dict[str, Any]):
@@ -391,7 +354,7 @@ def _render_feature_importance_chart(meta: Dict[str, Any]):
     fig.update_xaxes(gridcolor=COLORS['border'])
     fig.update_yaxes(gridcolor=COLORS['border'])
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def _render_hyperparameters(meta: Dict[str, Any]):

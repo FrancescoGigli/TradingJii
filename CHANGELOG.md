@@ -1,5 +1,69 @@
 # Changelog
 
+## [2026-01-26] v2.3.2 - ML Tab Duplications Cleanup
+
+### Changed
+- **`training_model_details.py`**: Refactored to use shared modules
+  - Removed duplicated `COLORS` dict (now imports from `shared.colors`)
+  - Removed duplicated `_get_models_dir()` (now imports from `shared.model_loader`)
+  - Removed duplicated `_load_metadata()` (now imports from `shared.model_loader`)
+  - Reduced ~40 lines of duplicated code
+
+- **`training_io_tables.py`**: Refactored to use shared modules
+  - Removed duplicated `COLORS` dict (now imports from `shared.colors`)
+  - Removed duplicated `_get_models_dir()` (now imports from `shared.model_loader`)
+  - Reduced ~20 lines of duplicated code
+
+- **`training_commands.py`**: Refactored to use shared modules
+  - Removed duplicated `COLORS` dict (now imports from `shared.colors`)
+  - Reduced ~15 lines of duplicated code
+
+- **`models.py`**: Refactored to use shared modules
+  - Removed duplicated `get_available_models_by_timeframe()` function
+  - Now uses `get_available_models()` from `shared.model_loader`
+  - Added `COLORS` import from `shared.colors`
+  - Reduced ~25 lines of duplicated code
+
+### Technical Details
+All ML Training tab files now use centralized modules:
+```python
+from .shared import COLORS
+from .shared.model_loader import get_model_dir, load_metadata, get_available_models
+```
+
+**Total duplicated code removed:** ~100 lines across 4 files
+
+### Files Modified
+| File | Before | After | Change |
+|------|--------|-------|--------|
+| `training_model_details.py` | Local COLORS, _get_models_dir, _load_metadata | Uses shared | -40 lines |
+| `training_io_tables.py` | Local COLORS, _get_models_dir | Uses shared | -20 lines |
+| `training_commands.py` | Local COLORS | Uses shared | -15 lines |
+| `models.py` | Local get_available_models_by_timeframe | Uses shared | -25 lines |
+
+---
+
+## [2026-01-26] v2.3.3 - ML Tab (Pipeline Status + Inference Warnings)
+
+### Fixed
+- **Sklearn warning cleanup**: avoided "X does not have valid feature names" by passing aligned pandas DataFrames into `scaler.transform()`.
+  - Added `services/feature_alignment.py` with helpers to align feature sets.
+  - Updated inference code paths:
+    - `services/ml_inference.py`
+    - `services/local_models.py`
+    - `components/tabs/train/models_inference.py`
+
+### Changed
+- **`components/tabs/train/status.py` (Pipeline Status Step 3)**:
+  - Simplified model status to rely on presence/readability of `metadata_latest.json`.
+  - Shows only: version, timeframe, feature count, created_at, metadata filename.
+  - Removed Step 3 metrics (R² / Spearman) from the status expander to avoid duplicated/overloaded UI.
+
+### Added
+- **Docs**: `docs/modules/FEATURE_ALIGNMENT.md`
+
+---
+
 ## [2026-01-26] v2.3.1 - UI Cleanup & Refactoring Plan
 
 ### Removed

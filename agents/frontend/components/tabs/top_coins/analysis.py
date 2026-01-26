@@ -111,7 +111,7 @@ def render_analysis_section():
         show_indicators=True,
         warmup_skip=WARMUP_PERIOD
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # === VOLUME ANALYSIS ===
     st.markdown("---")
@@ -138,7 +138,7 @@ def render_analysis_section():
     
     # Volume Chart
     fig_vol = create_volume_analysis_chart(df_display, selected_name)
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.plotly_chart(fig_vol, width='stretch')
     
     # === TECHNICAL ANALYSIS ===
     st.markdown("---")

@@ -292,7 +292,7 @@ def _render_inference_chart(timeframe: str):
     # Y-axis for scores
     fig.update_yaxes(range=[0, 1], row=2, col=1)
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # Signal distribution summary
     _render_signal_summary(df)

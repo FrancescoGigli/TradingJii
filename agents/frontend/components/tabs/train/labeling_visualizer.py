@@ -334,7 +334,7 @@ def render_visualizer_ui(ohlcv_df: pd.DataFrame = None, labels_df: pd.DataFrame 
     # Main chart
     st.markdown("---")
     fig = create_labels_chart(df, timeframe)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # Legend
     st.markdown("""
@@ -374,7 +374,7 @@ def render_quick_preview(ohlcv_df: pd.DataFrame = None, labels_df: pd.DataFrame 
     
     fig = create_labels_chart(df, timeframe)
     fig.update_layout(height=500, title=f"Preview: {symbol.replace('/USDT:USDT', '')} ({timeframe}) - Last 100 candles")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 __all__ = [

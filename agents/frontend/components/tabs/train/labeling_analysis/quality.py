@@ -433,7 +433,7 @@ def render_label_quality_analysis():
     
     with col1:
         fig_scatter = create_score_vs_return_scatter()
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width='stretch')
         st.caption(f"""
         **How to read:** Each point is a candle (sample: 10,000 of {total_samples:,}).
         - Right of yellow line (score > 0) = profitable entries
@@ -443,7 +443,7 @@ def render_label_quality_analysis():
     
     with col2:
         fig_bar = create_score_range_bar_chart(quality['score_ranges'])
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width='stretch')
         
         score_ranges = quality['score_ranges']
         if len(score_ranges) > 0:
@@ -462,7 +462,7 @@ def render_label_quality_analysis():
     
     with col1:
         fig_pie = create_positive_distribution_pie(quality['positive_dist'])
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width='stretch')
     
     with col2:
         st.markdown("**Interpretation:**\n\nDistribution of positive labels (score > 0):")

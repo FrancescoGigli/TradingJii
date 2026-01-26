@@ -16,6 +16,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from services.feature_alignment import align_features_dataframe
+
 
 @dataclass
 class ModelInfo:
@@ -256,20 +258,19 @@ def run_inference(
         df = df.iloc[::-1].reset_index(drop=True)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # Get available features
-        available_features = [f for f in feature_names if f in df.columns]
-        
-        if len(available_features) < 3:
+        # Build aligned feature frame (avoids sklearn warning about missing
+        # feature names and enforces correct ordering)
+        if len(feature_names) < 3:
             return None
-        
-        # Prepare features
-        X = df[available_features].copy()
-        
-        # Handle NaN
-        X = X.fillna(method='ffill').fillna(0)
-        
-        # Scale features
-        X_scaled = scaler.transform(X)
+
+        X_df = align_features_dataframe(
+            df,
+            feature_names,
+            fill_value=0.0,
+            forward_fill=True,
+        )
+
+        X_scaled = scaler.transform(X_df)
         
         # Run inference
         df['score_long'] = model_long.predict(X_scaled)

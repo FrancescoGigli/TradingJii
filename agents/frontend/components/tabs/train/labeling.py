@@ -197,50 +197,50 @@ def render_analysis_dashboard(symbol: str, timeframe: str):
         col1, col2 = st.columns(2)
         with col1:
             fig = create_score_distribution(labels_df, timeframe)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with col2:
             fig = create_atr_analysis(labels_df, timeframe)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         
         # Row 2: Exit type pie charts
         st.markdown("##### Exit Type Analysis")
         col1, col2 = st.columns(2)
         with col1:
             fig = create_exit_type_pie(labels_df, timeframe, 'long')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with col2:
             fig = create_exit_type_pie(labels_df, timeframe, 'short')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         
         # Row 3: MAE analysis
         st.markdown("##### MAE Histograms (LONG / SHORT)")
         col1, col2 = st.columns(2)
         with col1:
             fig = create_mae_histogram(labels_df, timeframe, 'long')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with col2:
             fig = create_mae_histogram(labels_df, timeframe, 'short')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         
         # Row 4: MAE vs Score scatter
         st.markdown("##### MAE vs Score Scatter")
         col1, col2 = st.columns(2)
         with col1:
             fig = create_mae_vs_score_scatter(labels_df, timeframe, 'long')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with col2:
             fig = create_mae_vs_score_scatter(labels_df, timeframe, 'short')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         
         # Row 5: Bars held
         st.markdown("##### Bars Held Analysis")
         col1, col2 = st.columns(2)
         with col1:
             fig = create_bars_held_histogram(labels_df, timeframe, 'long')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         with col2:
             fig = create_bars_held_histogram(labels_df, timeframe, 'short')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         
     except Exception as e:
         st.error(f"Error loading analysis: {e}")
@@ -317,7 +317,7 @@ def render_visualizer(selected_symbol: str, timeframe: str):
         symbol_short = selected_symbol.replace('/USDT:USDT', '')
         fig = create_labels_chart(df, timeframe)
         fig.update_layout(title=f"📊 {symbol_short} ({timeframe}) - Last {len(df)} candles")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         
         # Legend
         st.markdown("""

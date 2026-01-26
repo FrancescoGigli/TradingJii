@@ -6,35 +6,18 @@ Shows v_xgb_training view and model files status.
 """
 
 import streamlit as st
-from pathlib import Path
-import os
 from typing import Dict, Any
 
 from .data_model_display import get_table_info
 
-
-# Color scheme (dark theme)
-COLORS = {
-    'primary': '#00ffff',
-    'success': '#4ade80',
-    'error': '#ef4444',
-    'background': '#0d1117',
-    'card': '#1e2130',
-    'text': '#e0e0ff',
-    'muted': '#9ca3af',
-    'border': '#2d3748'
-}
-
-
-def _get_models_dir() -> Path:
-    """Get the models directory path."""
-    shared_path = os.environ.get('SHARED_DATA_PATH', '/app/shared')
-    return Path(shared_path) / "models"
+# Import from shared modules (centralized)
+from .shared import COLORS
+from .shared.model_loader import get_model_dir
 
 
 def _check_model_files(timeframe: str) -> Dict[str, bool]:
     """Check if model files exist for a timeframe."""
-    models_dir = _get_models_dir()
+    models_dir = get_model_dir()
     return {
         'model_long': (models_dir / f"model_long_{timeframe}_latest.pkl").exists(),
         'model_short': (models_dir / f"model_short_{timeframe}_latest.pkl").exists(),
