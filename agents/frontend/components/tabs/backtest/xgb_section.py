@@ -118,7 +118,7 @@ def _render_date_range_info(df_full, ml_service):
             """, unsafe_allow_html=True)
 
 
-def render_xgb_section(df_full, ml_service, selected_name: str):
+def render_xgb_section(df_full, ml_service, selected_name: str, xgb_data: pd.DataFrame | None = None):
     """
     Render XGBoost ML backtest section with simulation.
     
@@ -155,12 +155,25 @@ def render_xgb_section(df_full, ml_service, selected_name: str):
     Scores normalized using <b>Percentile Ranking</b>.
     </p>
     """, unsafe_allow_html=True)
+
+    # Reserve UI space for diagnostics.
+    # NOTE: We render the expander *after* running inference so the report always
+    # reflects the current backtest run (and not a stale report from another tab).
+    diagnostics_placeholder = st.empty()
     
     # XGB Settings in expander
     xgb_settings = _render_xgb_settings()
     
-    # Calculate XGB scores
-    xgb_data = _compute_xgb_scores(df_full, ml_service)
+    # Calculate XGB scores if not precomputed
+    if xgb_data is None:
+        xgb_data = _compute_xgb_scores(df_full, ml_service)
+
+    # Feature alignment diagnostics (rendered after inference to avoid stale data)
+    with diagnostics_placeholder.container():
+        _render_feature_alignment_diagnostics(
+            ml_service,
+            context_note="Based on the latest batch inference executed in this backtest run.",
+        )
     
     if xgb_data is None:
         st.warning("⚠️ Could not generate XGB signals")
@@ -260,7 +273,7 @@ def _render_xgb_settings() -> dict:
 def _compute_xgb_scores(df_full, ml_service):
     """Compute XGB scores for all candles"""
     try:
-        from services.ml_inference import normalize_xgb_score_batch, compute_ml_features
+        from services.ml_inference import compute_ml_features, build_normalized_xgb_frame
         
         with st.spinner("🔄 Computing 69 features and running XGB inference..."):
             # Compute all 69 features required by the model
@@ -270,33 +283,27 @@ def _compute_xgb_scores(df_full, ml_service):
             df_with_predictions = ml_service.predict_batch(df_with_features)
             
             if 'pred_score_long' in df_with_predictions.columns:
-                # Create XGB data DataFrame with PERCENTILE-based normalized scores
-                xgb_data = pd.DataFrame(index=df_full.index)
-                xgb_data['xgb_score_long_norm'] = normalize_xgb_score_batch(
-                    df_with_predictions['pred_score_long'], 'long'
-                )
-                xgb_data['xgb_score_short_norm'] = normalize_xgb_score_batch(
-                    df_with_predictions['pred_score_short'], 'short'
-                )
+                # Canonical normalization (0..100 long/short + net -100..+100)
+                xgb_data = build_normalized_xgb_frame(df_with_predictions)
                 
                 # Debug stats
                 with st.expander("📊 XGB Score Debug (Ranking-Based)", expanded=False):
-                    st.info("⚡ Model uses **PERCENTILE RANKING** - Top predictions have ~60% positive outcomes!")
+                    st.info("⚡ Model uses **PERCENTILE RANKING** (canonical normalization)")
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write("**LONG Model Raw:**")
                         st.write(f"Min: {df_with_predictions['pred_score_long'].min():.6f}")
                         st.write(f"Max: {df_with_predictions['pred_score_long'].max():.6f}")
                         st.write(f"Mean: {df_with_predictions['pred_score_long'].mean():.6f}")
-                        st.write("**Normalized (Percentile):**")
-                        st.write(f"Range: {xgb_data['xgb_score_long_norm'].min():.0f} to {xgb_data['xgb_score_long_norm'].max():.0f}")
+                        st.write("**Normalized (0..100):**")
+                        st.write(f"Range: {xgb_data['score_long_0_100'].min():.0f} to {xgb_data['score_long_0_100'].max():.0f}")
                     with col2:
                         st.write("**SHORT Model Raw:**")
                         st.write(f"Min: {df_with_predictions['pred_score_short'].min():.6f}")
                         st.write(f"Max: {df_with_predictions['pred_score_short'].max():.6f}")
                         st.write(f"Mean: {df_with_predictions['pred_score_short'].mean():.6f}")
-                        st.write("**Normalized (Percentile):**")
-                        st.write(f"Range: {xgb_data['xgb_score_short_norm'].min():.0f} to {xgb_data['xgb_score_short_norm'].max():.0f}")
+                        st.write("**Normalized (0..100):**")
+                        st.write(f"Range: {xgb_data['score_short_0_100'].min():.0f} to {xgb_data['score_short_0_100'].max():.0f}")
                 
                 return xgb_data
             
@@ -304,6 +311,53 @@ def _compute_xgb_scores(df_full, ml_service):
         st.error(f"❌ Error calculating XGB scores: {e}")
     
     return None
+
+
+def _render_feature_alignment_diagnostics(ml_service, *, context_note: str | None = None):
+    """Show alignment diagnostics to detect heavy feature auto-filling.
+
+    The report is computed during the last inference call via
+    `align_features_dataframe_with_report`.
+    """
+    report = None
+    if hasattr(ml_service, 'get_alignment_report'):
+        report = ml_service.get_alignment_report()
+
+    # Report is available only after at least one inference call.
+    with st.expander("🧩 Feature Alignment Diagnostics", expanded=False):
+        if context_note:
+            st.caption(context_note)
+
+        if report is None:
+            st.caption(
+                "Run XGB inference once to see alignment diagnostics. "
+                "If many features are missing and get auto-filled, results can be misleading."
+            )
+            return
+
+        missing = report.filled_count
+        expected = report.expected_count
+        dropped = report.dropped_count
+        ratio = report.filled_ratio * 100
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Expected features", expected)
+        col2.metric("Missing (auto-filled)", missing)
+        col3.metric("Extra (dropped)", dropped)
+
+        if ratio <= 5:
+            st.success(f"✅ Alignment looks good: only {ratio:.1f}% features were auto-filled")
+        elif ratio <= 20:
+            st.warning(f"⚠️ Alignment warning: {ratio:.1f}% features were auto-filled")
+        else:
+            st.error(
+                f"❌ Alignment is likely unreliable: {ratio:.1f}% features were auto-filled. "
+                "Backtest/inference results may be distorted."
+            )
+
+        if report.missing_features:
+            st.caption("Missing features (first 25):")
+            st.code("\n".join(report.missing_features[:25]))
 
 
 def _render_xgb_chart(df_full, xgb_data, selected_name: str, threshold: float):
@@ -315,8 +369,9 @@ def _render_xgb_chart(df_full, xgb_data, selected_name: str, threshold: float):
 
 def _render_xgb_statistics(xgb_data, threshold: float):
     """Render XGB signal statistics"""
-    long_signals = (xgb_data['xgb_score_long_norm'] > threshold).sum()
-    short_signals = (xgb_data['xgb_score_long_norm'] < -threshold).sum()
+    # Use net score for direction thresholds
+    long_signals = (xgb_data['net_score_-100_100'] > threshold).sum()
+    short_signals = (xgb_data['net_score_-100_100'] < -threshold).sum()
     
     col1, col2, col3 = st.columns(3)
     col1.metric("📈 XGB LONG Signals", long_signals)
@@ -348,7 +403,7 @@ def _render_xgb_simulation(df_full, xgb_data, settings: dict, selected_name: str
                 # Run simulation
                 xgb_sim_result = run_xgb_simulation(
                     df=df_full,
-                    xgb_scores=xgb_data['xgb_score_long_norm'],
+                    xgb_scores=xgb_data['net_score_-100_100'],
                     config=xgb_config
                 )
                 

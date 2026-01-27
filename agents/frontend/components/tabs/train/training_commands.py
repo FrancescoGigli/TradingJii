@@ -13,8 +13,100 @@ import streamlit as st
 from .shared import COLORS
 
 
+def _inject_dark_code_block_css() -> None:
+    """Inject CSS to force Streamlit st.code blocks to use dark theme colors.
+
+    Streamlit's default st.code styling can render with a light background,
+    which becomes unreadable in our dark theme.
+
+    Note: this affects all st.code blocks in the current app session.
+    """
+
+    st.markdown(
+        f"""
+        <style>
+            /*
+             Streamlit code blocks selectors vary by version.
+             We cover both `stCodeBlock` and `stCode` to prevent white backgrounds.
+            */
+            div[data-testid="stCodeBlock"],
+            div[data-testid="stCode"],
+            div.stCodeBlock,
+            div.stCode {{
+                background: {COLORS['background']} !important;
+                background-color: {COLORS['background']} !important;
+                border: 1px solid {COLORS['border']} !important;
+                border-radius: 10px !important;
+                overflow: hidden !important;
+            }}
+
+            div[data-testid="stCodeBlock"] pre,
+            div[data-testid="stCode"] pre,
+            div.stCodeBlock pre,
+            div.stCode pre {{
+                background: {COLORS['background']} !important;
+                background-color: {COLORS['background']} !important;
+                color: {COLORS['text']} !important;
+                margin: 0 !important;
+                padding: 12px 14px !important;
+            }}
+
+            div[data-testid="stCodeBlock"] code,
+            div[data-testid="stCode"] code,
+            div.stCodeBlock code,
+            div.stCode code {{
+                color: {COLORS['text']} !important;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                    "Liberation Mono", "Courier New", monospace !important;
+                font-size: 0.85rem !important;
+            }}
+
+            /* Ensure syntax-highlighted spans remain readable */
+            div[data-testid="stCodeBlock"] code span,
+            div[data-testid="stCode"] code span,
+            div.stCodeBlock code span,
+            div.stCode code span {{
+                color: {COLORS['text']} !important;
+                background: transparent !important;
+            }}
+
+            /* Some Streamlit versions wrap code in extra divs inside <pre> */
+            div[data-testid="stCodeBlock"] pre div,
+            div[data-testid="stCode"] pre div,
+            div.stCodeBlock pre div,
+            div.stCode pre div {{
+                background: transparent !important;
+            }}
+
+            /* Copy button / header controls */
+            div[data-testid="stCodeBlock"] button,
+            div[data-testid="stCode"] button {{
+                color: {COLORS['muted']} !important;
+            }}
+            div[data-testid="stCodeBlock"] svg,
+            div[data-testid="stCode"] svg {{
+                fill: {COLORS['muted']} !important;
+            }}
+
+            /* Also cover markdown code blocks if present */
+            div[data-testid="stMarkdownContainer"] pre,
+            div[data-testid="stMarkdownContainer"] pre code {{
+                background: {COLORS['background']} !important;
+                background-color: {COLORS['background']} !important;
+                color: {COLORS['text']} !important;
+                border: 1px solid {COLORS['border']} !important;
+                border-radius: 10px !important;
+            }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_training_commands_section():
     """Render the training commands section."""
+    _inject_dark_code_block_css()
+
     st.markdown("### 🚀 Training Commands")
     st.caption("Run these commands in terminal to train models locally")
     

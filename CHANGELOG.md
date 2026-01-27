@@ -43,6 +43,52 @@ from .shared.model_loader import get_model_dir, load_metadata, get_available_mod
 
 ---
 
+## [2026-01-26] v2.3.7 - BTC Inference Scoring (0-100) + Per-Candle Hover + Strict Errors
+
+### Added
+- **BTC Inference scoring docs**: `docs/modules/BTC_INFERENCE_SCORING.md`
+
+### Changed
+- **`services/local_models.py`**:
+  - Raw predictions are now exposed as `score_long_raw` / `score_short_raw`.
+  - Added per-model normalization to **0..100** via percentile rank:
+    - `score_long_0_100`, `score_short_0_100`
+  - Added combined score in **-100..+100**:
+    - `net_score_-100_100 = long - short`
+  - Added `confidence_0_100 = abs(net)`.
+  - Added `short_inverted` diagnostic (heuristic-based orientation for short model).
+
+### Fixed
+- **Strict error behavior (no silent fallback)**:
+  - If `realtime_ohlcv` has no rows for `(symbol, timeframe)`, inference now raises a clear
+    `InferenceDataNotFoundError` instead of returning `None`.
+
+### UI
+- **`training_btc_inference.py`**:
+  - Updated cards and score chart to use the new 0..100 scale and net -100..100.
+  - Added per-candle hover showing raw + normalized LONG/SHORT scores, net and confidence.
+  - When data is missing, shows a strict error plus an optional list of available symbols
+    for that timeframe (diagnostics only, no fallback).
+
+---
+
+## [2026-01-26] v2.3.8 - BTC Inference Chart: Visible LONG/SHORT Entry Markers
+
+### Fixed
+- **BTC Live Inference ("Price Chart with ML Predictions")**: LONG/SHORT points were hard to see.
+  - Marker overlay now groups signals into **two clear entry traces**:
+    - LONG = `BUY` + `STRONG BUY`
+    - SHORT = `SELL` + `STRONG SELL`
+  - Increased marker size and improved offset logic to avoid candle overlap.
+
+### Changed
+- **`components/tabs/train/btc_inference_charts.py`**:
+  - Reworked signal overlay to render **explicit LONG/SHORT markers** (triangle-up / triangle-down).
+  - Improved marker hover details (signal, net, confidence, long/short scores).
+- **Docs**: Updated `docs/modules/BTC_INFERENCE_CHART_SIGNALS.md` to reflect LONG/SHORT mapping.
+
+---
+
 ## [2026-01-26] v2.3.3 - ML Tab (Pipeline Status + Inference Warnings)
 
 ### Fixed
@@ -61,6 +107,53 @@ from .shared.model_loader import get_model_dir, load_metadata, get_available_mod
 
 ### Added
 - **Docs**: `docs/modules/FEATURE_ALIGNMENT.md`
+
+---
+
+## [2026-01-26] v2.3.4 - UI Diagnostics (Feature Alignment) + Table Dark Theme Hardening
+
+### Added
+- **Feature alignment diagnostics** in Backtest XGB section:
+  - New "🧩 Feature Alignment Diagnostics" expander warns when many features are auto-filled.
+  - Helps detect training/inference feature-set mismatch (e.g., 21 vs 69 features).
+
+### Fixed
+- **Backtest Feature Alignment expander could show stale data**:
+  - The diagnostics expander is now rendered *after* the current backtest batch inference,
+    ensuring the report refers to the active backtest run (not a previous inference from other tabs).
+
+### Changed
+- **`services/feature_alignment.py`**:
+  - Added `FeatureAlignmentReport` and `align_features_dataframe_with_report()` to expose missing/extra features.
+- **`services/ml_inference.py`**:
+  - Stores last alignment report and exposes `get_alignment_report()` for UI.
+
+### Fixed
+- **`styles/tables.py`**: hardened HTML table CSS with scoped `!important` overrides to prevent white backgrounds
+  from Streamlit/theme defaults.
+
+---
+
+## [2026-01-26] v2.3.5 - ML Training Commands Dark Theme Fix
+
+### Fixed
+- **`components/tabs/train/training_commands.py`**: fixed unreadable white command boxes in the ML → Training → Commands UI.
+  - Command blocks now render with explicit dark backgrounds and light text, consistent with the global dark theme.
+  - Prevents Streamlit/theme defaults from rendering white inputs/containers.
+
+---
+
+## [2026-01-26] v2.3.6 - Frontend Log Noise Reduction
+
+### Fixed
+- **Streamlit usage stats banner**: disabled the "Collecting usage statistics" message in container logs.
+- **Model load warnings**: silenced noisy XGBoost pickle compatibility warnings and scikit-learn
+  `InconsistentVersionWarning` in the frontend process.
+- **Log level**: defaulted frontend container logs to `ERROR` via `LOG_LEVEL`.
+
+### Files Modified
+- `agents/frontend/app.py`
+- `docker-compose.yml`
 
 ---
 
@@ -284,7 +377,7 @@ The `xgb_models/` directory was identified as completely unused:
   - Expandable options explanation table
   - Tips for production training
 
-- **Model Details Section** (`training_model_details.py`):
+- **Model Details Secion** (`training_model_details.py`):
   - Model summary card with quality badge (Excellent/Good/Acceptable/Poor)
   - Detailed metrics table (Spearman, R², RMSE, Precision@K)
   - Feature importance horizontal bar chart (Top 10)
@@ -749,6 +842,23 @@ The format follows a simplified semantic structure:
 ---
 
 ## [Unreleased]
+
+### Changed
+- Backtest/Test tab now reuses the same canonical XGB normalization used in Train (percentile-ranked LONG/SHORT to 0..100 and NET score to -100..100). Signal comparison, XGB chart, simulation and optimization consume a single precomputed normalized frame per selected coin.
+
+### Fixed
+- **ml-inference agent**: corrected DB table usage and timestamp persistence.
+  - Reads OHLCV from `realtime_ohlcv` (was incorrectly using `ohlcv`).
+  - Converts pandas timestamps to ISO strings before inserting into SQLite.
+
+### Changed
+- **Test/Backtest → Current Signals Comparison**: XGB panel now shows LONG/SHORT scores explicitly and includes an explainer for why percentile normalization can show values like **+100**.
+
+### Changed
+- **Test/Backtest → Current Signals Comparison**: XGB panel can display multiple model timeframes side-by-side (e.g. 15m and 1h) when both model bundles exist under `shared/models/`.
+
+### Changed
+- BTC Live Inference chart: added visible BUY/SELL signal markers on the candlestick panel and improved marker readability by moving chart building into a dedicated module.
 
 ### Added
 - Custom HTML-based table renderer for Streamlit

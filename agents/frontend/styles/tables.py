@@ -47,13 +47,31 @@ def render_html_table(
     # CSS styles
     table_css = f"""
     <style>
+        /*
+        HARD DARK-THEME OVERRIDES
+        -------------------------
+        Streamlit and some themes inject default table CSS that can force white
+        backgrounds on generic <table>/<td>/<th> elements.
+
+        These selectors are scoped to our container to avoid side effects and
+        use !important to guarantee dark readability.
+        */
+        .styled-table-container,
+        .styled-table-container * {{
+            background-color: #0d1117 !important;
+            color: #e0e0ff !important;
+        }}
+        .styled-table-container table {{
+            border-collapse: collapse !important;
+        }}
+
         .styled-table-container {{
             max-height: {height}px;
             overflow-y: auto;
             overflow-x: auto;
             border: 1px solid rgba(0, 255, 255, 0.3);
             border-radius: 10px;
-            background: #0d1117;
+            background: #0d1117 !important;
             margin: 10px 0;
         }}
         .styled-table {{
@@ -69,7 +87,7 @@ def render_html_table(
             z-index: 10;
         }}
         .styled-table th {{
-            background: linear-gradient(135deg, #1a1f2e 0%, #2d3548 100%);
+            background: linear-gradient(135deg, #1a1f2e 0%, #2d3548 100%) !important;
             color: #00ffff !important;
             padding: 12px 10px;
             text-align: left;
@@ -79,25 +97,34 @@ def render_html_table(
             letter-spacing: 0.5px;
         }}
         .styled-table td {{
-            background: #0d1117;
+            background: #0d1117 !important;
             color: #e0e0ff !important;
             padding: 10px;
             border-bottom: 1px solid rgba(0, 255, 255, 0.1);
         }}
         .styled-table tr:hover td {{
-            background: rgba(0, 255, 255, 0.1);
+            background: rgba(0, 255, 255, 0.1) !important;
         }}
         .styled-table tr:nth-child(even) td {{
-            background: rgba(15, 20, 40, 0.5);
+            background: rgba(15, 20, 40, 0.5) !important;
         }}
         .styled-table tr:nth-child(even):hover td {{
-            background: rgba(0, 255, 255, 0.15);
+            background: rgba(0, 255, 255, 0.15) !important;
         }}
         /* Semantic colors */
         .cell-positive {{ color: #00ff88 !important; font-weight: 600; }}
         .cell-negative {{ color: #ff4757 !important; font-weight: 600; }}
         .cell-neutral {{ color: #ffc107 !important; }}
         .cell-muted {{ color: #8899aa !important; font-family: monospace; }}
+
+        /* Compatibility: if other modules still use df.to_html(classes='dataframe') */
+        .dataframe,
+        .dataframe td,
+        .dataframe th {{
+            background-color: #0d1117 !important;
+            color: #e0e0ff !important;
+            border-color: rgba(0, 255, 255, 0.15) !important;
+        }}
     </style>
     """
     

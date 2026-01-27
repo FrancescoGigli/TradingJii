@@ -38,9 +38,31 @@ Limitations
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Mapping, Sequence, Union
 
 import pandas as pd
+
+
+@dataclass(frozen=True)
+class FeatureAlignmentReport:
+    """Diagnostics produced during feature alignment.
+
+    This is intentionally lightweight so it can be surfaced in the UI.
+    """
+
+    expected_count: int
+    input_count: int
+    missing_features: list[str]
+    extra_features: list[str]
+    filled_count: int
+    dropped_count: int
+
+    @property
+    def filled_ratio(self) -> float:
+        if self.expected_count <= 0:
+            return 0.0
+        return self.filled_count / float(self.expected_count)
 
 
 def align_features_dataframe(
@@ -68,6 +90,43 @@ def align_features_dataframe(
     if forward_fill:
         aligned = aligned.ffill()
     return aligned.fillna(fill_value)
+
+
+def align_features_dataframe_with_report(
+    df: pd.DataFrame,
+    feature_names: Sequence[str],
+    *,
+    fill_value: float = 0.0,
+    forward_fill: bool = False,
+) -> tuple[pd.DataFrame, FeatureAlignmentReport]:
+    """Align features and also return a diagnostic report.
+
+    This lets callers detect the "21 training features vs 69 inference features"
+    mismatch scenario and warn the user when many columns are being auto-filled.
+    """
+
+    input_cols = [] if df is None else list(df.columns)
+    expected_cols = list(feature_names)
+
+    missing = [c for c in expected_cols if c not in input_cols]
+    extra = [c for c in input_cols if c not in expected_cols]
+
+    aligned = align_features_dataframe(
+        df,
+        feature_names,
+        fill_value=fill_value,
+        forward_fill=forward_fill,
+    )
+
+    report = FeatureAlignmentReport(
+        expected_count=len(expected_cols),
+        input_count=len(input_cols),
+        missing_features=missing,
+        extra_features=extra,
+        filled_count=len(missing),
+        dropped_count=len(extra),
+    )
+    return aligned, report
 
 
 def align_features_row(
@@ -107,5 +166,7 @@ def align_features_row(
 
 __all__ = [
     "align_features_dataframe",
+    "align_features_dataframe_with_report",
     "align_features_row",
+    "FeatureAlignmentReport",
 ]

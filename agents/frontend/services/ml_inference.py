@@ -22,7 +22,14 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from services.feature_alignment import align_features_dataframe, align_features_row
+from services.feature_alignment import (
+    align_features_dataframe,
+    align_features_dataframe_with_report,
+    align_features_row,
+    FeatureAlignmentReport,
+)
+
+from services.xgb_normalization import normalize_long_short_scores
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FEATURE CALCULATION - Compute all 69 features needed by XGB model
@@ -264,6 +271,7 @@ class MLPrediction:
     confidence_long: str  # "STRONG", "MODERATE", "WEAK"
     confidence_short: str
     model_version: str
+    alignment: Optional[FeatureAlignmentReport] = None
     is_valid: bool = True
     error: Optional[str] = None
 
@@ -347,6 +355,51 @@ def normalize_xgb_score_batch(scores: 'pd.Series', model_type: str = 'long') -> 
     return normalized
 
 
+def build_normalized_xgb_frame(
+    df_with_predictions: pd.DataFrame,
+    *,
+    long_col: str = "pred_score_long",
+    short_col: str = "pred_score_short",
+) -> pd.DataFrame:
+    """Build a normalized XGB score frame from batch model predictions.
+
+    This is the canonical normalization used across the UI:
+    - LONG and SHORT mapped independently to 0..100 with percentile ranking.
+    - SHORT may be inverted if raw outputs are mostly negative.
+    - NET score is computed as long_0_100 - short_0_100 in -100..+100.
+
+    Args:
+        df_with_predictions: DataFrame containing raw prediction columns.
+        long_col: Column name for raw long scores.
+        short_col: Column name for raw short scores.
+
+    Returns:
+        DataFrame indexed like df_with_predictions with columns:
+        - score_long_raw
+        - score_short_raw
+        - score_long_0_100
+        - score_short_0_100
+        - net_score_-100_100
+        - short_inverted
+    """
+
+    if long_col not in df_with_predictions.columns or short_col not in df_with_predictions.columns:
+        raise KeyError(f"Missing prediction columns: {long_col}, {short_col}")
+
+    raw_long = df_with_predictions[long_col].to_numpy(dtype=float)
+    raw_short = df_with_predictions[short_col].to_numpy(dtype=float)
+
+    normalized = normalize_long_short_scores(raw_long, raw_short)
+    out = pd.DataFrame(index=df_with_predictions.index)
+    out["score_long_raw"] = raw_long
+    out["score_short_raw"] = raw_short
+    out["score_long_0_100"] = normalized.long_0_100
+    out["score_short_0_100"] = normalized.short_0_100
+    out["net_score_-100_100"] = normalized.net_score_minus_100_100
+    out["short_inverted"] = bool(normalized.short_inverted)
+    return out
+
+
 class MLInferenceService:
     """
     Service for ML model inference.
@@ -359,6 +412,7 @@ class MLInferenceService:
         self.scaler = None
         self.metadata = None
         self.feature_names = []
+        self.last_alignment_report: Optional[FeatureAlignmentReport] = None
         self.is_loaded = False
         self.error_message = None
         
@@ -430,6 +484,7 @@ class MLInferenceService:
                 confidence_long="N/A",
                 confidence_short="N/A",
                 model_version="not_loaded",
+                alignment=None,
                 is_valid=False,
                 error=self.error_message
             )
@@ -451,6 +506,16 @@ class MLInferenceService:
             # Calculate normalized scores (same range as Signal Calculator: -100 to +100)
             score_long_norm = normalize_xgb_score(score_long)
             score_short_norm = normalize_xgb_score(score_short)
+
+            # Best-effort alignment diagnostics (row alignment always fills missing features)
+            # We treat the input row as a 1-row DataFrame for reporting.
+            _, report = align_features_dataframe_with_report(
+                pd.DataFrame([df_row.to_dict()]),
+                self.feature_names,
+                fill_value=0.0,
+                forward_fill=False,
+            )
+            self.last_alignment_report = report
             
             return MLPrediction(
                 score_long=score_long,
@@ -462,6 +527,7 @@ class MLInferenceService:
                 confidence_long=conf_long,
                 confidence_short=conf_short,
                 model_version=self.model_version,
+                alignment=report,
                 is_valid=True,
                 error=None
             )
@@ -477,6 +543,7 @@ class MLInferenceService:
                 confidence_long="N/A",
                 confidence_short="N/A",
                 model_version=self.model_version,
+                alignment=self.last_alignment_report,
                 is_valid=False,
                 error=str(e)
             )
@@ -500,12 +567,13 @@ class MLInferenceService:
         try:
             # Align to the expected feature set to avoid sklearn warnings and
             # ensure consistent ordering.
-            X_df = align_features_dataframe(
+            X_df, report = align_features_dataframe_with_report(
                 df,
                 self.feature_names,
                 fill_value=0.0,
                 forward_fill=True,
             )
+            self.last_alignment_report = report
             X_scaled = self.scaler.transform(X_df)
             
             # Predict
@@ -520,6 +588,10 @@ class MLInferenceService:
             df['pred_score_long'] = 0.0
             df['pred_score_short'] = 0.0
             return df
+
+    def get_alignment_report(self) -> Optional[FeatureAlignmentReport]:
+        """Return the last feature alignment diagnostics (if any)."""
+        return self.last_alignment_report
     
     def _interpret_score(self, score: float) -> Tuple[str, str]:
         """

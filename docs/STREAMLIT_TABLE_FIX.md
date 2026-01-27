@@ -1,19 +1,21 @@
 # 🔧 Streamlit Table Display Fix
 
-## Problema
+## Problem
 
-Le tabelle in Streamlit con `st.dataframe()` non mostravano i dati visibili nel tema scuro custom.
+In Streamlit, `st.dataframe()` tables were not readable when a custom dark theme was enabled.
 
-**Causa**: Streamlit usa un componente canvas-based chiamato **Glide Data Grid** per `st.dataframe()` che:
-- Non risponde bene agli stili CSS custom
-- Ha il proprio sistema di rendering interno
-- Il testo e lo sfondo possono avere colori simili nel tema scuro
+**Root cause**: Streamlit uses a canvas-based component called **Glide Data Grid** for
+`st.dataframe()` which:
+- does not reliably respond to custom CSS
+- has its own internal rendering pipeline
+- may choose text/background colors that reduce contrast in dark themes
 
-## Soluzione
+## Solution
 
-Sostituire `st.dataframe()` con una **tabella HTML custom** usando `st.markdown()` con `unsafe_allow_html=True`.
+Replace `st.dataframe()` with a custom **HTML table** rendered via `st.markdown()` and
+`unsafe_allow_html=True`.
 
-### Codice della Soluzione
+### Reference Implementation
 
 ```python
 def _render_html_table(df: pd.DataFrame, height: int = 400):
@@ -24,7 +26,7 @@ def _render_html_table(df: pd.DataFrame, height: int = 400):
         st.warning("No data to display")
         return
     
-    # CSS per la tabella
+    # Table CSS
     table_css = """
     <style>
         .custom-table-container {
@@ -71,7 +73,7 @@ def _render_html_table(df: pd.DataFrame, height: int = 400):
     </style>
     """.replace('HEIGHT_PLACEHOLDER', str(height))
     
-    # Costruzione HTML
+    # Build HTML
     html_rows = []
     
     # Header
@@ -83,7 +85,7 @@ def _render_html_table(df: pd.DataFrame, height: int = 400):
     for _, row in df.iterrows():
         cells = []
         for col, val in zip(df.columns, row.values):
-            # Applica stili condizionali
+            # Conditional formatting
             cell_class = ""
             if 'Return' in str(col) or 'Score' in str(col):
                 try:
@@ -97,7 +99,7 @@ def _render_html_table(df: pd.DataFrame, height: int = 400):
         html_rows.append(f"<tr>{''.join(cells)}</tr>")
     html_rows.append("</tbody>")
     
-    # Combina tutto
+    # Combine
     table_html = f"""
     {table_css}
     <div class="custom-table-container">
@@ -110,79 +112,79 @@ def _render_html_table(df: pd.DataFrame, height: int = 400):
     st.markdown(table_html, unsafe_allow_html=True)
 ```
 
-## Caratteristiche della Soluzione
+## Solution Features
 
-| Feature | Descrizione |
+| Feature | Description |
 |---------|-------------|
-| **Sfondo scuro** | `#0d1117` per visibilità |
-| **Testo chiaro** | `#e0e0ff` sempre visibile |
-| **Headers sticky** | Rimangono visibili durante lo scroll |
-| **Scroll orizzontale** | Per tabelle con molte colonne |
-| **Scroll verticale** | Con altezza configurabile |
-| **Colori semantici** | Verde per positivi, rosso per negativi |
-| **Hover effects** | Feedback visivo sulle righe |
+| **Dark background** | `#0d1117` for readability |
+| **Light text** | `#e0e0ff` always visible |
+| **Sticky headers** | Headers remain visible while scrolling |
+| **Horizontal scrolling** | For wide tables |
+| **Vertical scrolling** | Configurable container height |
+| **Semantic colors** | Green for positive, red for negative |
+| **Hover effects** | Visual feedback on hover |
 
-## Quando Usare
+## When to Use
 
-Usare `_render_html_table()` invece di `st.dataframe()` quando:
+Use `_render_html_table()` instead of `st.dataframe()` when:
 
-1. ✅ Si usa un tema scuro custom
-2. ✅ Si vuole controllo totale sugli stili
-3. ✅ Si necessita di colori condizionali sui valori
-4. ✅ Si vuole uno sticky header
+1. ✅ A custom dark theme is enabled
+2. ✅ You need full styling control
+3. ✅ You want conditional value coloring
+4. ✅ You want sticky table headers
 
-## Limitazioni
+## Limitations
 
 | `_render_html_table()` | `st.dataframe()` |
 |-----------------------|------------------|
-| No ordinamento click | Ordinamento integrato |
-| No filtri nativi | Filtri integrati |
-| No editing | Editing inline |
-| Più controllo CSS | Meno controllo CSS |
+| No click-to-sort | Built-in sorting |
+| No native filters | Built-in filters |
+| No editing | Inline editing |
+| More CSS control | Less CSS control |
 
-## File Modificato
+## Related File
 
 `agents/frontend/components/tabs/train/labeling_table.py`
 
 ---
 
-## VIEW v_xgb_training - Tutte le 24 Colonne
+## v_xgb_training View - All 24 Columns
 
-La VIEW `v_xgb_training` contiene **24 colonne** totali:
+The `v_xgb_training` view contains **24 columns**:
 
-### Da `training_data` (OHLCV + Indicatori):
-| # | Colonna | Descrizione |
+### From `training_data` (OHLCV + indicators)
+| # | Column | Description |
 |---|---------|-------------|
-| 1 | `symbol` | Simbolo (es: BTC/USDT:USDT) |
-| 2 | `timeframe` | Timeframe (15m o 1h) |
-| 3 | `timestamp` | Data/ora della candela |
-| 4 | `open` | Prezzo apertura |
-| 5 | `high` | Prezzo massimo |
-| 6 | `low` | Prezzo minimo |
-| 7 | `close` | Prezzo chiusura |
+| 1 | `symbol` | Symbol (e.g., BTC/USDT:USDT) |
+| 2 | `timeframe` | Timeframe (15m or 1h) |
+| 3 | `timestamp` | Candle timestamp |
+| 4 | `open` | Open price |
+| 5 | `high` | High price |
+| 6 | `low` | Low price |
+| 7 | `close` | Close price |
 | 8 | `volume` | Volume |
 | 9 | `rsi` | RSI (14) |
 | 10 | `atr` | ATR |
 | 11 | `macd` | MACD |
 
-### Da `training_labels` (Labels ML):
-| # | Colonna | Descrizione |
+### From `training_labels` (ML labels)
+| # | Column | Description |
 |---|---------|-------------|
-| 12 | `score_long` | Score LONG (target ML) |
-| 13 | `score_short` | Score SHORT (target ML) |
-| 14 | `realized_return_long` | Return realizzato LONG |
-| 15 | `realized_return_short` | Return realizzato SHORT |
-| 16 | `mfe_long` | Maximum Favorable Excursion LONG |
-| 17 | `mfe_short` | Maximum Favorable Excursion SHORT |
-| 18 | `mae_long` | Maximum Adverse Excursion LONG |
-| 19 | `mae_short` | Maximum Adverse Excursion SHORT |
-| 20 | `bars_held_long` | Barre tenute LONG |
-| 21 | `bars_held_short` | Barre tenute SHORT |
-| 22 | `exit_type_long` | Tipo uscita LONG (trailing/time/stop) |
-| 23 | `exit_type_short` | Tipo uscita SHORT |
-| 24 | `atr_pct` | ATR come percentuale del prezzo |
+| 12 | `score_long` | LONG score (ML target) |
+| 13 | `score_short` | SHORT score (ML target) |
+| 14 | `realized_return_long` | LONG realized return |
+| 15 | `realized_return_short` | SHORT realized return |
+| 16 | `mfe_long` | LONG maximum favorable excursion |
+| 17 | `mfe_short` | SHORT maximum favorable excursion |
+| 18 | `mae_long` | LONG maximum adverse excursion |
+| 19 | `mae_short` | SHORT maximum adverse excursion |
+| 20 | `bars_held_long` | LONG bars held |
+| 21 | `bars_held_short` | SHORT bars held |
+| 22 | `exit_type_long` | LONG exit type (trailing/time/stop) |
+| 23 | `exit_type_short` | SHORT exit type |
+| 24 | `atr_pct` | ATR as percent of price |
 
-### SQL della VIEW
+### View SQL
 
 ```sql
 CREATE VIEW v_xgb_training AS
@@ -205,4 +207,4 @@ INNER JOIN training_labels l
 
 ---
 
-*Documentazione creata il 21/01/2026*
+*Documentation created on 2026-01-21*

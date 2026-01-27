@@ -13,7 +13,8 @@ import pandas as pd
 from database import get_symbols, get_ohlcv
 from ai.backtest.engine import run_backtest
 from ai.visualizations.backtest_charts import create_backtest_chart
-from services.ml_inference import get_ml_inference_service
+from services.ml_inference import get_ml_inference_service, compute_ml_features, build_normalized_xgb_frame
+from services.xgb_model_bundles import list_available_timeframes, load_bundle, predict_batch
 
 from .controls import render_backtest_controls
 from .signals import render_signal_comparison
@@ -66,13 +67,52 @@ def render_backtest_tab():
     # Get statistics
     stats = result.trades.get_statistics()
     
-    # Get ML service
+    # ML service (legacy "latest" models, still used elsewhere)
     ml_service = get_ml_inference_service()
+
+    # Pre-compute XGB normalized scores:
+    # - One canonical frame used by chart + simulation (prefers model matching selected_tf)
+    # - Optional additional frames for UI comparison (e.g. 15m + 1h)
+    xgb_data = None
+    xgb_frames: dict[str, pd.DataFrame] = {}
+    try:
+        df_features = compute_ml_features(df_full)
+
+        # Compute per-timeframe frames if those model bundles exist.
+        for tf in list_available_timeframes():
+            bundle = load_bundle(tf)
+            if bundle is None:
+                continue
+            df_pred = predict_batch(bundle, df_features)
+            xgb_frames[tf] = build_normalized_xgb_frame(df_pred)
+
+        # Choose the primary frame for chart/simulation.
+        if settings['selected_tf'] in xgb_frames:
+            xgb_data = xgb_frames[settings['selected_tf']]
+        elif xgb_frames:
+            # Fallback: just pick the first available timeframe.
+            xgb_data = next(iter(xgb_frames.values()))
+        else:
+            # Legacy fallback: use latest models if available.
+            if ml_service.is_available:
+                df_pred = ml_service.predict_batch(df_features)
+                xgb_data = build_normalized_xgb_frame(df_pred)
+    except Exception:
+        # Keep the rest of the backtest working even if XGB normalization fails.
+        xgb_data = None
+        xgb_frames = {}
     
     # ═══════════════════════════════════════════════════════════════════
     # SIGNAL COMPARISON
     # ═══════════════════════════════════════════════════════════════════
-    render_signal_comparison(result, ml_service, df_full, settings['entry_threshold'])
+    render_signal_comparison(
+        result,
+        ml_service,
+        df_full,
+        settings['entry_threshold'],
+        xgb_data=xgb_data,
+        xgb_frames=xgb_frames,
+    )
     
     # ═══════════════════════════════════════════════════════════════════
     # BACKTEST STATISTICS
@@ -132,7 +172,7 @@ def render_backtest_tab():
     # ═══════════════════════════════════════════════════════════════════
     # XGB SECTION
     # ═══════════════════════════════════════════════════════════════════
-    render_xgb_section(df_full, ml_service, settings['selected_name'])
+    render_xgb_section(df_full, ml_service, settings['selected_name'], xgb_data=xgb_data)
     
     # Show warning if no trades were generated
     trades_list = result.trades.trades

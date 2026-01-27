@@ -14,6 +14,26 @@ from config import DATABASE_PATH
 logger = logging.getLogger(__name__)
 
 
+OHLCV_TABLE = "realtime_ohlcv"
+
+
+def _to_db_timestamp(value) -> str:
+    """Convert a Timestamp-like value into a SQLite-friendly ISO string.
+
+    sqlite3 does not accept pandas.Timestamp directly as a bound parameter.
+    We store timestamps as ISO-8601 strings for consistency across agents.
+    """
+
+    if value is None:
+        return ""
+
+    try:
+        # pandas.Timestamp supports isoformat()
+        return value.isoformat()
+    except Exception:
+        return str(value)
+
+
 def get_connection():
     """
     Get database connection with optimized settings for concurrent access.
@@ -75,7 +95,7 @@ def get_available_symbols(timeframe: str = '15m') -> List[str]:
     
     cursor.execute("""
         SELECT DISTINCT symbol 
-        FROM ohlcv 
+        FROM realtime_ohlcv 
         WHERE timeframe = ?
         ORDER BY symbol
     """, (timeframe,))
@@ -92,7 +112,7 @@ def get_ohlcv_data(symbol: str, timeframe: str, limit: int = 200) -> Optional[pd
     
     query = """
         SELECT timestamp, open, high, low, close, volume
-        FROM ohlcv
+        FROM realtime_ohlcv
         WHERE symbol = ? AND timeframe = ?
         ORDER BY timestamp DESC
         LIMIT ?
@@ -124,7 +144,7 @@ def save_ml_signal(signal: Dict):
     """, (
         signal['symbol'],
         signal['timeframe'],
-        signal['timestamp'],
+        _to_db_timestamp(signal.get('timestamp')),
         signal['score_long'],
         signal['score_short'],
         signal['confidence_long'],
@@ -152,7 +172,7 @@ def save_ml_signals_batch(signals: List[Dict]):
          confidence_long, confidence_short, signal_long, signal_short, model_version)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, [
-        (s['symbol'], s['timeframe'], s['timestamp'], s['score_long'], s['score_short'],
+        (s['symbol'], s['timeframe'], _to_db_timestamp(s.get('timestamp')), s['score_long'], s['score_short'],
          s['confidence_long'], s['confidence_short'], s['signal_long'], s['signal_short'], s['model_version'])
         for s in signals
     ])

@@ -43,18 +43,40 @@ def render_backtest_controls(symbols: list, symbol_map: dict) -> dict:
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
+        if not symbol_map:
+            st.warning("⚠️ No symbols available for backtest")
+            return {
+                'selected_symbol': None,
+                'selected_name': None,
+                'selected_tf': None,
+                'num_candles': None,
+                'entry_threshold': BACKTEST_CONFIG['entry_threshold'],
+                'exit_threshold': BACKTEST_CONFIG['exit_threshold'],
+                'min_holding': BACKTEST_CONFIG['min_holding_candles'],
+                'stop_loss_pct': float(BACKTEST_CONFIG.get('stop_loss_pct', 2.0)),
+                'take_profit_pct': float(BACKTEST_CONFIG.get('take_profit_pct', 4.0)),
+                'use_sl_tp': BACKTEST_CONFIG.get('use_sl_tp', True),
+                'max_holding': BACKTEST_CONFIG.get('max_holding_candles', 0),
+            }
+
         selected_name = st.selectbox(
             "🪙 Select Coin (ordered by volume)",
             list(symbol_map.keys()),
             key="backtest_coin"
         )
-        selected_symbol = symbol_map[selected_name]
+        selected_symbol = symbol_map.get(selected_name)
+        if selected_symbol is None:
+            st.warning("⚠️ Please select a valid symbol")
     
     with col2:
-        timeframes = get_timeframes(selected_symbol)
+        timeframes = get_timeframes(selected_symbol) if selected_symbol else []
         tf_order = ['15m', '1h', '4h', '1d']
         timeframes_sorted = [tf for tf in tf_order if tf in timeframes]
-        selected_tf = st.selectbox("⏱️ Timeframe", timeframes_sorted, key="backtest_tf")
+        if timeframes_sorted:
+            selected_tf = st.selectbox("⏱️ Timeframe", timeframes_sorted, key="backtest_tf")
+        else:
+            selected_tf = None
+            st.info("No timeframes found for selected symbol")
     
     with col3:
         num_candles = st.selectbox("🕯️ Candles", [100, 150, 200, 300, 500], index=2, key="backtest_candles")

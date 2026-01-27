@@ -17,6 +17,35 @@ import numpy as np
 import pandas as pd
 
 from services.feature_alignment import align_features_dataframe
+from services.xgb_normalization import normalize_long_short_scores
+
+
+class InferenceDataNotFoundError(RuntimeError):
+    """Raised when real-time OHLCV data is missing for a symbol/timeframe."""
+
+
+def list_realtime_symbols(timeframe: str) -> List[str]:
+    """List available symbols in the realtime_ohlcv table for a timeframe."""
+    import sqlite3
+
+    db_path = _get_realtime_db_path()
+    if not Path(db_path).exists():
+        return []
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=30)
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM realtime_ohlcv WHERE timeframe = ? ORDER BY symbol ASC",
+            (timeframe,),
+        ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @dataclass
@@ -208,7 +237,7 @@ def run_inference(
         n_candles: Number of candles to process
     
     Returns:
-        DataFrame with timestamp, ohlcv, score_long, score_short, signal
+        DataFrame with timestamp, ohlcv, raw scores, normalized scores and signal.
     """
     import sqlite3
     
@@ -230,6 +259,7 @@ def run_inference(
         print(f"Real-time database not found: {db_path}")
         return None
     
+    conn = None
     try:
         conn = sqlite3.connect(db_path, timeout=30)
         
@@ -250,9 +280,14 @@ def run_inference(
         '''
         
         df = pd.read_sql_query(query, conn, params=(ccxt_symbol, timeframe, n_candles))
-        
+
         if len(df) == 0:
-            return None
+            available = list_realtime_symbols(timeframe)
+            raise InferenceDataNotFoundError(
+                "No realtime OHLCV data found for inference. "
+                f"symbol={symbol} (ccxt={ccxt_symbol}) timeframe={timeframe}. "
+                f"Available symbols for timeframe: {available[:25]}"
+            )
         
         # Reverse to chronological order
         df = df.iloc[::-1].reset_index(drop=True)
@@ -272,28 +307,56 @@ def run_inference(
 
         X_scaled = scaler.transform(X_df)
         
-        # Run inference
-        df['score_long'] = model_long.predict(X_scaled)
-        df['score_short'] = model_short.predict(X_scaled)
-        
-        # Generate signals
+        # Run inference (raw)
+        df['score_long_raw'] = model_long.predict(X_scaled)
+        df['score_short_raw'] = model_short.predict(X_scaled)
+
+        normalized = normalize_long_short_scores(
+            df['score_long_raw'].to_numpy(),
+            df['score_short_raw'].to_numpy(),
+        )
+
+        df['short_inverted'] = bool(normalized.short_inverted)
+
+        # Normalize to per-model score in [0, 100]
+        df['score_long_0_100'] = normalized.long_0_100
+        df['score_short_0_100'] = normalized.short_0_100
+
+        # Combine into net score [-100, +100]
+        df['net_score_-100_100'] = normalized.net_score_minus_100_100
+        df['confidence_0_100'] = df['net_score_-100_100'].abs()
+
+        # Generate signals based on net + confidence
         df['signal'] = 'HOLD'
-        df.loc[df['score_long'] > 0.7, 'signal'] = 'STRONG BUY'
-        df.loc[(df['score_long'] > 0.5) & (df['score_long'] <= 0.7), 'signal'] = 'BUY'
-        df.loc[df['score_short'] > 0.7, 'signal'] = 'STRONG SELL'
-        df.loc[(df['score_short'] > 0.5) & (df['score_short'] <= 0.7), 'signal'] = 'SELL'
+
+        confidence = df['confidence_0_100']
+        net = df['net_score_-100_100']
+
+        df.loc[(confidence >= 10) & (net >= 60), 'signal'] = 'STRONG BUY'
+        df.loc[(confidence >= 10) & (net >= 30) & (net < 60), 'signal'] = 'BUY'
+        df.loc[(confidence >= 10) & (net <= -60), 'signal'] = 'STRONG SELL'
+        df.loc[(confidence >= 10) & (net <= -30) & (net > -60), 'signal'] = 'SELL'
+
+        return df[[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'score_long_raw', 'score_short_raw',
+            'score_long_0_100', 'score_short_0_100',
+            'net_score_-100_100', 'confidence_0_100',
+            'short_inverted', 'signal'
+        ]]
         
-        # Calculate net score
-        df['net_score'] = df['score_long'] - df['score_short']
-        
-        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume',
-                   'score_long', 'score_short', 'net_score', 'signal']]
-        
+    except InferenceDataNotFoundError:
+        # Strict behavior: bubble up to the UI so we can show a clear error.
+        raise
     except Exception as e:
         print(f"Error running inference: {e}")
         return None
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def get_latest_signals(
@@ -311,13 +374,17 @@ def get_latest_signals(
         return None
     
     latest = df.iloc[-1]
-    
+
     return {
         'timestamp': str(latest['timestamp']),
         'close': float(latest['close']),
-        'score_long': float(latest['score_long']),
-        'score_short': float(latest['score_short']),
-        'net_score': float(latest['net_score']),
+        'score_long_raw': float(latest['score_long_raw']),
+        'score_short_raw': float(latest['score_short_raw']),
+        'score_long_0_100': float(latest['score_long_0_100']),
+        'score_short_0_100': float(latest['score_short_0_100']),
+        'net_score_-100_100': float(latest['net_score_-100_100']),
+        'confidence_0_100': float(latest['confidence_0_100']),
+        'short_inverted': bool(latest.get('short_inverted', False)),
         'signal': latest['signal'],
     }
 
@@ -330,5 +397,7 @@ __all__ = [
     'load_models',
     'model_exists',
     'run_inference',
-    'get_latest_signals'
+    'get_latest_signals',
+    'InferenceDataNotFoundError',
+    'list_realtime_symbols'
 ]

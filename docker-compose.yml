@@ -105,9 +105,13 @@ services:
       - shared-data:/app/shared
     environment:
       - SHARED_DATA_PATH=/app/shared
+      # Streamlit: disable usage stats message in container logs
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
       # Bybit API (for balance, positions, trading)
       - BYBIT_API_KEY=${BYBIT_API_KEY}
       - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      # Reduce noisy INFO logs in containers
+      - LOG_LEVEL=ERROR
       # OpenAI API (for AI analysis)
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       # CoinMarketCap API (for sentiment)

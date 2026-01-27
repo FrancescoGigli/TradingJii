@@ -8,12 +8,13 @@ Displays live inference on BTCUSDT with last 200 candles:
 """
 
 import streamlit as st
-from typing import Dict, Any
+from typing import Any
 import pandas as pd
 
 try:
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    # Plotly is only used indirectly here; figure building is in
+    # `btc_inference_charts.py`.
+    import plotly.graph_objects as go  # noqa: F401
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
@@ -23,7 +24,9 @@ try:
     from services.local_models import (
         model_exists,
         run_inference,
-        get_latest_signals
+        get_latest_signals,
+        InferenceDataNotFoundError,
+        list_realtime_symbols,
     )
     MODELS_SERVICE_AVAILABLE = True
 except ImportError:
@@ -32,6 +35,7 @@ except ImportError:
 # Import from shared modules (centralized, no duplication)
 from .shared import COLORS
 from .shared.colors import SIGNAL_COLORS
+from .btc_inference_charts import build_btc_inference_figure
 from .shared.model_loader import model_exists as shared_model_exists
 
 
@@ -105,7 +109,17 @@ def render_btc_inference_section():
 
 def _render_signal_card(timeframe: str):
     """Render the current signal card."""
-    signals = get_latest_signals(timeframe, "BTCUSDT")
+    try:
+        signals = get_latest_signals(timeframe, "BTCUSDT")
+    except InferenceDataNotFoundError as e:
+        st.error(f"❌ {e}")
+        with st.expander("🔎 Available symbols in realtime DB", expanded=False):
+            symbols = list_realtime_symbols(timeframe)
+            if symbols:
+                st.code("\n".join(symbols[:200]))
+            else:
+                st.caption("No symbols found or realtime DB not available.")
+        return
     
     if signals is None:
         st.warning("⚠️ Unable to get signals. Check if OHLCV data is available.")
@@ -124,9 +138,9 @@ def _render_signal_card(timeframe: str):
     
     signal_color = signal_colors.get(signal, '#9ca3af')
     
-    # Net score color
-    net_score = signals.get('net_score', 0)
+    net_score = signals.get('net_score_-100_100', 0)
     net_color = COLORS['success'] if net_score > 0 else COLORS['secondary']
+    confidence = signals.get('confidence_0_100', 0)
     
     st.markdown(f"""
     <div style="
@@ -166,9 +180,9 @@ def _render_signal_card(timeframe: str):
                 padding: 12px;
                 border-radius: 8px;
             ">
-                <div style="color: {COLORS['muted']}; font-size: 11px;">LONG Score</div>
+                <div style="color: {COLORS['muted']}; font-size: 11px;">LONG (0-100)</div>
                 <div style="color: {COLORS['long']}; font-size: 20px; font-weight: bold;">
-                    {signals.get('score_long', 0):.3f}
+                    {signals.get('score_long_0_100', 0):.1f}
                 </div>
             </div>
             <div style="
@@ -177,9 +191,9 @@ def _render_signal_card(timeframe: str):
                 padding: 12px;
                 border-radius: 8px;
             ">
-                <div style="color: {COLORS['muted']}; font-size: 11px;">SHORT Score</div>
+                <div style="color: {COLORS['muted']}; font-size: 11px;">SHORT (0-100)</div>
                 <div style="color: {COLORS['short']}; font-size: 20px; font-weight: bold;">
-                    {signals.get('score_short', 0):.3f}
+                    {signals.get('score_short_0_100', 0):.1f}
                 </div>
             </div>
             <div style="
@@ -188,11 +202,19 @@ def _render_signal_card(timeframe: str):
                 padding: 12px;
                 border-radius: 8px;
             ">
-                <div style="color: {COLORS['muted']}; font-size: 11px;">Net Score</div>
+                <div style="color: {COLORS['muted']}; font-size: 11px;">Net (-100..100)</div>
                 <div style="color: {net_color}; font-size: 20px; font-weight: bold;">
-                    {net_score:+.3f}
+                    {net_score:+.1f}
                 </div>
             </div>
+        </div>
+        <div style="
+            color: {COLORS['muted']};
+            font-size: 12px;
+            margin-top: 10px;
+        ">
+            Confidence: <b style="color: {COLORS['text']};">{confidence:.1f}</b> &nbsp;|&nbsp;
+            Short inverted: <b style="color: {COLORS['text']};">{signals.get('short_inverted', False)}</b>
         </div>
         <div style="
             color: {COLORS['muted']};
@@ -209,7 +231,17 @@ def _render_signal_card(timeframe: str):
 def _render_inference_chart(timeframe: str):
     """Render the candlestick chart with ML scores."""
     # Get inference data
-    df = run_inference(timeframe, "BTCUSDT", 200)
+    try:
+        df = run_inference(timeframe, "BTCUSDT", 200)
+    except InferenceDataNotFoundError as e:
+        st.error(f"❌ {e}")
+        with st.expander("🔎 Available symbols in realtime DB", expanded=False):
+            symbols = list_realtime_symbols(timeframe)
+            if symbols:
+                st.code("\n".join(symbols[:200]))
+            else:
+                st.caption("No symbols found or realtime DB not available.")
+        return
     
     if df is None or len(df) == 0:
         st.warning("⚠️ No inference data available. Check if historical data exists.")
@@ -217,81 +249,7 @@ def _render_inference_chart(timeframe: str):
     
     st.markdown("#### 📊 Price Chart with ML Predictions")
     
-    # Create figure with subplots
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.7, 0.3],
-        subplot_titles=("BTCUSDT Price", "ML Scores (LONG / SHORT)")
-    )
-    
-    # Candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df['timestamp'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='BTCUSDT',
-        increasing_line_color=COLORS['bullish'],
-        decreasing_line_color=COLORS['bearish']
-    ), row=1, col=1)
-    
-    # ML Scores
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'],
-        y=df['score_long'],
-        mode='lines',
-        name='Score LONG',
-        line=dict(color=COLORS['long'], width=2)
-    ), row=2, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'],
-        y=df['score_short'],
-        mode='lines',
-        name='Score SHORT',
-        line=dict(color=COLORS['short'], width=2)
-    ), row=2, col=1)
-    
-    # Threshold lines
-    fig.add_hline(
-        y=0.7, line_dash="dash", line_color=COLORS['success'],
-        row=2, col=1, annotation_text="Strong Signal (0.7)"
-    )
-    fig.add_hline(
-        y=0.5, line_dash="dot", line_color=COLORS['warning'],
-        row=2, col=1, annotation_text="Signal (0.5)"
-    )
-    fig.add_hline(
-        y=0.3, line_dash="dot", line_color=COLORS['muted'],
-        row=2, col=1
-    )
-    
-    # Layout
-    fig.update_layout(
-        plot_bgcolor=COLORS['card'],
-        paper_bgcolor=COLORS['background'],
-        font=dict(color=COLORS['text']),
-        xaxis_rangeslider_visible=False,
-        height=600,
-        legend=dict(
-            bgcolor='rgba(0,0,0,0.5)',
-            orientation='h',
-            y=1.02,
-            x=0.5,
-            xanchor='center'
-        ),
-        margin=dict(l=20, r=20, t=60, b=20)
-    )
-    
-    fig.update_xaxes(gridcolor=COLORS['border'], showgrid=True)
-    fig.update_yaxes(gridcolor=COLORS['border'], showgrid=True)
-    
-    # Y-axis for scores
-    fig.update_yaxes(range=[0, 1], row=2, col=1)
-    
+    fig = build_btc_inference_figure(df=df, colors=COLORS, signal_colors=SIGNAL_COLORS)
     st.plotly_chart(fig, width='stretch')
     
     # Signal distribution summary
@@ -362,23 +320,23 @@ def _render_signal_summary(df: pd.DataFrame):
         
         with col1:
             st.metric(
-                "Avg LONG Score",
-                f"{df['score_long'].mean():.3f}",
-                f"{df['score_long'].std():.3f} std"
+                "Avg LONG (0-100)",
+                f"{df['score_long_0_100'].mean():.1f}",
+                f"{df['score_long_0_100'].std():.1f} std"
             )
         
         with col2:
             st.metric(
-                "Avg SHORT Score",
-                f"{df['score_short'].mean():.3f}",
-                f"{df['score_short'].std():.3f} std"
+                "Avg SHORT (0-100)",
+                f"{df['score_short_0_100'].mean():.1f}",
+                f"{df['score_short_0_100'].std():.1f} std"
             )
         
         with col3:
-            net_mean = df['net_score'].mean()
+            net_mean = df['net_score_-100_100'].mean()
             st.metric(
-                "Avg Net Score",
-                f"{net_mean:+.3f}",
+                "Avg Net (-100..100)",
+                f"{net_mean:+.1f}",
                 "Bullish Bias" if net_mean > 0 else "Bearish Bias"
             )
 

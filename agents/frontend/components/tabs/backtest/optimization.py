@@ -50,7 +50,7 @@ def render_optimization_section(df_full: pd.DataFrame, xgb_data: pd.DataFrame, s
     """, unsafe_allow_html=True)
     
     # Check if XGB data is available
-    if xgb_data is None or 'xgb_score_long_norm' not in xgb_data.columns:
+    if xgb_data is None or 'net_score_-100_100' not in xgb_data.columns:
         st.warning("⚠️ XGB scores required. Run XGB inference first.")
         return
     
@@ -194,7 +194,7 @@ def _run_optimization(df_full: pd.DataFrame, xgb_data: pd.DataFrame, settings: d
             # Run optimization
             result = run_trailing_optimization(
                 df=df_full,
-                xgb_scores=xgb_data['xgb_score_long_norm'],
+                xgb_scores=xgb_data['net_score_-100_100'],
                 preset=settings['preset'],
                 progress_callback=update_progress
             )

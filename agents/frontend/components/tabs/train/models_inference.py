@@ -17,6 +17,7 @@ from pathlib import Path
 import os
 
 from services.feature_alignment import align_features_dataframe
+from services.xgb_normalization import normalize_long_short_scores
 
 # For plotting
 try:
@@ -207,9 +208,19 @@ def run_inference(df: pd.DataFrame, model_long, model_short, scaler, feature_nam
     
     df['pred_long'] = model_long.predict(X_scaled)
     df['pred_short'] = model_short.predict(X_scaled)
-    
-    df['pred_long_norm'] = (df['pred_long'].rank(pct=True) - 0.5) * 200
-    df['pred_short_norm'] = (df['pred_short'].rank(pct=True) - 0.5) * 200
+
+    normalized = normalize_long_short_scores(
+        df['pred_long'].to_numpy(),
+        df['pred_short'].to_numpy(),
+    )
+
+    # Canonical normalization used across Train/Test:
+    # - per-side 0..100 percentile rank
+    # - net -100..100 for direct comparison with Signal Calculator
+    df['pred_long_0_100'] = normalized.long_0_100
+    df['pred_short_0_100'] = normalized.short_0_100
+    df['pred_net_-100_100'] = normalized.net_score_minus_100_100
+    df['short_inverted'] = bool(normalized.short_inverted)
     
     return df
 
@@ -222,7 +233,11 @@ def create_inference_chart(df: pd.DataFrame, symbol: str, timeframe: str):
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
         row_heights=[0.5, 0.25, 0.25],
-        subplot_titles=[f"📈 {symbol} ({timeframe})", "🔮 LONG Score", "🔮 SHORT Score"]
+        subplot_titles=[
+            f"📈 {symbol} ({timeframe})",
+            "🔮 XGB Net Score (-100..100)",
+            "🔮 SHORT Score (0..100)",
+        ]
     )
     
     # Candlestick
@@ -239,18 +254,18 @@ def create_inference_chart(df: pd.DataFrame, symbol: str, timeframe: str):
                                  line=dict(color='blue', width=1)), row=1, col=1)
     
     # LONG predictions
-    if 'pred_long_norm' in df.columns:
-        colors = ['#26a69a' if v > 0 else '#ef5350' for v in df['pred_long_norm']]
-        fig.add_trace(go.Bar(x=df.index, y=df['pred_long_norm'], name='LONG',
+    if 'pred_net_-100_100' in df.columns:
+        colors = ['#26a69a' if v > 0 else '#ef5350' for v in df['pred_net_-100_100']]
+        fig.add_trace(go.Bar(x=df.index, y=df['pred_net_-100_100'], name='NET',
                             marker_color=colors, opacity=0.7), row=2, col=1)
         fig.add_hline(y=0, line_dash="dash", line_color="white", row=2, col=1)
     
-    # SHORT predictions
-    if 'pred_short_norm' in df.columns:
-        colors = ['#ef5350' if v > 0 else '#26a69a' for v in df['pred_short_norm']]
-        fig.add_trace(go.Bar(x=df.index, y=df['pred_short_norm'], name='SHORT',
+    # SHORT predictions (0..100)
+    if 'pred_short_0_100' in df.columns:
+        colors = ['#ef5350' if v > 50 else '#26a69a' for v in df['pred_short_0_100']]
+        fig.add_trace(go.Bar(x=df.index, y=df['pred_short_0_100'], name='SHORT (0..100)',
                             marker_color=colors, opacity=0.7), row=3, col=1)
-        fig.add_hline(y=0, line_dash="dash", line_color="white", row=3, col=1)
+        fig.add_hline(y=50, line_dash="dash", line_color="white", row=3, col=1)
     
     fig.update_layout(
         height=800, template='plotly_dark', showlegend=True,

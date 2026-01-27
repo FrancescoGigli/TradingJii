@@ -205,6 +205,11 @@ After training, the frontend automatically detects the new model:
    - Metrics, feature importance, precision@K charts
    - Live inference on BTCUSDT
 
+### UI Note (Dark Theme)
+
+In the ML → Train → Training → Commands section, command blocks are rendered with an explicit
+dark background and light text to remain readable with dark themes.
+
 ## Features Used
 
 The model uses 21 features:

@@ -1,13 +1,50 @@
-"""
-📊 Crypto Dashboard - Advanced Dark Theme
+"""Crypto Dashboard - Streamlit frontend entry point.
 
-Dashboard for visualizing crypto data with:
-- Top 100 Coins with analysis
-- Backtest strategies
-- ML Training pipeline
-
-Entry point for the application.
+This module configures logging and warning filters early to keep container logs clean,
+then starts the Streamlit UI.
 """
+
+import logging
+import os
+import warnings
+
+
+def _configure_runtime_noise_filters() -> None:
+    """Reduce noisy logs/warnings in container output.
+
+    This is intentionally done at import time (before the rest of the app runs)
+    to ensure it applies to modules imported later.
+    """
+
+    # 1) Logging
+    # Default to ERROR to hide verbose INFO logs in containers.
+    log_level_name = os.environ.get("LOG_LEVEL", "ERROR").upper().strip()
+    log_level = getattr(logging, log_level_name, logging.ERROR)
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s:%(name)s:%(message)s",
+        force=True,
+    )
+
+    # 2) Warnings
+    # Sklearn pickle version mismatch warnings (typical in containers).
+    try:
+        from sklearn.exceptions import InconsistentVersionWarning
+
+        warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+    except Exception:
+        pass
+
+    # XGBoost warning triggered when unpickling models created with a different version.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*If you are loading a serialized model.*older version of XGBoost.*",
+        category=UserWarning,
+    )
+
+
+_configure_runtime_noise_filters()
+
 
 import streamlit as st
 
